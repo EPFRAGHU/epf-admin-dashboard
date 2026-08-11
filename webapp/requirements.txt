@@ -3,3 +3,7 @@ uvicorn
 python-multipart
 openpyxl
 pywin32
+psycopg2-binary
+SQLAlchemy
+python-dotenv
+gunicorn
