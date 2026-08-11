@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EPF Admin Dashboard</title>
+    <meta name="description" content="EPF Form 3A/6A Admin Dashboard — Employee Provident Fund Management System">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-brand">
+                <span class="brand-icon">🏛️</span>
+                <div>
+                    <h1 class="brand-title">EPF Dashboard</h1>
+                    <p class="brand-sub">Admin Panel</p>
+                </div>
+            </div>
+            <nav class="sidebar-nav" id="sidebar-nav">
+                <a class="nav-item active" data-page="dashboard">
+                    <span class="nav-icon">📊</span><span>Dashboard</span>
+                </a>
+                <a class="nav-item" data-page="establishment">
+                    <span class="nav-icon">🏢</span><span>Establishment</span>
+                </a>
+                <a class="nav-item" data-page="employees">
+                    <span class="nav-icon">👥</span><span>Employees</span>
+                </a>
+                <a class="nav-item" data-page="years">
+                    <span class="nav-icon">📅</span><span>Financial Years</span>
+                </a>
+                <a class="nav-item" data-page="wages">
+                    <span class="nav-icon">💰</span><span>Wage Entry</span>
+                </a>
+                <a class="nav-item" data-page="reports">
+                    <span class="nav-icon">📋</span><span>Reports</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <button class="btn btn-primary btn-sm" style="width:100%; margin-bottom:8px" onclick="App.showProjectManager()">📂 Switch Establishment</button>
+                <button class="btn btn-glass btn-sm" style="width:100%; margin-bottom:8px" onclick="App.save()">💾 Save Project</button>
+                <button class="btn btn-danger btn-sm" style="width:100%; margin-bottom:8px" onclick="App.logout()">🚪 Logout</button>
+                <p class="version">v1.0 · EPF Manager</p>
+            </div>
+        </aside>
+
+        <!-- Main -->
+        <main class="main">
+            <header class="topbar">
+                <button class="hamburger" onclick="App.toggleSidebar()">☰</button>
+                <h2 class="topbar-title" id="topbar-title">Dashboard</h2>
+                <div class="topbar-right" id="topbar-right"></div>
+            </header>
+            <div class="content" id="content">
+                <div class="page-loading"><div class="spinner"></div><p>Loading…</p></div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modal -->
+    <div class="modal-overlay" id="modal-overlay" onclick="App.closeModal()"></div>
+    <div class="modal" id="modal"></div>
+
+    <!-- Toast -->
+    <div class="toast-box" id="toast-box"></div>
+
+    <script src="/js/app.js"></script>
+    <script src="/js/dashboard.js"></script>
+    <script src="/js/establishment.js"></script>
+    <script src="/js/employees.js"></script>
+    <script src="/js/years.js"></script>
+    <script src="/js/wages.js"></script>
+    <script src="/js/reports.js"></script>
+    <script>document.addEventListener('DOMContentLoaded', () => App.init());</script>
+</body>
+</html>

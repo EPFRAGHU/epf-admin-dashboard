@@ -1,0 +1,498 @@
+/* ================================================================
+   Wages — Monthly Wage Entry and Bulk Import
+   ================================================================ */
+
+let currentYearKey = '';
+let currentWagesData = null;
+let constantsCache = null;
+
+App.registerPage('wages', async (container) => {
+  if (!constantsCache) constantsCache = await App.get('/api/constants');
+  
+  const { years } = await App.get('/api/years');
+  if (years.length === 0) {
+    container.innerHTML = `<div class="empty-state">
+      <div class="empty-state-icon">💰</div>
+      <div class="empty-state-text">No financial years available. Add a year first to enter wages.</div>
+      <button class="btn btn-primary" style="margin-top:16px" onclick="App.navigate('years')">Go to Years</button>
+    </div>`;
+    return;
+  }
+
+  // Use currently selected year or the latest one
+  if (!currentYearKey || !years.find(y => y.key === currentYearKey)) {
+    currentYearKey = years[years.length - 1].key;
+  }
+
+  currentWagesData = await App.get(`/api/years/${currentYearKey}/wages`);
+  
+  container.innerHTML = `<div class="fade-in">
+    <div class="page-header">
+      <div>
+        <div class="section-title">Wage Entry</div>
+        <div class="page-desc">Enter monthly wages. Contributions are calculated automatically based on the statutory rates.</div>
+      </div>
+      <div class="toolbar-right">
+        <select class="form-select" id="wage-year-select" onchange="switchWageYear()">
+          ${years.map(y => `<option value="${y.key}" ${y.key === currentYearKey ? 'selected' : ''}>${y.label}</option>`).join('')}
+        </select>
+        <button class="btn btn-danger" onclick="deleteAllWages()">🗑️ Delete All</button>
+        <button class="btn btn-glass" onclick="showBulkImportModal()">📥 Bulk Import</button>
+        <button class="btn btn-glass" onclick="showImportModal()">📥 Import Excel</button>
+        <button class="btn btn-primary" onclick="showWageModal()">+ Add Employee Wages</button>
+      </div>
+    </div>
+    
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex; justify-content:space-between; align-items:center">
+        <div>
+          <span class="badge ${currentWagesData.scheme === 'post_1997' ? 'badge-blue' : 'badge-amber'}">${currentWagesData.scheme === 'post_1997' ? 'Post-1997 Scheme' : 'Pre-1997 Scheme'}</span>
+          <span style="font-size:12px; color:var(--text2); margin-left:12px">${currentWagesData.rates.text}</span>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center">
+          <div style="font-size:12px; color:var(--text2); margin-right:8px">
+            <strong>${currentWagesData.count}</strong> employees this year
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="stats-grid" style="margin-bottom:16px; grid-template-columns: repeat(4, 1fr);">
+        <div class="stat-card" style="background: linear-gradient(135deg, var(--green) 0%, #059669 100%); color: white; padding: 16px; display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; text-align:center;" onclick="downloadYearPDF('3A')">
+            <div style="font-size: 24px; margin-bottom: 8px;">📄</div>
+            <div style="font-weight: 600; font-size: 14px;">FORM 3A PDF</div>
+        </div>
+        <div class="stat-card" style="background: linear-gradient(135deg, var(--green) 0%, #059669 100%); color: white; padding: 16px; display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; text-align:center;" onclick="downloadYearExcel('3A')">
+            <div style="font-size: 24px; margin-bottom: 8px;">📊</div>
+            <div style="font-weight: 600; font-size: 14px;">FORM 3A EXCEL</div>
+        </div>
+        <div class="stat-card" style="background: linear-gradient(135deg, var(--green) 0%, #059669 100%); color: white; padding: 16px; display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; text-align:center;" onclick="downloadYearPDF('6A')">
+            <div style="font-size: 24px; margin-bottom: 8px;">📄</div>
+            <div style="font-weight: 600; font-size: 14px;">FORM 6A PDF</div>
+        </div>
+        <div class="stat-card" style="background: linear-gradient(135deg, var(--green) 0%, #059669 100%); color: white; padding: 16px; display:flex; flex-direction:column; align-items:center; justify-content:center; cursor:pointer; text-align:center;" onclick="downloadYearPDF('12A')">
+            <div style="font-size: 24px; margin-bottom: 8px;">📄</div>
+            <div style="font-weight: 600; font-size: 14px;">FORM 12A PDF</div>
+        </div>
+    </div>
+
+    ${currentWagesData.employees.length === 0 ? `<div class="empty-state">
+      <div class="empty-state-icon">📝</div>
+      <div class="empty-state-text">No wage entries for ${currentYearKey}.</div>
+    </div>` : ''}
+
+    <div style="display:flex; flex-direction:column; gap:24px">
+      ${currentWagesData.employees.map(renderWageCard).join('')}
+    </div>
+  </div>`;
+});
+
+window.switchWageYear = () => {
+  currentYearKey = document.getElementById('wage-year-select').value;
+  App.navigate('wages');
+};
+
+function renderWageCard(emp) {
+  const r = currentWagesData.rates;
+  return `
+    <div class="card wage-card">
+      <div class="card-header" style="margin-bottom:12px">
+        <div>
+          <div class="card-title">${App.esc(emp.name)}</div>
+          <div class="card-subtitle">Member ID: <strong>${App.fmtId(emp.member_id)}</strong> ${emp.uan ? `| UAN: <strong>${App.esc(emp.uan)}</strong>` : ''}</div>
+          <div class="card-subtitle" style="margin-top: 6px; font-size: 11px; color: var(--text3);">
+            ${emp.father_name ? `Father: <strong>${App.esc(emp.father_name)}</strong> | ` : ''}
+            ${emp.dob ? `DOB: <strong>${App.esc(emp.dob)}</strong> | ` : ''}
+            ${emp.sex ? `Gender: <strong>${App.esc(emp.sex)}</strong> | ` : ''}
+            ${emp.doj ? `DOJ: <strong>${App.esc(emp.doj)}</strong>` : ''}
+            ${emp.doe ? ` | DOE: <strong>${App.esc(emp.doe)}</strong>` : ''}
+          </div>
+        </div>
+        <div>
+          <button class="btn btn-ghost btn-xs" onclick="downloadEmployeePDF('${App.esc(emp.member_id)}')">📄 3A</button>
+          <button class="btn btn-ghost btn-xs" onclick='showWageModal(${JSON.stringify(emp).replace(/'/g,"&#39;")})'>✏️ Edit</button>
+          <button class="btn btn-danger btn-xs" onclick="deleteWages('${App.esc(emp.member_id)}')">🗑️</button>
+        </div>
+      </div>
+      
+      <div class="table-wrap">
+        <table class="wage-table">
+          <thead>
+            <tr>
+              <th>Month</th>
+              <th style="text-align:right">Wages</th>
+              <th style="text-align:right">Worker EPF<br><small>(${r.w_epf}%)</small></th>
+              ${r.w_eps > 0 ? `<th style="text-align:right">Worker EPS<br><small>(${r.w_eps}%)</small></th>` : ''}
+              <th style="text-align:right">Worker Total</th>
+              <th style="text-align:right">Employer EPF<br><small>(${r.e_epf}%)</small></th>
+              <th style="text-align:right">${r.eps_label}<br><small>(${r.e_eps}%)</small></th>
+              <th style="text-align:right">Employer Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${emp.months.map(m => `
+              <tr>
+                <td>${m.m}</td>
+                <td class="num">${m.w || ''}</td>
+                <td class="num" style="color:var(--text2)">${m.we || ''}</td>
+                ${r.w_eps > 0 ? `<td class="num" style="color:var(--text2)">${m.ws || ''}</td>` : ''}
+                <td class="num" style="font-weight:600">${m.wt || ''}</td>
+                <td class="num" style="color:var(--text2)">${m.ee || ''}</td>
+                <td class="num" style="color:var(--text2)">${m.es || ''}</td>
+                <td class="num" style="font-weight:600">${m.et || ''}</td>
+              </tr>
+            `).join('')}
+            <tr class="grand-total">
+              <td>TOTAL</td>
+              <td class="num">₹${App.fmt(emp.totals.w)}</td>
+              <td class="num">₹${App.fmt(emp.totals.we)}</td>
+              ${r.w_eps > 0 ? `<td class="num">₹${App.fmt(emp.totals.ws)}</td>` : ''}
+              <td class="num">₹${App.fmt(emp.totals.wt)}</td>
+              <td class="num">₹${App.fmt(emp.totals.ee)}</td>
+              <td class="num">₹${App.fmt(emp.totals.es)}</td>
+              <td class="num">₹${App.fmt(emp.totals.et)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+// ── Modals ────────────────────────────────────────────────────────────────
+
+window.showWageModal = async (emp = null) => {
+  const isEdit = !!emp;
+  const { employees } = await App.get('/api/employees');
+  
+  let options = `<option value="">-- Select Employee --</option>`;
+  employees.forEach(e => {
+    options += `<option value="${App.fmtId(e.member_id)}" ${isEdit && emp.member_id === e.member_id ? 'selected' : ''}>${App.fmtId(e.member_id)} - ${e.name}</option>`;
+  });
+
+  const mths = constantsCache.months;
+  const wagesArr = isEdit ? emp.wages : Array(12).fill(0);
+  const grossWagesArr = isEdit && emp.gross_wages ? emp.gross_wages : Array(12).fill(0);
+  const higherEpfChecked = isEdit && emp.higher_epf ? 'checked' : '';
+  const age58Checked = isEdit && emp.age_crosses_58 ? 'checked' : '';
+  const r = currentWagesData.rates;
+
+  const body = `
+    <div class="form-group" style="margin-bottom:16px; display:flex; gap:16px; align-items:center;">
+      <div style="flex:1">
+        <label class="form-label">Employee (from Master)</label>
+        <select class="form-select" id="w-emp" ${isEdit ? 'disabled' : ''}>${options}</select>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+          <input type="checkbox" id="w-higher-epf" ${higherEpfChecked}> Allow Higher EPF (on actual wages)
+        </label>
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+          <input type="checkbox" id="w-age-58" ${age58Checked}> Age > 58 (EPS = 0)
+        </label>
+      </div>
+    </div>
+    
+    <div class="table-wrap">
+      <table class="wage-table">
+        <thead style="position: sticky; top: 0; background: var(--bg2); z-index: 10;">
+          <tr>
+            <th>Month</th>
+            <th style="width: 100px">Gross Wages</th>
+            <th style="width: 100px">EPF Wages</th>
+            <th style="text-align:right">Worker EPF<br><small>(${r.w_epf}%)</small></th>
+            <th style="text-align:right">Employer EPF<br><small>(${r.e_epf}%)</small></th>
+            <th style="text-align:right">${r.eps_label}<br><small>(${r.e_eps}%)</small></th>
+          </tr>
+        </thead>
+        <tbody id="wage-entry-body">
+          ${mths.map((m, i) => `
+            <tr>
+              <td style="font-weight: 500">${m}</td>
+              <td><input class="form-input num g-input" data-idx="${i}" type="number" value="${grossWagesArr[i] || ''}" placeholder="0" style="width: 100%; padding: 4px 8px;"></td>
+              <td><input class="form-input num w-input" data-idx="${i}" type="number" value="${wagesArr[i] || ''}" placeholder="0" style="width: 100%; padding: 4px 8px;"></td>
+              <td class="num calc-w-epf" style="color:var(--text2)">0</td>
+              <td class="num calc-e-epf" style="color:var(--text2)">0</td>
+              <td class="num calc-e-eps" style="color:var(--text2)">0</td>
+            </tr>
+          `).join('')}
+          <tr class="grand-total">
+            <td>TOTAL</td>
+            <td class="num" id="g-total">₹0</td>
+            <td class="num" id="w-total">₹0</td>
+            <td class="num" id="w-epf-total">₹0</td>
+            <td class="num" id="e-epf-total">₹0</td>
+            <td class="num" id="e-eps-total">₹0</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  const footer = `
+    <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="saveWages()">${isEdit ? 'Save Changes' : 'Add Wages'}</button>
+  `;
+
+  App.openModal(isEdit ? `Edit Wages: ${emp.name}` : `Add Wages for ${currentWagesData.label}`, body, footer, true);
+
+  const calculateRow = (wage, rate) => {
+      // EPF rules typically round to nearest rupee for contributions
+      return Math.round(wage * (rate / 100));
+  };
+
+  const updateCalculations = () => {
+    let tGross = 0, tWage = 0, tWEpf = 0, tEEpf = 0, tEEps = 0;
+    const isHigherEpf = document.getElementById('w-higher-epf').checked;
+    const isAge58 = document.getElementById('w-age-58').checked;
+    
+    document.querySelectorAll('#wage-entry-body tr:not(.grand-total)').forEach((tr, i) => {
+      const gInp = tr.querySelector('.g-input');
+      const wInp = tr.querySelector('.w-input');
+      const g = parseFloat(gInp.value) || 0;
+      const w = parseFloat(wInp.value) || 0;
+      const ceiling = r.wage_ceilings ? r.wage_ceilings[i] : 15000;
+      
+      let wEpf = 0, eEps = 0, eEpf = 0;
+      
+      if (r.e_eps > 0) {
+          const epfWage = isHigherEpf ? w : Math.min(w, ceiling);
+          const epsWage = isAge58 ? 0 : Math.min(w, ceiling);
+          
+          wEpf = calculateRow(epfWage, r.w_epf);
+          eEps = calculateRow(epsWage, r.e_eps);
+          
+          if (isHigherEpf) {
+              const restrictedEpfWage = Math.min(w, ceiling);
+              eEpf = Math.max(0, calculateRow(restrictedEpfWage, r.w_epf) - eEps);
+          } else {
+              eEpf = Math.max(0, calculateRow(epfWage, r.w_epf) - eEps);
+          }
+      } else {
+          wEpf = calculateRow(w, r.w_epf);
+          eEpf = calculateRow(w, r.e_epf); 
+          eEps = calculateRow(w, r.e_eps); 
+      }
+
+      tr.querySelector('.calc-w-epf').textContent = w > 0 ? wEpf : '';
+      tr.querySelector('.calc-e-epf').textContent = w > 0 ? eEpf : '';
+      tr.querySelector('.calc-e-eps').textContent = w > 0 ? eEps : '';
+      
+      tGross += g;
+      tWage += w;
+      tWEpf += wEpf;
+      tEEpf += eEpf;
+      tEEps += eEps;
+    });
+    
+    document.getElementById('g-total').textContent = '₹' + App.fmt(tGross);
+    document.getElementById('w-total').textContent = '₹' + App.fmt(tWage);
+    document.getElementById('w-epf-total').textContent = '₹' + App.fmt(tWEpf);
+    document.getElementById('e-epf-total').textContent = '₹' + App.fmt(tEEpf);
+    document.getElementById('e-eps-total').textContent = '₹' + App.fmt(tEEps);
+  };
+
+  document.querySelectorAll('.g-input').forEach(inp => inp.addEventListener('input', updateCalculations));
+  document.querySelectorAll('.w-input').forEach(inp => inp.addEventListener('input', updateCalculations));
+  document.getElementById('w-higher-epf').addEventListener('change', updateCalculations);
+  document.getElementById('w-age-58').addEventListener('change', updateCalculations);
+  updateCalculations(); // Run once on load
+};
+
+window.saveWages = async () => {
+  const acc = document.getElementById('w-emp').value;
+  if (!acc) return App.toast('Select an employee', 'error');
+  
+  const wages = [];
+  const gross_wages = [];
+  document.querySelectorAll('.w-input').forEach(i => wages.push(parseFloat(i.value) || 0));
+  document.querySelectorAll('.g-input').forEach(i => gross_wages.push(parseFloat(i.value) || 0));
+  
+  const higher_epf = document.getElementById('w-higher-epf').checked;
+  const age_crosses_58 = document.getElementById('w-age-58').checked;
+  
+  try {
+    await App.post(`/api/years/${currentYearKey}/wages`, { member_id: acc, wages, gross_wages, higher_epf, age_crosses_58 });
+    App.toast('Wages saved');
+    App.closeModal();
+    App.navigate('wages');
+  } catch (_) {}
+};
+
+window.deleteWages = async (acc) => {
+  if (confirm(`Delete wage entries for ${acc} in ${currentWagesData.label}?`)) {
+    try {
+      await App.del(`/api/years/${currentYearKey}/wages/${encodeURIComponent(acc)}`);
+      App.toast('Wages deleted');
+      App.navigate('wages');
+    } catch (_) {}
+  }
+};
+
+async function deleteAllWages() {
+  if (confirm(`Are you absolutely sure you want to delete ALL wages for the year ${currentWagesData.label}? This cannot be undone.`)) {
+    try {
+      await App.del(`/api/years/${currentYearKey}/wages`);
+      App.toast(`All wages for ${currentWagesData.label} deleted`);
+      App.navigate('wages');
+    } catch (_) {}
+  }
+}
+
+// ── Single File Import ───────────────────────────────────────────────────
+
+window.showImportModal = () => {
+  const body = `
+    <div style="margin-bottom:16px">
+      <p style="color:var(--text2); font-size:13px; line-height:1.5">
+        Upload an Excel file to import wages for <strong>${currentWagesData.label}</strong>. The file must have a header row and columns like:
+        <br><br>
+        <code>Member ID | Name | APR | MAY | ...</code>
+      </p>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Excel File</label>
+      <input type="file" id="single-import-file" accept=".xlsx,.xls,.csv" class="form-input">
+    </div>
+  `;
+  const footer = `
+    <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="runSingleImport()">Import Data</button>
+  `;
+  App.openModal(`Import Wages — ${currentWagesData.label}`, body, footer);
+};
+
+window.runSingleImport = async () => {
+  const fileInput = document.getElementById('single-import-file');
+  if (!fileInput.files.length) return App.toast('Please select a file', 'error');
+  
+  App.toast('Uploading and processing...', 'info');
+  App.closeModal();
+  
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+  
+  try {
+    const res = await fetch(`/api/import/${currentYearKey}`, { method: 'POST', body: formData });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    
+    let msg = `Successfully imported ${data.imported} wage records.`;
+    if (data.warnings && data.warnings.length) {
+      msg += `\n\nWarnings:\n- ${data.warnings.join('\n- ')}`;
+      App.toast('Imported with warnings', 'info');
+      alert(msg);
+    } else {
+      App.toast(msg);
+    }
+    App.navigate('wages');
+  } catch (e) {
+    App.toast(e.message, 'error');
+  }
+};
+
+// ── Multi-Sheet Bulk Import ──────────────────────────────────────────────
+
+window.showBulkImportModal = () => {
+  const body = `
+    <div style="margin-bottom:16px">
+      <p style="color:var(--text2); font-size:13px; line-height:1.5">
+        Upload a multi-sheet Excel file. The app will detect all sheets and allow you to select which ones to import.
+        Missing years will be auto-created automatically!
+      </p>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Excel File</label>
+      <input type="file" id="import-file" accept=".xlsx,.xls" class="form-input">
+    </div>
+  `;
+  const footer = `
+    <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="analyzeBulkImport()">Analyze File</button>
+  `;
+  App.openModal(`Bulk Import — Auto Create Missing Years`, body, footer);
+};
+
+window.downloadYearPDF = (form) => {
+  window.open(`/api/reports/${currentYearKey}?format=pdf&forms=${form}`, '_blank');
+};
+
+window.downloadYearExcel = (form) => {
+  window.open(`/api/reports/${currentYearKey}?format=excel&forms=${form}`, '_blank');
+};
+
+window.downloadEmployeePDF = (memberId) => {
+  window.open(`/api/reports/${currentYearKey}/employee/${encodeURIComponent(memberId)}?format=pdf&forms=3A`, '_blank');
+};
+
+window.analyzeBulkImport = async () => {
+  const fileInput = document.getElementById('import-file');
+  if (!fileInput.files.length) return App.toast('Please select a file', 'error');
+  
+  App.toast('Analyzing file...', 'info');
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+  
+  try {
+    const res = await fetch('/api/wages/bulk_analyze', { method: 'POST', body: formData });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    
+    // Show step 2: sheet selection
+    let sheetCheckboxes = data.sheets.map(s => `
+      <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px; cursor:pointer;">
+        <input type="checkbox" class="sheet-checkbox" value="${App.esc(s)}" checked>
+        <span>${App.esc(s)}</span>
+      </label>
+    `).join('');
+    
+    const body = `
+      <div style="margin-bottom:16px">
+        <p style="color:var(--text2); font-size:13px; line-height:1.5">
+          Found <strong>${data.sheets.length}</strong> sheets. Select the sheets you want to import.
+        </p>
+      </div>
+      <div style="max-height: 200px; overflow-y: auto; background: var(--bg); padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
+        ${sheetCheckboxes}
+      </div>
+    `;
+    const footer = `
+      <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="runBulkImport('${data.token}')">Import Selected</button>
+    `;
+    App.openModal(`Select Years to Import`, body, footer);
+  } catch (e) {
+    App.toast(e.message, 'error');
+  }
+};
+
+window.runBulkImport = async (token) => {
+  const selectedSheets = Array.from(document.querySelectorAll('.sheet-checkbox:checked')).map(cb => cb.value);
+  if (!selectedSheets.length) return App.toast('Please select at least one sheet', 'error');
+  
+  App.toast(`Importing ${selectedSheets.length} sheets... This may take a moment.`, 'info');
+  App.closeModal(); // close modal so user sees loading state if any
+  
+  try {
+    const res = await fetch('/api/wages/bulk_import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, sheets: selectedSheets })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    
+    let msg = `Successfully imported ${data.imported} wage records across ${selectedSheets.length} sheets.`;
+    if (data.warnings && data.warnings.length) {
+      msg += `\n\nWarnings:\n- ${data.warnings.join('\n- ')}`;
+      App.toast('Imported with warnings', 'info');
+      alert(msg);
+    } else {
+      App.toast(msg);
+    }
+    
+    App.navigate('years'); // Refresh list of years so user sees newly auto-created ones
+  } catch (e) {
+    App.toast(e.message, 'error');
+  }
+};

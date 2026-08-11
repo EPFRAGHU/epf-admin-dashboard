@@ -1,0 +1,28 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+env/
+ENV/
+
+# Environment Variables
+.env
+.env.local
+
+# Data
+*.sqlite3
+*.db
+*.epfproj.json
+settings.json
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Render and deployment logs
+*.log
