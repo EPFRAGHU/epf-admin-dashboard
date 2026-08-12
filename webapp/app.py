@@ -10,11 +10,15 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Optional, List
+from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
+import json
+
+from database import SessionLocal, ProjectData, Setting, DATABASE_URL
 
 # Import the existing engine from parent directory
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -33,46 +37,116 @@ project_filepath: Optional[str] = None
 
 
 def _save_settings(filename):
-    try:
-        settings_path = Path(__file__).resolve().parent.parent / "settings.json"
-        import json
-        with open(settings_path, 'w', encoding='utf-8') as f:
-            json.dump({"last_project": filename}, f)
-    except Exception:
-        pass
-
-def _auto_load():
-    global project_filepath
-    parent = Path(__file__).resolve().parent.parent
-    settings_path = parent / "settings.json"
-    
-    if settings_path.exists():
+    if DATABASE_URL and SessionLocal:
         try:
-            import json
-            with open(settings_path, 'r', encoding='utf-8') as f:
-                settings = json.load(f)
-            last = settings.get("last_project")
-            if last:
-                path = parent / last
-                if path.exists():
-                    project.load(str(path))
-                    project_filepath = str(path)
-                    print(f"  [OK] Loaded from settings: {last}")
-                    return
+            with SessionLocal() as db:
+                setting = db.query(Setting).filter(Setting.key == 'last_project').first()
+                if setting:
+                    setting.value = filename
+                else:
+                    setting = Setting(key='last_project', value=filename)
+                    db.add(setting)
+                db.commit()
+        except Exception as e:
+            print(f"DB Error save_settings: {e}")
+    else:
+        try:
+            settings_path = Path(__file__).resolve().parent.parent / "settings.json"
+            with open(settings_path, 'w', encoding='utf-8') as f:
+                json.dump({"last_project": filename}, f)
         except Exception:
             pass
 
-    for f in sorted(parent.iterdir()):
-        if f.name.lower().endswith(".epfproj.json"):
-            try:
-                project.load(str(f))
-                project_filepath = str(f)
-                print(f"  [OK] Loaded: {f.name}")
+def _load_settings():
+    if DATABASE_URL and SessionLocal:
+        try:
+            with SessionLocal() as db:
+                setting = db.query(Setting).filter(Setting.key == 'last_project').first()
+                if setting:
+                    return setting.value
+        except Exception as e:
+            print(f"DB Error load_settings: {e}")
+    else:
+        try:
+            settings_path = Path(__file__).resolve().parent.parent / "settings.json"
+            if settings_path.exists():
+                with open(settings_path, 'r', encoding='utf-8') as f:
+                    settings = json.load(f)
+                return settings.get("last_project")
+        except Exception:
+            pass
+    return None
+
+def _get_project_list():
+    if DATABASE_URL and SessionLocal:
+        try:
+            with SessionLocal() as db:
+                projects = db.query(ProjectData.filename).all()
+                return sorted([p[0] for p in projects])
+        except Exception as e:
+            print(f"DB Error get_project_list: {e}")
+            return []
+    else:
+        parent = Path(__file__).resolve().parent.parent
+        return sorted([f.name for f in parent.iterdir() if f.name.lower().endswith(".epfproj.json")])
+
+def _load_project_data(filename):
+    if DATABASE_URL and SessionLocal:
+        try:
+            with SessionLocal() as db:
+                project_row = db.query(ProjectData).filter(ProjectData.filename == filename).first()
+                if project_row:
+                    return json.loads(project_row.data)
+        except Exception as e:
+            print(f"DB Error load_project_data: {e}")
+    else:
+        path = Path(__file__).resolve().parent.parent / filename
+        if path.exists():
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    return None
+
+def _save_project_data(filename, data_dict):
+    if DATABASE_URL and SessionLocal:
+        try:
+            with SessionLocal() as db:
+                project_row = db.query(ProjectData).filter(ProjectData.filename == filename).first()
+                if project_row:
+                    project_row.data = json.dumps(data_dict, ensure_ascii=False)
+                else:
+                    project_row = ProjectData(filename=filename, data=json.dumps(data_dict, ensure_ascii=False))
+                    db.add(project_row)
+                db.commit()
+        except Exception as e:
+            print(f"DB Error save_project_data: {e}")
+    else:
+        path = Path(__file__).resolve().parent.parent / filename
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data_dict, f, indent=2, ensure_ascii=False)
+
+def _auto_load():
+    global project_filepath
+    last = _load_settings()
+    if last:
+        data = _load_project_data(last)
+        if data:
+            project.load_from_dict(data)
+            project_filepath = last
+            print(f"  [OK] Loaded from settings: {last}")
+            return
+
+    for f in _get_project_list():
+        try:
+            data = _load_project_data(f)
+            if data:
+                project.load_from_dict(data)
+                project_filepath = f
+                print(f"  [OK] Loaded: {f}")
                 print(f"    {project.name} ({project.code}) - "
                       f"{len(project.master)} employees, {len(project.years)} years")
                 return
-            except Exception as e:
-                print(f"  [ERR] {f.name}: {e}")
+        except Exception as e:
+            print(f"  [ERR] {f}: {e}")
     print("  No .epfproj.json found — starting empty.")
 
 _auto_load()
@@ -89,11 +163,16 @@ async def index():
 
 
 def _save():
-    if project_filepath:
-        try:
-            project.save(project_filepath)
-        except Exception:
-            pass
+    global project_filepath
+    if not project_filepath:
+        safe_name = project.name.replace("/", "-").replace("\\", "-").strip() if project.name else "Default_Establishment"
+        filename = f"{safe_name}_project.epfproj.json"
+        project_filepath = filename
+        _save_settings(filename)
+    try:
+        _save_project_data(project_filepath, project.to_dict())
+    except Exception:
+        pass
 
 
 def _is_valid_for_establishment(member_id: str, est_code: str) -> bool:
@@ -163,6 +242,18 @@ class WageIn(BaseModel):
     higher_epf: bool = False
     age_crosses_58: bool = False
 
+class BulkMonthWageUpdate(BaseModel):
+    member_id: str
+    gross_wage: float
+    epf_wage: float
+    ncp_days: int
+    higher_epf: bool = False
+    age_crosses_58: bool = False
+
+class BulkMonthWagesIn(BaseModel):
+    month_idx: int
+    employees: List[BulkMonthWageUpdate]
+
 
 # ── Dashboard ─────────────────────────────────────────────────────────────
 @app.get("/api/dashboard")
@@ -173,20 +264,89 @@ async def dashboard():
         yr = project.years[yk]
         est = project.build_establishment_for_year(yk)
         emps = project.build_employees_for_year(yk)
+        
+        # Monthly accumulators for the new table
+        monthly_stats = []
+        months = ['Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb']
+        year_from_int = int(yr.year_from)
+        
         yw = ywt = yet = 0
-        for emp in emps:
-            wt, _, _, w_tot, _, _, e_tot = emp.annual_totals(
-                est.worker_epf_rate, est.worker_eps_rate,
-                est.employer_epf_rate, est.employer_eps_rate,
-                wage_ceilings=get_wage_ceilings_for_year(yr.year_from))
-            yw += wt; ywt += w_tot; yet += e_tot
+        
+        for i in range(12):
+            m_emp_count = 0
+            m_gross = 0
+            m_epf_wage = 0
+            m_eps_wage = 0
+            m_worker = 0
+            m_employer = 0
+            
+            for emp in emps:
+                wages = emp.wages[i] if emp.wages and len(emp.wages) > i else 0
+                gross = emp.gross_wages[i] if emp.gross_wages and len(emp.gross_wages) > i else 0
+                
+                # Use the existing month_rows function to get precise calculations for this month
+                mrows = emp.month_rows(est.worker_epf_rate, est.worker_eps_rate,
+                                     est.employer_epf_rate, est.employer_eps_rate,
+                                     wage_ceilings=get_wage_ceilings_for_year(yr.year_from))
+                
+                _, w_epf, w_eps, w_tot, e_epf, e_eps, e_tot = mrows[i]
+                
+                ceiling = get_wage_ceilings_for_year(yr.year_from)[i]
+                if est.worker_eps_rate == 0:
+                    eps_wage = 0 if emp.age_crosses_58 else min(wages, ceiling)
+                else:
+                    eps_wage = wages
+                    
+                if wages > 0 or gross > 0 or (hasattr(emp, 'ncp_days') and emp.ncp_days and emp.ncp_days[i] < 31):
+                    m_emp_count += 1
+                    
+                m_gross += gross
+                m_epf_wage += wages
+                m_eps_wage += eps_wage
+                m_worker += w_tot
+                m_employer += e_tot
+            
+            month_year = f"{months[i]} {year_from_int if i < 10 else year_from_int + 1}"
+            monthly_stats.append({
+                "month": month_year,
+                "employees": m_emp_count,
+                "gross_wages": m_gross,
+                "epf_wages": m_epf_wage,
+                "eps_wages": m_eps_wage,
+                "worker_share": m_worker,
+                "employer_share": m_employer,
+                "total": m_worker + m_employer
+            })
+            
+            yw += m_epf_wage
+            ywt += m_worker
+            yet += m_employer
+
         total_w += yw; total_c += ywt + yet
+        
+        # Calculate yearly totals from the monthly stats
+        year_total_gross = sum(m["gross_wages"] for m in monthly_stats)
+        year_total_epf = sum(m["epf_wages"] for m in monthly_stats)
+        year_total_eps = sum(m["eps_wages"] for m in monthly_stats)
+        year_total_worker = sum(m["worker_share"] for m in monthly_stats)
+        year_total_employer = sum(m["employer_share"] for m in monthly_stats)
+        year_total = year_total_worker + year_total_employer
+        
         year_stats.append({
             "key": yk, "label": yr.long_label,
             "employees": len(emps), "wages": yw,
             "worker": ywt, "employer": yet,
             "total": ywt + yet,
             "scheme": "Post-1997" if yr.is_post_1997 else "Pre-1997",
+            "monthly_stats": monthly_stats,
+            "totals": {
+                "gross_wages": year_total_gross,
+                "epf_wages": year_total_epf,
+                "eps_wages": year_total_eps,
+                "worker_share": year_total_worker,
+                "employer_share": year_total_employer,
+                "total": year_total
+            }
         })
     return {
         "establishment": {"code": project.code, "name": project.name,
@@ -196,6 +356,58 @@ async def dashboard():
         "total_wages": total_w,
         "total_contributions": total_c,
         "year_stats": year_stats,
+    }
+
+
+@app.get("/api/dashboard/month_employees/{key}/{month_index}")
+async def dashboard_month_employees(key: str, month_index: int):
+    if key not in project.years:
+        raise HTTPException(404, "Year not found")
+        
+    yr = project.years[key]
+    est = project.build_establishment_for_year(key)
+    emps = project.build_employees_for_year(key)
+    
+    if month_index < 0 or month_index > 11:
+        raise HTTPException(400, "Invalid month index")
+        
+    results = []
+    
+    for emp in emps:
+        wages = emp.wages[month_index] if emp.wages and len(emp.wages) > month_index else 0
+        gross = emp.gross_wages[month_index] if emp.gross_wages and len(emp.gross_wages) > month_index else 0
+        
+        if wages > 0 or gross > 0 or (hasattr(emp, 'ncp_days') and emp.ncp_days and emp.ncp_days[month_index] < 31):
+            mrows = emp.month_rows(est.worker_epf_rate, est.worker_eps_rate,
+                                 est.employer_epf_rate, est.employer_eps_rate,
+                                 wage_ceilings=get_wage_ceilings_for_year(yr.year_from))
+            
+            _, w_epf, w_eps, w_tot, e_epf, e_eps, e_tot = mrows[month_index]
+            
+            ceiling = get_wage_ceilings_for_year(yr.year_from)[month_index]
+            if est.worker_eps_rate == 0:
+                eps_wage = 0 if emp.age_crosses_58 else min(wages, ceiling)
+            else:
+                eps_wage = wages
+                
+            results.append({
+                "uan": emp.uan,
+                "name": emp.name,
+                "gross_wages": gross,
+                "epf_wages": wages,
+                "eps_wages": eps_wage,
+                "worker_share": w_tot,
+                "employer_share": e_tot,
+                "employer_pf": e_epf,
+                "employer_eps": e_eps
+            })
+            
+    return {
+        "employees": results,
+        "establishment": {
+            "name": project.name,
+            "code": project.code
+        }
     }
 
 
@@ -447,10 +659,58 @@ async def put_wages(key: str, d: WageIn):
         raise HTTPException(404, f"Employee {d.member_id} not in master")
     
     gross_wages = d.gross_wages if d.gross_wages and len(d.gross_wages) == 12 else d.wages.copy()
+    capped_wages = [min(w, g) for w, g in zip(d.wages, gross_wages)]
     ncp_days = d.ncp_days if d.ncp_days and len(d.ncp_days) == 12 else [0] * 12
-    project.upsert_entry(key, d.member_id, d.wages, gross_wages=gross_wages, ncp_days=ncp_days, higher_epf=d.higher_epf, age_crosses_58=d.age_crosses_58)
+    project.upsert_entry(key, d.member_id, capped_wages, gross_wages=gross_wages, ncp_days=ncp_days, higher_epf=d.higher_epf, age_crosses_58=d.age_crosses_58)
     _save()
     return {"ok": True}
+
+
+@app.post("/api/years/{key}/wages/bulk_month")
+async def bulk_month_wages(key: str, d: BulkMonthWagesIn):
+    if key not in project.years:
+        raise HTTPException(404, "Year not found")
+    
+    if not (0 <= d.month_idx <= 11):
+        raise HTTPException(400, "Invalid month index")
+
+    for emp_update in d.employees:
+        # Check if master exists, if not continue or create? We assume it exists because they were rendered.
+        if not project.get_master(emp_update.member_id):
+            continue
+            
+        # Get existing wages for this employee in this year, or create default 0 arrays
+        yr = project.years[key]
+        existing_emp = next((e for e in yr.entries if e.member_id == emp_update.member_id), None)
+        
+        if existing_emp:
+            wages_arr = existing_emp.wages.copy()
+            gross_wages_arr = existing_emp.gross_wages.copy()
+            ncp_days_arr = existing_emp.ncp_days.copy()
+        else:
+            wages_arr = [0.0] * 12
+            gross_wages_arr = [0.0] * 12
+            ncp_days_arr = [0] * 12
+            
+        capped_epf_wage = min(emp_update.epf_wage, emp_update.gross_wage)
+        
+        # Update just the specific month index
+        wages_arr[d.month_idx] = capped_epf_wage
+        gross_wages_arr[d.month_idx] = emp_update.gross_wage
+        ncp_days_arr[d.month_idx] = emp_update.ncp_days
+        
+        project.upsert_entry(
+            key, 
+            emp_update.member_id, 
+            wages_arr, 
+            gross_wages=gross_wages_arr, 
+            ncp_days=ncp_days_arr, 
+            higher_epf=emp_update.higher_epf, 
+            age_crosses_58=emp_update.age_crosses_58
+        )
+        
+    _save()
+    return {"ok": True, "count": len(d.employees)}
 
 
 @app.delete("/api/years/{key}/wages/{acc:path}")
@@ -804,35 +1064,37 @@ async def import_wages(key: str, import_type: str = Form("yearly"), month_idx: i
 async def save_project():
     global project_filepath
     if not project_filepath:
-        parent = Path(__file__).resolve().parent.parent
         safe_name = project.name.replace("/", "-").replace("\\", "-").strip() if project.name else "Default_Establishment"
         filename = f"{safe_name}_project.epfproj.json"
-        project_filepath = str(parent / filename)
+        project_filepath = filename
         _save_settings(filename)
-    project.save(project_filepath)
-    return {"ok": True, "file": os.path.basename(project_filepath)}
+    try:
+        _save_project_data(project_filepath, project.to_dict())
+    except Exception:
+        pass
+    return {"ok": True, "file": project_filepath}
 
 
 # ── Projects ──────────────────────────────────────────────────────────────
 @app.get("/api/projects")
 async def list_projects():
-    parent = Path(__file__).resolve().parent.parent
-    files = [f.name for f in parent.iterdir() if f.name.lower().endswith(".epfproj.json")]
-    active = os.path.basename(project_filepath) if project_filepath else None
-    return {"projects": sorted(files), "active": active}
+    files = _get_project_list()
+    active = project_filepath if project_filepath else None
+    return {"projects": files, "active": active}
 
 @app.post("/api/projects/switch")
 async def switch_project(d: dict):
     global project, project_filepath
     filename = d.get("filename")
-    parent = Path(__file__).resolve().parent.parent
-    path = parent / filename
-    if not path.exists():
+    
+    data = _load_project_data(filename)
+    if not data:
         raise HTTPException(404, "Project not found")
+        
     new_proj = Project()
-    new_proj.load(str(path))
+    new_proj.load_from_dict(data)
     project = new_proj
-    project_filepath = str(path)
+    project_filepath = filename
     _save_settings(filename)
     return {"ok": True}
 
@@ -840,21 +1102,103 @@ async def switch_project(d: dict):
 async def new_project(d: dict):
     global project, project_filepath
     name = d.get("name", "New Establishment")
-    safe_name = name.replace("/", "-").replace("\\\\", "-").strip()
+    code = d.get("code", "")
+    address = d.get("address", "")
+    coverage_date = d.get("coverage_date", "")
+    
+    safe_name = name.replace("/", "-").replace("\\", "-").strip()
     filename = f"{safe_name}_project.epfproj.json"
-    parent = Path(__file__).resolve().parent.parent
-    path = parent / filename
-    if path.exists():
+    
+    if _load_project_data(filename):
         raise HTTPException(400, "Project already exists")
     
     new_proj = Project()
     new_proj.name = name
-    new_proj.save(str(path))
+    new_proj.code = code
+    new_proj.address = address
+    new_proj.coverage_date = coverage_date
+    _save_project_data(filename, new_proj.to_dict())
     
     project = new_proj
-    project_filepath = str(path)
+    project_filepath = filename
     _save_settings(filename)
     return {"ok": True, "filename": filename}
+
+@app.post("/api/projects/update_details")
+async def update_project_details(d: dict):
+    filename = d.get("filename")
+    if not filename:
+        raise HTTPException(400, "Filename required")
+        
+    data = _load_project_data(filename)
+    if not data:
+        raise HTTPException(404, "Project not found")
+        
+    data["code"] = d.get("code", data.get("code", ""))
+    data["name"] = d.get("name", data.get("name", ""))
+    data["address"] = d.get("address", data.get("address", ""))
+    data["coverage_date"] = d.get("coverage_date", data.get("coverage_date", ""))
+    
+    _save_project_data(filename, data)
+    
+    # If it's the currently active project, update it in memory too
+    global project, project_filepath
+    if project_filepath == filename:
+        project.load_from_dict(data)
+        
+    return {"ok": True}
+
+
+# ── All Establishments ────────────────────────────────────────────────────────
+@app.get("/api/all_establishments")
+async def get_all_establishments():
+    projects = _get_project_list()
+    result = []
+    for filename in projects:
+        data = _load_project_data(filename)
+        if not data:
+            continue
+        
+        created_at = data.get("created_at")
+        if not created_at:
+            created_at = datetime.now().strftime("%d-%m-%Y")
+            
+        wage_summary = {}
+        years_data = data.get("years", {})
+        for y_key, y_record in years_data.items():
+            months_entered = [False] * 12
+            for entry in y_record.get("entries", []):
+                wages = entry.get("wages", [])
+                for i in range(12):
+                    if i < len(wages) and (wages[i] or 0) > 0:
+                        months_entered[i] = True
+            wage_summary[y_key] = months_entered
+            
+        result.append({
+            "filename": filename,
+            "code": data.get("code", ""),
+            "name": data.get("name", ""),
+            "address": data.get("address", ""),
+            "coverage_date": data.get("coverage_date", ""),
+            "created_at": created_at,
+            "is_active": data.get("is_active", True),
+            "wage_summary": wage_summary
+        })
+    return {"establishments": result}
+
+@app.post("/api/establishments/toggle_status")
+async def toggle_establishment_status(d: dict):
+    filename = d.get("filename")
+    if not filename:
+        raise HTTPException(400, "Filename required")
+        
+    data = _load_project_data(filename)
+    if not data:
+        raise HTTPException(404, "Project not found")
+        
+    data["is_active"] = not data.get("is_active", True)
+    _save_project_data(filename, data)
+    return {"ok": True, "is_active": data["is_active"]}
 
 
 # ── Constants ─────────────────────────────────────────────────────────────

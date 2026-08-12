@@ -152,10 +152,10 @@ async function saveEmp(origAcc) {
   try {
     if (origAcc) {
       await App.put(`/api/employees/${encodeURIComponent(origAcc)}`, d);
-      App.toast('Employee updated');
+      App.toast('Employee updated and data saved successfully.');
     } else {
       await App.post('/api/employees', d);
-      App.toast('Employee added');
+      App.toast('Employee added and data saved successfully.');
     }
     App.closeModal();
     App.navigate('employees');
@@ -166,7 +166,7 @@ async function deleteEmp(acc) {
   if (window.confirm(`Delete employee ${acc} from the Employee Master?`)) {
     try {
       await App.del(`/api/employees/${encodeURIComponent(acc)}`);
-      App.toast('Employee deleted');
+      App.toast('Employee deleted and data saved successfully.');
       App.navigate('employees');
     } catch (_) {}
   }

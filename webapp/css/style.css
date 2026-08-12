@@ -232,7 +232,8 @@ tbody tr.grand-total {
   background: var(--surface) !important;
   font-weight: 700;
 }
-td.num { text-align: right; font-variant-numeric: tabular-nums; }
+th.num, td.num { text-align: right !important; font-variant-numeric: tabular-nums; }
+th.num[style*="text-align:center"], td.num[style*="text-align:center"] { text-align: center !important; }
 td.actions { text-align: center; white-space: nowrap; }
 .badge {
   display: inline-block;
@@ -393,7 +394,7 @@ td.actions { text-align: center; white-space: nowrap; }
   transition: all var(--transition);
 }
 .modal.open { opacity: 1; pointer-events: all; transform: translate(-50%, -50%) scale(1); }
-.modal.wide { max-width: 900px; }
+.modal.wide { max-width: 1400px; width: 95%; }
 
 .modal-header {
   display: flex;
@@ -584,3 +585,18 @@ input[type=number] {
   .stats-grid { grid-template-columns: 1fr; }
   .form-grid-3 { grid-template-columns: 1fr; }
 }
+
+/* All Establishments */
+.est-wage-grid { display: flex; flex-direction: column; gap: 6px; }
+.est-wage-year { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.est-wage-boxes { display: flex; gap: 3px; }
+.month-box { width: 14px; height: 14px; border-radius: 3px; position: relative; cursor: help; }
+.month-box.green { background: var(--green); }
+.month-box.red { background: var(--red); }
+.month-box:hover::after { content: attr(title); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: #000; color: #fff; padding: 4px 6px; border-radius: 4px; font-size: 10px; white-space: nowrap; z-index: 10; pointer-events: none; margin-bottom: 4px; }
+.est-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.est-table th, .est-table td { padding: 10px 12px; border-bottom: 1px solid var(--card-border); text-align: left; vertical-align: top; }
+.est-table th { font-weight: 600; color: var(--text2); background: rgba(0,0,0,0.2); white-space: nowrap; }
+.status-badge { padding: 4px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+.status-active { background: rgba(16,185,129,0.2); color: var(--green); }
+.status-inactive { background: rgba(239,68,68,0.2); color: var(--red); }

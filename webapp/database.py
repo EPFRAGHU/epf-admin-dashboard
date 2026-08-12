@@ -1,25 +1,44 @@
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, Column, String, Text, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.sql import func
 from dotenv import load_dotenv
 
 load_dotenv()
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-# Neon Postgres uses 'postgresql://' or 'postgres://'
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL environment variable is not set. Please configure it to connect to Neon Postgres.")
-
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
 Base = declarative_base()
 
+class ProjectData(Base):
+    __tablename__ = "projects"
+    filename = Column(String, primary_key=True)
+    data = Column(Text, nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class Setting(Base):
+    __tablename__ = "settings"
+    key = Column(String, primary_key=True)
+    value = Column(String)
+
+SessionLocal = None
+if DATABASE_URL:
+    try:
+        engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        print(f"Could not connect to database: {e}")
+        SessionLocal = None
+        DATABASE_URL = None
+
 def get_db():
+    if not SessionLocal:
+        yield None
+        return
     db = SessionLocal()
     try:
         yield db

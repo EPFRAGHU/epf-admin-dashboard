@@ -393,7 +393,13 @@ def import_master_from_excel(filepath: str):
         elif "exit" in text or "leaving" in text and "reason" not in text: col_map["doe"] = col
         elif "reason" in text: col_map["reason_leaving"] = col
         elif text == "sl" or text == "sl no": col_map["serial_no"] = col
-
+        elif "relationship" in text: col_map["relationship"] = col
+        elif "marital" in text: col_map["marital_status"] = col
+        elif "mobile" in text or "phone" in text: col_map["mobile"] = col
+        elif "email" in text: col_map["email"] = col
+        elif "aadhaar" in text: col_map["aadhaar"] = col
+        elif "bank" in text and "account" in text: col_map["bank_account"] = col
+        elif "ifsc" in text: col_map["ifsc"] = col
     def format_date(val):
         if pd.isna(val) or val == "": return ""
         if isinstance(val, str):
@@ -441,7 +447,14 @@ def import_master_from_excel(filepath: str):
             "doj": get_val("doj"),
             "doe": get_val("doe"),
             "reason_leaving": get_val("reason_leaving"),
-            "serial_no": sl
+            "serial_no": sl,
+            "relationship": get_val("relationship"),
+            "marital_status": get_val("marital_status"),
+            "mobile": get_val("mobile"),
+            "email": get_val("email"),
+            "aadhaar": get_val("aadhaar"),
+            "bank_account": get_val("bank_account"),
+            "ifsc": get_val("ifsc")
         })
         
     return records, warnings
@@ -579,12 +592,11 @@ class Employee:
                 e_eps = round(eps_wage * employer_eps_rate / 100)
                 e_epf = max(0, round(epf_wage * worker_epf_rate / 100) - e_eps) 
                 
-                # If higher EPF is checked, usually the employer is only bound to 
-                # statutorily contribute on the restricted wage.
+                # If higher EPF is checked, the employer contributes on actual wages as well, 
+                # meaning Employer EPF = Worker EPF - EPS contribution.
                 if self.higher_epf:
-                    restricted_epf_wage = min(w, ceiling)
                     e_eps = round(eps_wage * employer_eps_rate / 100)
-                    e_epf = max(0, round(restricted_epf_wage * worker_epf_rate / 100) - e_eps)
+                    e_epf = max(0, w_epf - e_eps)
             else:
                 w_epf = round(w * worker_epf_rate / 100)
                 w_eps = round(w * worker_eps_rate / 100)
@@ -635,6 +647,13 @@ class MasterEmployee:
     doe: str = ""         # Date of Exit, DD/MM/YYYY
     reason_leaving: str = ""  # one of REASONS_FOR_LEAVING
     serial_no: int = 0    # SL No. -- the employee list sorts by THIS, not by member_id
+    relationship: str = "" # Relationship to Father/Husband
+    marital_status: str = ""
+    mobile: str = ""
+    email: str = ""
+    aadhaar: str = ""
+    bank_account: str = ""
+    ifsc: str = ""
 
     def to_dict(self):
         return asdict(self)
@@ -645,10 +664,13 @@ class MasterEmployee:
         return MasterEmployee(
             member_id=mid, name=d.get("name", ""),
                                father_name=d.get("father_name", ""), uan=d.get("uan", ""),
-                               dob=d.get("dob", ""),
-                               sex=d.get("sex", ""), doj=d.get("doj", ""),
+                               dob=d.get("dob", ""), sex=d.get("sex", ""), doj=d.get("doj", ""),
                                doe=d.get("doe", ""), reason_leaving=d.get("reason_leaving", ""),
-                               serial_no=d.get("serial_no", 0))
+                               serial_no=d.get("serial_no", 0),
+                               relationship=d.get("relationship", ""), marital_status=d.get("marital_status", ""),
+                               mobile=d.get("mobile", ""), email=d.get("email", ""),
+                               aadhaar=d.get("aadhaar", ""), bank_account=d.get("bank_account", ""),
+                               ifsc=d.get("ifsc", ""))
 
     @property
     def age_years(self):
@@ -731,6 +753,8 @@ class Project:
         self.name = ""
         self.address = ""
         self.coverage_date = ""         # Date of Coverage under the EPF Act, DD/MM/YYYY
+        self.created_at = datetime.now().strftime("%d-%m-%Y")
+        self.is_active = True
         self.master: dict = {}          # member_id -> MasterEmployee
         self.years: dict = {}           # year_key (long_label) -> YearRecord
         self.current_year_key = None
@@ -752,33 +776,36 @@ class Project:
         return normalize_member_id(member_id)
 
     def upsert_master(self, member_id, name, father_name="", uan="", dob="", sex="", doj="",
-                       doe="", reason_leaving="", serial_no=None):
+                       doe="", reason_leaving="", serial_no=None, relationship="", marital_status="",
+                       mobile="", email="", aadhaar="", bank_account="", ifsc=""):
         member_id = normalize_member_id(member_id)
         if member_id in self.master:
             m = self.master[member_id]
             m.name = name or m.name
-            if father_name:
-                m.father_name = father_name
-            if uan:
-                m.uan = uan
-            if dob:
-                m.dob = dob
-            if sex:
-                m.sex = sex
-            if doj:
-                m.doj = doj
-            if doe:
-                m.doe = doe
-            if reason_leaving:
-                m.reason_leaving = reason_leaving
-            if serial_no is not None:
-                m.serial_no = serial_no
+            if father_name: m.father_name = father_name
+            if uan: m.uan = uan
+            if dob: m.dob = dob
+            if sex: m.sex = sex
+            if doj: m.doj = doj
+            if doe: m.doe = doe
+            if reason_leaving: m.reason_leaving = reason_leaving
+            if serial_no is not None: m.serial_no = serial_no
+            if relationship: m.relationship = relationship
+            if marital_status: m.marital_status = marital_status
+            if mobile: m.mobile = mobile
+            if email: m.email = email
+            if aadhaar: m.aadhaar = aadhaar
+            if bank_account: m.bank_account = bank_account
+            if ifsc: m.ifsc = ifsc
         else:
             if serial_no is None:
                 serial_no = self.next_serial_no()
             self.master[member_id] = MasterEmployee(member_id=member_id, name=name, father_name=father_name,
                                                        uan=uan, dob=dob, sex=sex, doj=doj, doe=doe,
-                                                       reason_leaving=reason_leaving, serial_no=serial_no)
+                                                       reason_leaving=reason_leaving, serial_no=serial_no,
+                                                       relationship=relationship, marital_status=marital_status,
+                                                       mobile=mobile, email=email, aadhaar=aadhaar,
+                                                       bank_account=bank_account, ifsc=ifsc)
 
     def next_serial_no(self):
         """Next SL No. suggestion for a brand-new employee (one more than the
@@ -918,27 +945,36 @@ class Project:
                               er_eps_rate=yr.er_eps_rate)
 
     # ---- persistence ----
-    def save(self, filepath: str):
-        data = {
+    def to_dict(self):
+        return {
             "code": self.code, "name": self.name, "address": self.address,
             "coverage_date": self.coverage_date,
+            "created_at": getattr(self, "created_at", datetime.now().strftime("%d-%m-%Y")),
+            "is_active": getattr(self, "is_active", True),
             "master": {k: v.to_dict() for k, v in self.master.items()},
             "years": {k: v.to_dict() for k, v in self.years.items()},
             "current_year_key": self.current_year_key,
         }
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
 
-    def load(self, filepath: str):
-        with open(filepath, "r", encoding="utf-8") as f:
-            data = json.load(f)
+    def load_from_dict(self, data: dict):
         self.code = data.get("code", "")
         self.name = data.get("name", "")
         self.address = data.get("address", "")
         self.coverage_date = data.get("coverage_date", "")
+        self.created_at = data.get("created_at", datetime.now().strftime("%d-%m-%Y"))
+        self.is_active = data.get("is_active", True)
         self.master = {normalize_member_id(k): MasterEmployee.from_dict(v) for k, v in data.get("master", {}).items()}
         self.years = {normalize_member_id(k): YearRecord.from_dict(v) for k, v in data.get("years", {}).items()}
         self.current_year_key = data.get("current_year_key") or next(iter(self.years), None)
+
+    def save(self, filepath: str):
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
+
+    def load(self, filepath: str):
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.load_from_dict(data)
 
     def new(self):
         self.__init__()

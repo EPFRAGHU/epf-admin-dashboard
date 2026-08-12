@@ -82,6 +82,7 @@ const App = (() => {
       dashboard: 'Dashboard', establishment: 'Establishment',
       employees: 'Employee Master', years: 'Financial Years',
       wages: 'Wage Entry', reports: 'Reports & Export',
+      all_establishments: 'All Establishments',
     };
     document.getElementById('topbar-title').textContent = titles[page] || page;
     const content = document.getElementById('content');
@@ -108,6 +109,24 @@ const App = (() => {
       }
     });
     navigate('dashboard');
+    refreshTopbar();
+  }
+
+  async function refreshTopbar() {
+    try {
+      const est = await get('/api/establishment');
+      const tr = document.getElementById('topbar-right');
+      if (tr) {
+        if (est.name || est.code) {
+          tr.innerHTML = `<div style="text-align: right; line-height: 1.2;">
+            <div style="font-weight: 600; font-size: 14px; color: var(--text1); margin-bottom: 2px;">${esc(est.name)}</div>
+            <div style="font-size: 12px; color: var(--text2);">${esc(est.code)}</div>
+          </div>`;
+        } else {
+          tr.innerHTML = '';
+        }
+      }
+    } catch (_) {}
   }
 
   function showLogin() {
@@ -214,6 +233,7 @@ const App = (() => {
       toast('Establishment loaded successfully');
       closeModal();
       navigate('dashboard');
+      refreshTopbar();
     } catch (_) {}
   }
 
@@ -240,7 +260,7 @@ const App = (() => {
     api, get, post, put, del,
     toast, openModal, closeModal, confirm,
     toggleSidebar, save, fmt, fmtD, esc, fmtId,
-    showProjectManager, switchProject, newProject, logout, showLogin, doLogin,
+    showProjectManager, switchProject, newProject, logout, showLogin, doLogin, refreshTopbar,
     get currentPage() { return currentPage; },
   };
 })();

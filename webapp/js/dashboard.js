@@ -53,32 +53,52 @@ App.registerPage('dashboard', async (container) => {
       </div>
     </div>
 
-    <!-- Year summary table -->
+    <!-- Month-wise summary table -->
     <div class="card">
       <div class="card-header">
-        <div class="card-title">📊 Year-wise Summary</div>
+        <div class="card-title">📊 Month-wise Summary</div>
       </div>
       <div class="table-wrap">
-        <table>
+        <table class="est-table">
           <thead>
             <tr>
-              <th>Year</th><th>Scheme</th><th>Employees</th>
-              <th style="text-align:right">Wages</th>
-              <th style="text-align:right">Worker</th>
-              <th style="text-align:right">Employer</th>
-              <th style="text-align:right">Total</th>
+              <th>Month & Year</th>
+              <th class="num" style="text-align:center">Employees</th>
+              <th class="num">Gross Wages</th>
+              <th class="num">EPF Wages</th>
+              <th class="num">EPS Wages</th>
+              <th class="num">Worker Share</th>
+              <th class="num">Employer Share</th>
             </tr>
           </thead>
           <tbody>
-            ${data.year_stats.map(y => `<tr>
-              <td><strong>${y.label}</strong></td>
-              <td><span class="badge badge-blue">${y.scheme}</span></td>
-              <td>${y.employees}</td>
-              <td class="num">₹${App.fmt(y.wages)}</td>
-              <td class="num">₹${App.fmt(y.worker)}</td>
-              <td class="num">₹${App.fmt(y.employer)}</td>
-              <td class="num"><strong>₹${App.fmt(y.total)}</strong></td>
-            </tr>`).join('')}
+            ${data.year_stats.map(y => {
+                let html = `<tr><td colspan="7" style="background-color: var(--bg-color); font-weight: 600; padding: 12px;">Financial Year: ${y.label} <span class="badge badge-blue" style="margin-left: 8px;">${y.scheme}</span></td></tr>`;
+                
+                y.monthly_stats.forEach((m, idx) => {
+                    html += `<tr>
+                        <td style="font-weight: 500;">${m.month}</td>
+                        <td class="num" style="text-align:center"><a href="#" onclick="event.preventDefault(); window.showMonthEmployees('${y.key}', ${idx}, '${m.month}')" style="color: var(--accent); text-decoration: none; font-weight: bold; padding: 4px 8px; border-radius: 4px; background: rgba(59,130,246,0.1);">${m.employees}</a></td>
+                        <td class="num">₹${App.fmt(m.gross_wages)}</td>
+                        <td class="num">₹${App.fmt(m.epf_wages)}</td>
+                        <td class="num">₹${App.fmt(m.eps_wages)}</td>
+                        <td class="num" style="color: var(--blue);">₹${App.fmt(m.worker_share)}</td>
+                        <td class="num" style="color: var(--green);">₹${App.fmt(m.employer_share)}</td>
+                    </tr>`;
+                });
+                
+                html += `<tr style="background-color: rgba(255, 255, 255, 0.05); border-top: 2px solid var(--card-border);">
+                    <td style="font-weight: bold; color: var(--text1);">Total for ${y.label}</td>
+                    <td>-</td>
+                    <td class="num" style="font-weight: bold; color: var(--text1);">₹${App.fmt(y.totals.gross_wages)}</td>
+                    <td class="num" style="font-weight: bold; color: var(--text1);">₹${App.fmt(y.totals.epf_wages)}</td>
+                    <td class="num" style="font-weight: bold; color: var(--text1);">₹${App.fmt(y.totals.eps_wages)}</td>
+                    <td class="num" style="font-weight: bold; color: var(--blue);">₹${App.fmt(y.totals.worker_share)}</td>
+                    <td class="num" style="font-weight: bold; color: var(--green);">₹${App.fmt(y.totals.employer_share)}</td>
+                </tr>`;
+                
+                return html;
+            }).join('')}
           </tbody>
         </table>
       </div>
@@ -170,3 +190,54 @@ App.registerPage('dashboard', async (container) => {
     },
   });
 });
+
+window.showMonthEmployees = async (yearKey, monthIdx, monthLabel) => {
+    try {
+        const data = await App.get(`/api/dashboard/month_employees/${yearKey}/${monthIdx}`);
+        
+        if (!data.employees || data.employees.length === 0) {
+            App.toast('No employees found for this month');
+            return;
+        }
+        
+        const html = `
+            <div class="table-wrap" style="max-height: 400px; overflow-y: auto; border: 1px solid var(--card-border); border-radius: var(--radius);">
+                <table class="est-table" style="margin: 0; width: 100%;">
+                    <thead style="position: sticky; top: 0; z-index: 10; background: var(--surface); box-shadow: 0 1px 0 var(--card-border);">
+                        <tr>
+                            <th>UAN</th>
+                            <th>Name</th>
+                            <th class="num">Gross Wages</th>
+                            <th class="num">EPF Wages</th>
+                            <th class="num">EPS Wages</th>
+                            <th class="num">Employee Share</th>
+                            <th class="num">Employer PF</th>
+                            <th class="num">Pension Fund</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${data.employees.map(e => `
+                            <tr>
+                                <td><span class="badge badge-amber">${App.esc(e.uan || '-')}</span></td>
+                                <td><strong>${App.esc(e.name)}</strong></td>
+                                <td class="num">₹${App.fmt(e.gross_wages)}</td>
+                                <td class="num">₹${App.fmt(e.epf_wages)}</td>
+                                <td class="num">₹${App.fmt(e.eps_wages)}</td>
+                                <td class="num" style="color: var(--blue); font-weight: bold;">₹${App.fmt(e.worker_share)}</td>
+                                <td class="num" style="color: var(--green); font-weight: bold;">₹${App.fmt(e.employer_pf)}</td>
+                                <td class="num" style="color: var(--purple); font-weight: bold;">₹${App.fmt(e.employer_eps)}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
+        `;
+        
+        const estHeader = data.establishment ? `<div style="font-size:14px; font-weight: 500; color: var(--text2); margin-bottom: 12px; margin-top: -4px;">${App.esc(data.establishment.name)} <span class="badge badge-blue" style="margin-left:8px;">${App.esc(data.establishment.code)}</span></div>` : '';
+        
+        App.openModal(`Employees in ${monthLabel}`, estHeader + html, `<button class="btn btn-ghost" onclick="App.closeModal()">Close</button>`, true);
+    } catch (e) {
+        App.toast('Failed to load employee details');
+        console.error(e);
+    }
+};

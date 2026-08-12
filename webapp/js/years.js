@@ -158,10 +158,10 @@ window.saveYear = async (key) => {
   try {
     if (isEdit) {
       await App.put(`/api/years/${key}`, d);
-      App.toast('Rates updated');
+      App.toast('Rates updated and data saved successfully.');
     } else {
       await App.post('/api/years', d);
-      App.toast('Year added');
+      App.toast('Year added and data saved successfully.');
     }
     App.closeModal();
     App.navigate('years');
@@ -172,7 +172,7 @@ window.deleteYear = (key) => {
   App.confirm(`Delete financial year <strong>${key}</strong> and all its wage data?`, async () => {
     try {
       await App.del(`/api/years/${key}`);
-      App.toast('Year deleted');
+      App.toast('Year deleted and data saved successfully.');
       App.navigate('years');
     } catch (_) {}
   });

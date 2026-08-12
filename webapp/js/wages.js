@@ -39,6 +39,7 @@ App.registerPage('wages', async (container) => {
         <button class="btn btn-danger" onclick="deleteAllWages()">🗑️ Delete All</button>
         <button class="btn btn-glass" onclick="showBulkImportModal()">📥 Bulk Import</button>
         <button class="btn btn-glass" onclick="showImportModal()">📥 Import Excel</button>
+        <button class="btn btn-primary" onclick="showMonthlyWageModal()">+ Monthly Wage Entry</button>
         <button class="btn btn-primary" onclick="showWageModal()">+ Add Employee Wages</button>
       </div>
     </div>
@@ -189,15 +190,32 @@ window.showWageModal = async (emp = null) => {
   const r = currentWagesData.rates;
 
   const body = `
-    <div class="form-group" style="margin-bottom:16px; display:flex; gap:16px; align-items:center;">
+    <div class="form-group" style="margin-bottom:16px; display:flex; gap:16px; align-items:flex-start;">
       <div style="flex:1; position:relative;">
         <label class="form-label">Employee (Search by ID, Name or UAN)</label>
         <input type="text" class="form-input" id="w-emp-input" placeholder="Click to search or view all..." value="${App.esc(initialEmpValue)}" ${isEdit ? 'disabled' : ''} autocomplete="off">
         <div id="w-emp-dropdown" style="display:none; position:absolute; top:100%; left:0; right:0; max-height:250px; overflow-y:auto; background:var(--bg2); border:1px solid var(--border); border-radius:4px; z-index:100; box-shadow:0 4px 12px rgba(0,0,0,0.15);"></div>
       </div>
+      
+      <div id="w-emp-details" style="flex:1.5; display:${emp ? 'block' : 'none'}; font-size:12px; background:var(--surface); padding:8px 12px; border-radius:6px; line-height:1.6; border:1px solid var(--card-border);">
+        ${emp ? `
+          <div style="font-weight:600; font-size:13px; color:var(--text1); margin-bottom:4px; display:flex; justify-content:space-between;">
+             <span>${App.esc(emp.name)}</span>
+             <span class="badge badge-amber">${App.esc(emp.member_id)}</span>
+          </div>
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:2px 8px; color:var(--text2);">
+            <div><strong>UAN:</strong> ${App.esc(emp.uan || '-')}</div>
+            <div><strong>Father:</strong> ${App.esc(emp.father_name || '-')}</div>
+            <div><strong>DOB:</strong> ${App.esc(emp.dob || '-')}</div>
+            <div><strong>Gender:</strong> ${App.esc(emp.sex) || '-'}</div>
+            <div><strong>DOJ:</strong> ${App.esc(emp.doj || '-')}</div>
+          </div>
+        ` : ''}
+      </div>
+
       <div style="display:flex; flex-direction:column; gap:8px;">
         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
-          <input type="checkbox" id="w-higher-epf" ${higherEpfChecked}> Allow Higher EPF (on actual wages)
+          <input type="checkbox" id="w-higher-epf" ${higherEpfChecked}> Allow Higher EPF
         </label>
         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
           <input type="checkbox" id="w-age-58" ${age58Checked}> Age > 58 (EPS = 0)
@@ -280,8 +298,7 @@ window.showWageModal = async (emp = null) => {
           eEps = calculateRow(epsWage, r.e_eps);
           
           if (isHigherEpf) {
-              const restrictedEpfWage = Math.min(w, ceiling);
-              eEpf = Math.max(0, calculateRow(restrictedEpfWage, r.w_epf) - eEps);
+              eEpf = Math.max(0, wEpf - eEps);
           } else {
               eEpf = Math.max(0, calculateRow(epfWage, r.w_epf) - eEps);
           }
@@ -318,6 +335,20 @@ window.showWageModal = async (emp = null) => {
   };
   const handleBlur = (e) => {
     if (e.target.value === '') e.target.value = '0';
+    
+    const tr = e.target.closest('tr');
+    if (tr) {
+      const gInp = tr.querySelector('.g-input');
+      const wInp = tr.querySelector('.w-input');
+      if (gInp && wInp) {
+        const g = parseFloat(gInp.value) || 0;
+        const w = parseFloat(wInp.value) || 0;
+        if (w > g) {
+          wInp.value = g;
+        }
+      }
+    }
+    
     updateCalculations();
   };
 
@@ -378,12 +409,35 @@ window.showWageModal = async (emp = null) => {
     
     input.addEventListener('change', () => {
         const inputVal = input.value.trim();
-        if (!inputVal) return;
+        const detailsDiv = document.getElementById('w-emp-details');
+        
+        if (!inputVal) {
+            if (detailsDiv) detailsDiv.style.display = 'none';
+            return;
+        }
         const matchedMaster = window._currentEmployees.find(e => {
             const expected = `${e.member_id} - ${e.name}${e.uan ? ' - UAN: ' + e.uan : ''}`;
             return expected === inputVal || e.member_id === inputVal.split(' - ')[0].trim();
         });
+        
         if (matchedMaster) {
+            if (detailsDiv) {
+                detailsDiv.style.display = 'block';
+                detailsDiv.innerHTML = `
+                  <div style="font-weight:600; font-size:13px; color:var(--text1); margin-bottom:4px; display:flex; justify-content:space-between;">
+                     <span>${App.esc(matchedMaster.name)}</span>
+                     <span class="badge badge-amber">${App.esc(matchedMaster.member_id)}</span>
+                  </div>
+                  <div style="display:grid; grid-template-columns: 1fr 1fr; gap:2px 8px; color:var(--text2);">
+                    <div><strong>UAN:</strong> ${App.esc(matchedMaster.uan || '-')}</div>
+                    <div><strong>Father:</strong> ${App.esc(matchedMaster.father_name || '-')}</div>
+                    <div><strong>DOB:</strong> ${App.esc(matchedMaster.dob || '-')}</div>
+                    <div><strong>Gender:</strong> ${App.esc(matchedMaster.sex) || '-'}</div>
+                    <div><strong>DOJ:</strong> ${App.esc(matchedMaster.doj || '-')}</div>
+                  </div>
+                `;
+            }
+            
             const existingWageEmp = currentWagesData.employees.find(ew => ew.member_id === matchedMaster.member_id);
             if (existingWageEmp) {
                 document.querySelectorAll('.g-input').forEach((inp, i) => inp.value = existingWageEmp.gross_wages && existingWageEmp.gross_wages[i] != null ? existingWageEmp.gross_wages[i] : '');
@@ -427,7 +481,7 @@ window.saveWages = async () => {
   
   try {
     await App.post(`/api/years/${currentYearKey}/wages`, { member_id: acc, wages, gross_wages, ncp_days, higher_epf, age_crosses_58 });
-    App.toast('Wages saved');
+    App.toast('Wages saved successfully.');
     App.closeModal();
     App.navigate('wages');
   } catch (_) {}
@@ -437,20 +491,20 @@ window.deleteWages = async (acc) => {
   if (confirm(`Delete wage entries for ${acc} in ${currentWagesData.label}?`)) {
     try {
       await App.del(`/api/years/${currentYearKey}/wages/${encodeURIComponent(acc)}`);
-      App.toast('Wages deleted');
+      App.toast('Wages deleted successfully.');
       App.navigate('wages');
     } catch (_) {}
   }
 };
 
 async function deleteAllWages() {
-  if (confirm(`Are you absolutely sure you want to delete ALL wages for the year ${currentWagesData.label}? This cannot be undone.`)) {
+  App.confirm(`Delete ALL wages for financial year ${currentWagesData.label}? This cannot be undone.`, async () => {
     try {
       await App.del(`/api/years/${currentYearKey}/wages`);
-      App.toast(`All wages for ${currentWagesData.label} deleted`);
+      App.toast(`All wages for ${currentWagesData.label} deleted and data saved successfully.`);
       App.navigate('wages');
     } catch (_) {}
-  }
+  });
 }
 
 // ── Single File Import ───────────────────────────────────────────────────
@@ -652,4 +706,232 @@ window.runBulkImport = async (token) => {
   } catch (e) {
     App.toast(e.message, 'error');
   }
+};
+
+window.showMonthlyWageModal = async () => {
+    // Ensure master employees are loaded
+    const { employees: masterEmployees } = await App.get('/api/employees');
+    window._masterEmployees = masterEmployees;
+
+    const mths = constantsCache.months;
+    const monthOptions = mths.map((m, i) => `<option value="${i}">${m}</option>`).join('');
+
+    const body = `
+      <div class="form-group" style="margin-bottom: 16px;">
+        <label class="form-label">Select Month</label>
+        <select class="form-select" id="bulk-month-select" onchange="renderMonthlyTable()" style="width:200px">
+          ${monthOptions}
+        </select>
+      </div>
+      <div class="table-wrap" style="max-height:60vh; overflow-y:auto;">
+        <table class="wage-table">
+          <thead style="position: sticky; top: 0; background: var(--bg2); z-index: 10;">
+            <tr>
+              <th style="width:40px">Sl No.</th>
+              <th style="width:120px">UAN</th>
+              <th>Name & Options</th>
+              <th style="width:70px; text-align:center">Days<br><small>in Mth</small></th>
+              <th style="width:70px">NCP<br>Days</th>
+              <th style="width:70px; text-align:center">Work<br>Days</th>
+              <th style="width:100px">Gross Wages</th>
+              <th style="width:100px">EPF Wages</th>
+              <th style="width:80px; text-align:right">EPS Wages</th>
+              <th style="text-align:right">EE Share<br><small>(${currentWagesData.rates.w_epf}%)</small></th>
+              <th style="text-align:right">ER PF<br><small>(${currentWagesData.rates.e_epf}%)</small></th>
+              <th style="text-align:right">Pension<br><small>(${currentWagesData.rates.e_eps}%)</small></th>
+            </tr>
+          </thead>
+          <tbody id="bulk-wage-body">
+            <!-- Rendered via JS -->
+          </tbody>
+        </table>
+      </div>
+    `;
+    const footer = `
+      <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveMonthlyWages()">Save Monthly Wages</button>
+    `;
+
+    App.openModal(`Monthly Wage Entry — ${currentWagesData.label}`, body, footer, true);
+    
+    // Automatically render the first month (Mar)
+    setTimeout(() => {
+        renderMonthlyTable();
+    }, 100);
+};
+
+window.renderMonthlyTable = () => {
+    const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
+    const tbody = document.getElementById('bulk-wage-body');
+    const r = currentWagesData.rates;
+
+    const allEmps = window._masterEmployees || [];
+    
+    const startYear = parseInt(currentYearKey.split('-')[0], 10);
+    let targetYear = monthIdx < 10 ? startYear : startYear + 1; 
+    let monthNumber;
+    if (monthIdx === 0) monthNumber = 3;
+    else if (monthIdx === 11) monthNumber = 2;
+    else if (monthIdx === 10) monthNumber = 1;
+    else monthNumber = monthIdx + 3;
+    
+    const daysInMonth = new Date(targetYear, monthNumber, 0).getDate();
+    const prevMonthIdx = monthIdx > 0 ? monthIdx - 1 : -1;
+    
+    let html = '';
+    
+    allEmps.forEach((master, index) => {
+        const existingData = currentWagesData.employees.find(e => e.member_id === master.member_id);
+        
+        let g = 0, w = 0, n = 0, higher = false, age58 = false;
+        let isCopied = false;
+        
+        if (existingData) {
+            g = existingData.gross_wages[monthIdx] || 0;
+            w = existingData.wages[monthIdx] || 0;
+            n = existingData.ncp_days[monthIdx] || 0;
+            higher = existingData.higher_epf || false;
+            age58 = existingData.age_crosses_58 || false;
+            
+            // Auto copy logic if currently empty
+            if (g === 0 && w === 0 && prevMonthIdx >= 0) {
+                const prevG = existingData.gross_wages[prevMonthIdx] || 0;
+                const prevW = existingData.wages[prevMonthIdx] || 0;
+                if (prevG > 0 || prevW > 0) {
+                    g = prevG;
+                    w = prevW;
+                    n = existingData.ncp_days[prevMonthIdx] || 0;
+                    isCopied = true;
+                }
+            }
+        }
+        
+        const workDays = daysInMonth - n;
+        
+        html += `
+            <tr class="bulk-row" data-id="${App.esc(master.member_id)}" data-ceiling="${r.wage_ceilings ? r.wage_ceilings[monthIdx] : 15000}">
+              <td style="text-align:center">${index + 1}</td>
+              <td>${App.esc(master.uan || '-')}</td>
+              <td>
+                <div style="font-weight:500; margin-bottom:4px;">${App.esc(master.name)}</div>
+                <div style="display:flex; gap:12px; font-size:11px; color:var(--text2)">
+                  <label style="cursor:pointer"><input type="checkbox" class="b-higher" ${higher ? 'checked' : ''}> Higher EPF</label>
+                  <label style="cursor:pointer"><input type="checkbox" class="b-age58" ${age58 ? 'checked' : ''}> Age > 58</label>
+                </div>
+              </td>
+              <td style="text-align:center" class="b-dim">${daysInMonth}</td>
+              <td><input type="number" class="form-input num b-ncp" style="padding:4px; width:100%" value="${n || ''}" placeholder="0"></td>
+              <td style="text-align:center" class="b-work">${workDays}</td>
+              <td>
+                <input type="number" class="form-input num b-gross" style="padding:4px; width:100%" value="${g || ''}" placeholder="0">
+                ${isCopied ? '<div style="font-size:10px; color:var(--primary); text-align:right; margin-top:2px">Auto-copied</div>' : ''}
+              </td>
+              <td><input type="number" class="form-input num b-epf" style="padding:4px; width:100%" value="${w || ''}" placeholder="0"></td>
+              <td class="num b-eps-wage" style="color:var(--text2)">0</td>
+              <td class="num b-ee-share" style="color:var(--text2)">0</td>
+              <td class="num b-er-pf" style="color:var(--text2)">0</td>
+              <td class="num b-er-eps" style="color:var(--text2)">0</td>
+            </tr>
+        `;
+    });
+    
+    tbody.innerHTML = html;
+    
+    // Attach listeners
+    tbody.querySelectorAll('.bulk-row').forEach(tr => {
+        const ncpInp = tr.querySelector('.b-ncp');
+        const grossInp = tr.querySelector('.b-gross');
+        const epfInp = tr.querySelector('.b-epf');
+        const higherChk = tr.querySelector('.b-higher');
+        const age58Chk = tr.querySelector('.b-age58');
+        
+        const recalc = () => window.calcBulkRow(tr);
+        
+        ncpInp.addEventListener('input', recalc);
+        grossInp.addEventListener('input', recalc);
+        epfInp.addEventListener('input', recalc);
+        higherChk.addEventListener('change', recalc);
+        age58Chk.addEventListener('change', recalc);
+        
+        const handleBlur = (e) => {
+            if (e.target.value === '') e.target.value = '0';
+            const g = parseFloat(grossInp.value) || 0;
+            const w = parseFloat(epfInp.value) || 0;
+            if (w > g) epfInp.value = g;
+            recalc();
+        };
+        epfInp.addEventListener('blur', handleBlur);
+        grossInp.addEventListener('blur', handleBlur);
+        ncpInp.addEventListener('blur', (e) => { if(e.target.value === '') e.target.value='0'; recalc(); });
+        
+        recalc();
+    });
+};
+
+window.calcBulkRow = (tr) => {
+    const dim = parseInt(tr.querySelector('.b-dim').textContent, 10);
+    const ncp = parseInt(tr.querySelector('.b-ncp').value, 10) || 0;
+    tr.querySelector('.b-work').textContent = Math.max(0, dim - ncp);
+    
+    const g = parseFloat(tr.querySelector('.b-gross').value) || 0;
+    const w = parseFloat(tr.querySelector('.b-epf').value) || 0;
+    const higher = tr.querySelector('.b-higher').checked;
+    const age58 = tr.querySelector('.b-age58').checked;
+    const ceiling = parseFloat(tr.getAttribute('data-ceiling'));
+    
+    const r = currentWagesData.rates;
+    const calcRow = (wage, rate) => Math.round(wage * (rate / 100));
+    
+    let wEpf = 0, eEps = 0, eEpf = 0;
+    let epsWageFinal = 0;
+    
+    if (r.e_eps > 0) {
+        const epfWage = higher ? w : Math.min(w, ceiling);
+        const epsWage = age58 ? 0 : Math.min(w, ceiling);
+        epsWageFinal = epsWage;
+        
+        wEpf = calcRow(epfWage, r.w_epf);
+        eEps = calcRow(epsWage, r.e_eps);
+        
+        if (higher) {
+            eEpf = Math.max(0, wEpf - eEps);
+        } else {
+            eEpf = Math.max(0, calcRow(epfWage, r.w_epf) - eEps);
+        }
+    } else {
+        wEpf = calcRow(w, r.w_epf);
+        const wEps = calcRow(w, r.w_eps);
+        eEps = calcRow(w, r.e_eps);
+        eEpf = Math.max(0, calcRow(w, r.w_epf) - eEps);
+    }
+    
+    tr.querySelector('.b-eps-wage').textContent = epsWageFinal;
+    tr.querySelector('.b-ee-share').textContent = wEpf;
+    tr.querySelector('.b-er-pf').textContent = eEpf;
+    tr.querySelector('.b-er-eps').textContent = eEps;
+};
+
+window.saveMonthlyWages = async () => {
+    const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
+    const employees = [];
+    
+    document.querySelectorAll('.bulk-row').forEach(tr => {
+        const member_id = tr.getAttribute('data-id');
+        const gross_wage = parseFloat(tr.querySelector('.b-gross').value) || 0;
+        const epf_wage = parseFloat(tr.querySelector('.b-epf').value) || 0;
+        const ncp_days = parseInt(tr.querySelector('.b-ncp').value, 10) || 0;
+        const higher_epf = tr.querySelector('.b-higher').checked;
+        const age_crosses_58 = tr.querySelector('.b-age58').checked;
+        
+        employees.push({ member_id, gross_wage, epf_wage, ncp_days, higher_epf, age_crosses_58 });
+    });
+    
+    try {
+        await App.post(`/api/years/${currentYearKey}/wages/bulk_month`, { month_idx: monthIdx, employees });
+        App.toast('Monthly wages saved successfully.');
+        App.closeModal();
+        App.navigate('wages');
+    } catch (e) {
+        App.toast(e.message, 'error');
+    }
 };
