@@ -11,9 +11,9 @@ import tempfile
 from pathlib import Path
 from typing import Optional, List
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
 
 # Import the existing engine from parent directory
@@ -141,6 +141,7 @@ class WageIn(BaseModel):
     member_id: str
     wages: List[float]
     gross_wages: List[float] = []
+    ncp_days: List[int] = []
     higher_epf: bool = False
     age_crosses_58: bool = False
 
@@ -379,6 +380,7 @@ async def get_wages(key: str):
             "doj": m.doj if m else "", "doe": m.doe if m else "",
             "wages": emp.wages,
             "gross_wages": emp.gross_wages,
+            "ncp_days": getattr(emp, 'ncp_days', [0]*12),
             "higher_epf": emp.higher_epf,
             "age_crosses_58": emp.age_crosses_58,
             "months": [{"m": MONTHS[i], "w": r[0],
@@ -417,7 +419,8 @@ async def put_wages(key: str, d: WageIn):
         raise HTTPException(404, f"Employee {d.member_id} not in master")
     
     gross_wages = d.gross_wages if d.gross_wages and len(d.gross_wages) == 12 else d.wages.copy()
-    project.upsert_entry(key, d.member_id, d.wages, gross_wages=gross_wages, higher_epf=d.higher_epf, age_crosses_58=d.age_crosses_58)
+    ncp_days = d.ncp_days if d.ncp_days and len(d.ncp_days) == 12 else [0] * 12
+    project.upsert_entry(key, d.member_id, d.wages, gross_wages=gross_wages, ncp_days=ncp_days, higher_epf=d.higher_epf, age_crosses_58=d.age_crosses_58)
     _save()
     return {"ok": True}
 
@@ -544,7 +547,7 @@ async def generate_ecr_txt(year_key: str, month_idx: int):
     from epf_engine import generate_ecr_month, MONTHS, calendar_year_for_month, Employee
     
     employees_with_wages = []
-    for master_emp in project.master:
+    for master_emp in project.master.values():
         entry = next((e for e in year_record.entries if e.member_id == master_emp.member_id), None)
         emp_obj = Employee(
             member_id=master_emp.member_id,
@@ -555,15 +558,18 @@ async def generate_ecr_txt(year_key: str, month_idx: int):
         if entry:
             emp_obj.wages = entry.wages
             emp_obj.gross_wages = entry.gross_wages
+            emp_obj.ncp_days = getattr(entry, 'ncp_days', [0]*12)
             emp_obj.higher_epf = entry.higher_epf
             emp_obj.age_crosses_58 = entry.age_crosses_58
         else:
             emp_obj.wages = [0.0] * 12
+            emp_obj.ncp_days = [0] * 12
         employees_with_wages.append(emp_obj)
 
-    txt = generate_ecr_month(project.est, employees_with_wages, year_record, month_idx)
+    est = project.build_establishment_for_year(year_key)
+    txt = generate_ecr_month(est, employees_with_wages, year_record, month_idx)
     
-    est_code = "".join(c for c in project.est.code if c.isalnum())[:15] or "EST"
+    est_code = "".join(c for c in est.code if c.isalnum())[:15] or "EST"
     month_str = MONTHS[month_idx][:3].upper()
     cal_year = calendar_year_for_month(MONTHS[month_idx], year_record.year_from, year_record.year_to)
     
@@ -579,7 +585,7 @@ async def generate_ecr_zip(year_key: str):
     from epf_engine import generate_ecr_month, MONTHS, calendar_year_for_month, Employee
     
     employees_with_wages = []
-    for master_emp in project.master:
+    for master_emp in project.master.values():
         entry = next((e for e in year_record.entries if e.member_id == master_emp.member_id), None)
         emp_obj = Employee(
             member_id=master_emp.member_id,
@@ -590,18 +596,21 @@ async def generate_ecr_zip(year_key: str):
         if entry:
             emp_obj.wages = entry.wages
             emp_obj.gross_wages = entry.gross_wages
+            emp_obj.ncp_days = getattr(entry, 'ncp_days', [0]*12)
             emp_obj.higher_epf = entry.higher_epf
             emp_obj.age_crosses_58 = entry.age_crosses_58
         else:
             emp_obj.wages = [0.0] * 12
+            emp_obj.ncp_days = [0] * 12
         employees_with_wages.append(emp_obj)
 
-    est_code = "".join(c for c in project.est.code if c.isalnum())[:15] or "EST"
+    est = project.build_establishment_for_year(year_key)
+    est_code = "".join(c for c in est.code if c.isalnum())[:15] or "EST"
     
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
         for idx in range(12):
-            txt = generate_ecr_month(project.est, employees_with_wages, year_record, idx)
+            txt = generate_ecr_month(est, employees_with_wages, year_record, idx)
             month_str = MONTHS[idx][:3].upper()
             cal_year = calendar_year_for_month(MONTHS[idx], year_record.year_from, year_record.year_to)
             fname = f"{est_code}_ECR_{month_str}_{cal_year}.txt"
@@ -699,14 +708,14 @@ async def bulk_import_wages(req: BulkImportReq):
 
 # ── Import ────────────────────────────────────────────────────────────────
 @app.post("/api/import/{key}")
-async def import_wages(key: str, file: UploadFile = File(...)):
+async def import_wages(key: str, import_type: str = Form("yearly"), month_idx: int = Form(-1), file: UploadFile = File(...)):
     if key not in project.years:
         raise HTTPException(404, "Year not found")
     ext = os.path.splitext(file.filename)[1].lower() or ".xlsx"
     tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
     try:
         tmp.write(await file.read()); tmp.close()
-        records, warnings = import_wages_from_excel(tmp.name)
+        records, warnings = import_wages_from_excel(tmp.name, import_type=import_type, month_idx=month_idx if month_idx >= 0 else None)
         for r in records:
             resolved_id = project.resolve_member_id(r["member_id"], r.get("uan", ""))
             project.upsert_master(
@@ -721,7 +730,22 @@ async def import_wages(key: str, file: UploadFile = File(...)):
                 reason_leaving=r.get("reason_leaving", ""),
                 serial_no=r.get("serial_no")
             )
-            project.upsert_entry(key, resolved_id, r["wages"])
+            if import_type == "monthly" and month_idx >= 0:
+                existing = project.get_entry(key, resolved_id)
+                if existing:
+                    new_wages = list(existing.wages)
+                    new_gross = list(existing.gross_wages)
+                    new_ncp = list(getattr(existing, 'ncp_days', [0]*12))
+                else:
+                    new_wages = [0.0] * 12
+                    new_gross = [0.0] * 12
+                    new_ncp = [0] * 12
+                new_wages[month_idx] = r["wages"][month_idx]
+                new_gross[month_idx] = r["gross_wages"][month_idx]
+                new_ncp[month_idx] = r.get("ncp_days", [0]*12)[month_idx]
+                project.upsert_entry(key, resolved_id, new_wages, new_gross, new_ncp)
+            else:
+                project.upsert_entry(key, resolved_id, r["wages"], r.get("gross_wages"), r.get("ncp_days"))
         _save()
         return {"ok": True, "imported": len(records), "warnings": warnings[:20]}
     finally:

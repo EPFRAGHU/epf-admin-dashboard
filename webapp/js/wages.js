@@ -107,6 +107,12 @@ function renderWageCard(emp) {
             ${emp.doj ? `DOJ: <strong>${App.esc(emp.doj)}</strong>` : ''}
             ${emp.doe ? ` | DOE: <strong>${App.esc(emp.doe)}</strong>` : ''}
           </div>
+          ${emp.higher_epf || emp.age_crosses_58 ? `
+          <div style="margin-top: 8px; display: flex; gap: 8px;">
+            ${emp.higher_epf ? `<span class="badge badge-blue" style="font-size: 10px;">✓ Higher EPF</span>` : ''}
+            ${emp.age_crosses_58 ? `<span class="badge badge-amber" style="font-size: 10px;">✓ Age > 58 (EPS=0)</span>` : ''}
+          </div>
+          ` : ''}
         </div>
         <div>
           <button class="btn btn-ghost btn-xs" onclick="downloadEmployeePDF('${App.esc(emp.member_id)}')">📄 3A</button>
@@ -120,7 +126,9 @@ function renderWageCard(emp) {
           <thead>
             <tr>
               <th>Month</th>
-              <th style="text-align:right">Wages</th>
+              <th style="text-align:right">Gross Wages</th>
+              <th style="text-align:right">EPF Wages</th>
+              <th style="text-align:right">NCP Days</th>
               <th style="text-align:right">Worker EPF<br><small>(${r.w_epf}%)</small></th>
               ${r.w_eps > 0 ? `<th style="text-align:right">Worker EPS<br><small>(${r.w_eps}%)</small></th>` : ''}
               <th style="text-align:right">Worker Total</th>
@@ -130,21 +138,25 @@ function renderWageCard(emp) {
             </tr>
           </thead>
           <tbody>
-            ${emp.months.map(m => `
+            ${emp.months.map((m, i) => `
               <tr>
                 <td>${m.m}</td>
-                <td class="num">${m.w || ''}</td>
-                <td class="num" style="color:var(--text2)">${m.we || ''}</td>
-                ${r.w_eps > 0 ? `<td class="num" style="color:var(--text2)">${m.ws || ''}</td>` : ''}
-                <td class="num" style="font-weight:600">${m.wt || ''}</td>
-                <td class="num" style="color:var(--text2)">${m.ee || ''}</td>
-                <td class="num" style="color:var(--text2)">${m.es || ''}</td>
-                <td class="num" style="font-weight:600">${m.et || ''}</td>
+                <td class="num">${emp.gross_wages && emp.gross_wages[i] != null ? emp.gross_wages[i] : ''}</td>
+                <td class="num">${m.w != null ? m.w : ''}</td>
+                <td class="num">${emp.ncp_days && emp.ncp_days[i] != null ? emp.ncp_days[i] : ''}</td>
+                <td class="num" style="color:var(--text2)">${m.we != null ? m.we : ''}</td>
+                ${r.w_eps > 0 ? `<td class="num" style="color:var(--text2)">${m.ws != null ? m.ws : ''}</td>` : ''}
+                <td class="num" style="font-weight:600">${m.wt != null ? m.wt : ''}</td>
+                <td class="num" style="color:var(--text2)">${m.ee != null ? m.ee : ''}</td>
+                <td class="num" style="color:var(--text2)">${m.es != null ? m.es : ''}</td>
+                <td class="num" style="font-weight:600">${m.et != null ? m.et : ''}</td>
               </tr>
             `).join('')}
             <tr class="grand-total">
               <td>TOTAL</td>
+              <td class="num">₹${App.fmt((emp.gross_wages || []).reduce((a, b) => a + (b || 0), 0))}</td>
               <td class="num">₹${App.fmt(emp.totals.w)}</td>
+              <td class="num">${(emp.ncp_days || []).reduce((a, b) => a + (b || 0), 0)}</td>
               <td class="num">₹${App.fmt(emp.totals.we)}</td>
               ${r.w_eps > 0 ? `<td class="num">₹${App.fmt(emp.totals.ws)}</td>` : ''}
               <td class="num">₹${App.fmt(emp.totals.wt)}</td>
@@ -165,23 +177,23 @@ window.showWageModal = async (emp = null) => {
   const isEdit = !!emp;
   const { employees } = await App.get('/api/employees');
   
-  let options = `<option value="">-- Select Employee --</option>`;
-  employees.forEach(e => {
-    options += `<option value="${App.fmtId(e.member_id)}" ${isEdit && emp.member_id === e.member_id ? 'selected' : ''}>${App.fmtId(e.member_id)} - ${e.name}</option>`;
-  });
+  window._currentEmployees = employees;
+  const initialEmpValue = isEdit ? `${emp.member_id} - ${emp.name}${emp.uan ? ' - UAN: ' + emp.uan : ''}` : '';
 
   const mths = constantsCache.months;
   const wagesArr = isEdit ? emp.wages : Array(12).fill(0);
   const grossWagesArr = isEdit && emp.gross_wages ? emp.gross_wages : Array(12).fill(0);
+  const ncpDaysArr = isEdit && emp.ncp_days ? emp.ncp_days : Array(12).fill(0);
   const higherEpfChecked = isEdit && emp.higher_epf ? 'checked' : '';
   const age58Checked = isEdit && emp.age_crosses_58 ? 'checked' : '';
   const r = currentWagesData.rates;
 
   const body = `
     <div class="form-group" style="margin-bottom:16px; display:flex; gap:16px; align-items:center;">
-      <div style="flex:1">
-        <label class="form-label">Employee (from Master)</label>
-        <select class="form-select" id="w-emp" ${isEdit ? 'disabled' : ''}>${options}</select>
+      <div style="flex:1; position:relative;">
+        <label class="form-label">Employee (Search by ID, Name or UAN)</label>
+        <input type="text" class="form-input" id="w-emp-input" placeholder="Click to search or view all..." value="${App.esc(initialEmpValue)}" ${isEdit ? 'disabled' : ''} autocomplete="off">
+        <div id="w-emp-dropdown" style="display:none; position:absolute; top:100%; left:0; right:0; max-height:250px; overflow-y:auto; background:var(--bg2); border:1px solid var(--border); border-radius:4px; z-index:100; box-shadow:0 4px 12px rgba(0,0,0,0.15);"></div>
       </div>
       <div style="display:flex; flex-direction:column; gap:8px;">
         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
@@ -200,6 +212,7 @@ window.showWageModal = async (emp = null) => {
             <th>Month</th>
             <th style="width: 100px">Gross Wages</th>
             <th style="width: 100px">EPF Wages</th>
+            <th style="width: 70px">NCP Days</th>
             <th style="text-align:right">Worker EPF<br><small>(${r.w_epf}%)</small></th>
             <th style="text-align:right">Employer EPF<br><small>(${r.e_epf}%)</small></th>
             <th style="text-align:right">${r.eps_label}<br><small>(${r.e_eps}%)</small></th>
@@ -209,8 +222,9 @@ window.showWageModal = async (emp = null) => {
           ${mths.map((m, i) => `
             <tr>
               <td style="font-weight: 500">${m}</td>
-              <td><input class="form-input num g-input" data-idx="${i}" type="number" value="${grossWagesArr[i] || ''}" placeholder="0" style="width: 100%; padding: 4px 8px;"></td>
-              <td><input class="form-input num w-input" data-idx="${i}" type="number" value="${wagesArr[i] || ''}" placeholder="0" style="width: 100%; padding: 4px 8px;"></td>
+              <td><input class="form-input num g-input" data-idx="${i}" type="number" value="${grossWagesArr[i] != null ? grossWagesArr[i] : ''}" placeholder="0" style="width: 100%; padding: 4px 8px;"></td>
+              <td><input class="form-input num w-input" data-idx="${i}" type="number" value="${wagesArr[i] != null ? wagesArr[i] : ''}" placeholder="0" style="width: 100%; padding: 4px 8px;"></td>
+              <td><input class="form-input num ncp-input" data-idx="${i}" type="number" value="${ncpDaysArr[i] != null ? ncpDaysArr[i] : ''}" placeholder="0" style="width: 100%; padding: 4px 8px;"></td>
               <td class="num calc-w-epf" style="color:var(--text2)">0</td>
               <td class="num calc-e-epf" style="color:var(--text2)">0</td>
               <td class="num calc-e-eps" style="color:var(--text2)">0</td>
@@ -220,6 +234,7 @@ window.showWageModal = async (emp = null) => {
             <td>TOTAL</td>
             <td class="num" id="g-total">₹0</td>
             <td class="num" id="w-total">₹0</td>
+            <td class="num" id="ncp-total">0</td>
             <td class="num" id="w-epf-total">₹0</td>
             <td class="num" id="e-epf-total">₹0</td>
             <td class="num" id="e-eps-total">₹0</td>
@@ -249,8 +264,10 @@ window.showWageModal = async (emp = null) => {
     document.querySelectorAll('#wage-entry-body tr:not(.grand-total)').forEach((tr, i) => {
       const gInp = tr.querySelector('.g-input');
       const wInp = tr.querySelector('.w-input');
+      const nInp = tr.querySelector('.ncp-input');
       const g = parseFloat(gInp.value) || 0;
       const w = parseFloat(wInp.value) || 0;
+      const ncp = parseInt(nInp.value, 10) || 0;
       const ceiling = r.wage_ceilings ? r.wage_ceilings[i] : 15000;
       
       let wEpf = 0, eEps = 0, eEpf = 0;
@@ -274,12 +291,14 @@ window.showWageModal = async (emp = null) => {
           eEps = calculateRow(w, r.e_eps); 
       }
 
-      tr.querySelector('.calc-w-epf').textContent = w > 0 ? wEpf : '';
-      tr.querySelector('.calc-e-epf').textContent = w > 0 ? eEpf : '';
-      tr.querySelector('.calc-e-eps').textContent = w > 0 ? eEps : '';
+      tr.querySelector('.calc-w-epf').textContent = w >= 0 ? wEpf : '';
+      tr.querySelector('.calc-e-epf').textContent = w >= 0 ? eEpf : '';
+      tr.querySelector('.calc-e-eps').textContent = w >= 0 ? eEps : '';
       
       tGross += g;
       tWage += w;
+      if (!updateCalculations.tNcp) updateCalculations.tNcp = 0;
+      updateCalculations.tNcp += ncp;
       tWEpf += wEpf;
       tEEpf += eEpf;
       tEEps += eEps;
@@ -287,32 +306,127 @@ window.showWageModal = async (emp = null) => {
     
     document.getElementById('g-total').textContent = '₹' + App.fmt(tGross);
     document.getElementById('w-total').textContent = '₹' + App.fmt(tWage);
+    document.getElementById('ncp-total').textContent = updateCalculations.tNcp || 0;
+    updateCalculations.tNcp = 0;
     document.getElementById('w-epf-total').textContent = '₹' + App.fmt(tWEpf);
     document.getElementById('e-epf-total').textContent = '₹' + App.fmt(tEEpf);
     document.getElementById('e-eps-total').textContent = '₹' + App.fmt(tEEps);
   };
 
-  document.querySelectorAll('.g-input').forEach(inp => inp.addEventListener('input', updateCalculations));
-  document.querySelectorAll('.w-input').forEach(inp => inp.addEventListener('input', updateCalculations));
+  const handleFocus = (e) => {
+    if (e.target.value === '0') e.target.value = '';
+  };
+  const handleBlur = (e) => {
+    if (e.target.value === '') e.target.value = '0';
+    updateCalculations();
+  };
+
+  document.querySelectorAll('.g-input, .w-input, .ncp-input').forEach(inp => {
+    inp.addEventListener('input', updateCalculations);
+    inp.addEventListener('focus', handleFocus);
+    inp.addEventListener('blur', handleBlur);
+  });
   document.getElementById('w-higher-epf').addEventListener('change', updateCalculations);
   document.getElementById('w-age-58').addEventListener('change', updateCalculations);
   updateCalculations(); // Run once on load
+  
+  if (!isEdit) {
+    const input = document.getElementById('w-emp-input');
+    const dropdown = document.getElementById('w-emp-dropdown');
+    
+    const renderOptions = (filter = '') => {
+        const lower = filter.toLowerCase();
+        const filtered = window._currentEmployees.filter(e => {
+            return e.name.toLowerCase().includes(lower) || 
+                   e.member_id.toLowerCase().includes(lower) || 
+                   (e.uan && e.uan.toLowerCase().includes(lower));
+        }).slice(0, 50);
+        
+        if (filtered.length === 0) {
+            dropdown.innerHTML = '<div style="padding:8px 12px; color:var(--text3); font-size:13px;">No employees found</div>';
+            return;
+        }
+        
+        dropdown.innerHTML = filtered.map(e => {
+            const text = `${App.esc(e.member_id)} - ${App.esc(e.name)}${e.uan ? ' - UAN: ' + App.esc(e.uan) : ''}`;
+            return `<div class="emp-option" style="padding:8px 12px; cursor:pointer; border-bottom:1px solid var(--border); font-size:13px;" data-val="${text}">${text}</div>`;
+        }).join('');
+        
+        dropdown.querySelectorAll('.emp-option').forEach(opt => {
+            opt.addEventListener('mousedown', (e) => { // mousedown fires before blur
+                input.value = opt.getAttribute('data-val');
+                dropdown.style.display = 'none';
+                const evt = new Event('change');
+                input.dispatchEvent(evt);
+            });
+            opt.addEventListener('mouseenter', () => opt.style.background = 'var(--hover-bg, rgba(255,255,255,0.05))');
+            opt.addEventListener('mouseleave', () => opt.style.background = 'transparent');
+        });
+    };
+
+    input.addEventListener('focus', () => {
+        renderOptions(input.value);
+        dropdown.style.display = 'block';
+    });
+    input.addEventListener('input', () => {
+        renderOptions(input.value);
+        dropdown.style.display = 'block';
+    });
+    input.addEventListener('blur', () => {
+        dropdown.style.display = 'none';
+    });
+    
+    input.addEventListener('change', () => {
+        const inputVal = input.value.trim();
+        if (!inputVal) return;
+        const matchedMaster = window._currentEmployees.find(e => {
+            const expected = `${e.member_id} - ${e.name}${e.uan ? ' - UAN: ' + e.uan : ''}`;
+            return expected === inputVal || e.member_id === inputVal.split(' - ')[0].trim();
+        });
+        if (matchedMaster) {
+            const existingWageEmp = currentWagesData.employees.find(ew => ew.member_id === matchedMaster.member_id);
+            if (existingWageEmp) {
+                document.querySelectorAll('.g-input').forEach((inp, i) => inp.value = existingWageEmp.gross_wages && existingWageEmp.gross_wages[i] != null ? existingWageEmp.gross_wages[i] : '');
+                document.querySelectorAll('.w-input').forEach((inp, i) => inp.value = existingWageEmp.wages[i] != null ? existingWageEmp.wages[i] : '');
+                document.querySelectorAll('.ncp-input').forEach((inp, i) => inp.value = existingWageEmp.ncp_days && existingWageEmp.ncp_days[i] != null ? existingWageEmp.ncp_days[i] : '');
+                document.getElementById('w-higher-epf').checked = existingWageEmp.higher_epf || false;
+                document.getElementById('w-age-58').checked = existingWageEmp.age_crosses_58 || false;
+                App.toast('Loaded previously entered wages for ' + App.esc(matchedMaster.name), 'info');
+            } else {
+                document.querySelectorAll('.g-input, .w-input, .ncp-input').forEach(inp => inp.value = '');
+                document.getElementById('w-higher-epf').checked = false;
+                document.getElementById('w-age-58').checked = false;
+            }
+            updateCalculations();
+        }
+    });
+  }
 };
 
 window.saveWages = async () => {
-  const acc = document.getElementById('w-emp').value;
-  if (!acc) return App.toast('Select an employee', 'error');
+  const inputVal = document.getElementById('w-emp-input').value.trim();
+  if (!inputVal) return App.toast('Select an employee', 'error');
+  
+  const matched = (window._currentEmployees || []).find(e => {
+    const expected = `${e.member_id} - ${e.name}${e.uan ? ' - UAN: ' + e.uan : ''}`;
+    return expected === inputVal || e.member_id === inputVal.split(' - ')[0].trim();
+  });
+  if (!matched) return App.toast('Select a valid employee from the list', 'error');
+  
+  const acc = matched.member_id;
   
   const wages = [];
   const gross_wages = [];
+  const ncp_days = [];
   document.querySelectorAll('.w-input').forEach(i => wages.push(parseFloat(i.value) || 0));
   document.querySelectorAll('.g-input').forEach(i => gross_wages.push(parseFloat(i.value) || 0));
+  document.querySelectorAll('.ncp-input').forEach(i => ncp_days.push(parseInt(i.value, 10) || 0));
   
   const higher_epf = document.getElementById('w-higher-epf').checked;
   const age_crosses_58 = document.getElementById('w-age-58').checked;
   
   try {
-    await App.post(`/api/years/${currentYearKey}/wages`, { member_id: acc, wages, gross_wages, higher_epf, age_crosses_58 });
+    await App.post(`/api/years/${currentYearKey}/wages`, { member_id: acc, wages, gross_wages, ncp_days, higher_epf, age_crosses_58 });
     App.toast('Wages saved');
     App.closeModal();
     App.navigate('wages');
@@ -342,12 +456,31 @@ async function deleteAllWages() {
 // ── Single File Import ───────────────────────────────────────────────────
 
 window.showImportModal = () => {
+  const mths = constantsCache.months;
+  let monthOptions = '';
+  mths.forEach((m, i) => {
+    monthOptions += `<option value="${i}">${m}</option>`;
+  });
+
   const body = `
     <div style="margin-bottom:16px">
-      <p style="color:var(--text2); font-size:13px; line-height:1.5">
+      <div class="form-group">
+        <label class="form-label">Import Type</label>
+        <div style="display:flex; gap:16px; align-items:center;">
+          <label style="cursor:pointer; display:flex; align-items:center; gap:6px;"><input type="radio" name="import-type" value="yearly" checked onchange="toggleImportMonth()"> Yearly (All 12 Months)</label>
+          <label style="cursor:pointer; display:flex; align-items:center; gap:6px;"><input type="radio" name="import-type" value="monthly" onchange="toggleImportMonth()"> Monthly (Single Month)</label>
+        </div>
+      </div>
+      <div class="form-group" id="import-month-group" style="display:none; margin-top:12px;">
+        <label class="form-label">Select Month</label>
+        <select class="form-select" id="single-import-month">
+          ${monthOptions}
+        </select>
+      </div>
+      <p style="color:var(--text2); font-size:13px; line-height:1.5; margin-top:12px;" id="import-instructions">
         Upload an Excel file to import wages for <strong>${currentWagesData.label}</strong>. The file must have a header row and columns like:
         <br><br>
-        <code>Member ID | Name | APR | MAY | ...</code>
+        <code>UAN | Name | APR | APR NCP | MAY | MAY NCP ...</code>
       </p>
     </div>
     <div class="form-group">
@@ -362,15 +495,39 @@ window.showImportModal = () => {
   App.openModal(`Import Wages — ${currentWagesData.label}`, body, footer);
 };
 
+window.toggleImportMonth = () => {
+    const type = document.querySelector('input[name="import-type"]:checked').value;
+    document.getElementById('import-month-group').style.display = type === 'monthly' ? 'block' : 'none';
+    const instructions = document.getElementById('import-instructions');
+    if (type === 'monthly') {
+        instructions.innerHTML = `
+          Upload an Excel file to import wages for the selected month. The file must have a header row and columns like:
+          <br><br>
+          <code>UAN | NAME | GROSS WAGES | EPF WAGES | NCP DAYS</code>
+        `;
+    } else {
+        instructions.innerHTML = `
+          Upload an Excel file to import wages for <strong>${currentWagesData.label}</strong>. The file must have a header row and columns like:
+          <br><br>
+          <code>UAN | Name | APR | APR NCP | MAY | MAY NCP ...</code>
+        `;
+    }
+};
+
 window.runSingleImport = async () => {
   const fileInput = document.getElementById('single-import-file');
   if (!fileInput.files.length) return App.toast('Please select a file', 'error');
+  
+  const type = document.querySelector('input[name="import-type"]:checked').value;
+  const monthIdx = type === 'monthly' ? document.getElementById('single-import-month').value : -1;
   
   App.toast('Uploading and processing...', 'info');
   App.closeModal();
   
   const formData = new FormData();
   formData.append('file', fileInput.files[0]);
+  formData.append('import_type', type);
+  formData.append('month_idx', monthIdx);
   
   try {
     const res = await fetch(`/api/import/${currentYearKey}`, { method: 'POST', body: formData });

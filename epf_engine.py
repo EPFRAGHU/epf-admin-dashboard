@@ -129,7 +129,7 @@ def get_excel_sheet_names(filepath: str):
     wb = openpyxl.load_workbook(filepath, read_only=True)
     return wb.sheetnames
 
-def import_wages_from_excel(filepath: str, sheet_name=None):
+def import_wages_from_excel(filepath: str, sheet_name=None, import_type="yearly", month_idx=None):
     """
     Reads a flat Excel sheet with columns such as:
         SL | Member ID | Name | APR | MAY | ... | MAR | Total Wages
@@ -165,7 +165,7 @@ def import_wages_from_excel(filepath: str, sheet_name=None):
     if header_row_idx is None:
         raise ValueError("Could not find a header row containing 'Member ID' or 'UAN' in the sheet.")
 
-    col_map = {"months": {}, "gross_months": {}}
+    col_map = {"months": {}, "gross_months": {}, "ncp_months": {}}
     for idx, text in enumerate(header_cells):
         if not text:
             continue
@@ -186,21 +186,29 @@ def import_wages_from_excel(filepath: str, sheet_name=None):
         elif text == "sl" or text == "sl no": col_map["serial_no"] = idx
         elif "higher" in text and "epf" in text: col_map["higher_epf"] = idx
         elif "age" in text and "58" in text: col_map["age_crosses_58"] = idx
-        elif "total" in text:
+        elif text == "total":
             col_map["total"] = idx
         else:
-            for key, month_idx in _MONTH_HEADER_KEYS.items():
-                if key in text:
-                    if "gross" in text:
-                        col_map["gross_months"][month_idx] = idx
-                    else:
-                        col_map["months"][month_idx] = idx
-                    break
+            if import_type == "monthly":
+                if "gross" in text:
+                    col_map["gross_wages_single"] = idx
+                elif "ncp" in text:
+                    col_map["ncp_single"] = idx
+                elif "epf" in text or "wage" in text:
+                    col_map["epf_wages_single"] = idx
+            else:
+                for key, m_idx in _MONTH_HEADER_KEYS.items():
+                    if key in text:
+                        if "gross" in text:
+                            col_map["gross_months"][m_idx] = idx
+                        elif "ncp" in text:
+                            col_map["ncp_months"][m_idx] = idx
+                        else:
+                            col_map["months"][m_idx] = idx
+                        break
 
-    has_identifier = "member_id" in col_map or "uan" in col_map
-    if not has_identifier or "name" not in col_map:
-        raise ValueError("Could not find both an identifier ('Member ID' or 'UAN') and a 'Name' column "
-                          "in the header row. Please check the column headings in the file.")
+    if "uan" not in col_map or "name" not in col_map:
+        raise ValueError("Could not find both 'UAN' and a 'Name' column in the header row. Please check the column headings.")
 
     def cell_val(row_cells, idx):
         if idx is None or idx >= len(row_cells):
@@ -211,14 +219,10 @@ def import_wages_from_excel(filepath: str, sheet_name=None):
     warnings = []
     for r in range(header_row_idx + 1, ws.max_row + 1):
         row_cells = ws[r]
-        acc = cell_val(row_cells, col_map.get("member_id"))
-        if acc is None or str(acc).strip() == "":
-            uan_fallback = cell_val(row_cells, col_map.get("uan"))
-            if uan_fallback is not None and str(uan_fallback).strip() != "":
-                acc = f"__UAN__{str(uan_fallback).strip()}"
-            else:
-                continue  # blank row -- skip silently
-        acc = str(acc).strip()
+        uan_val = cell_val(row_cells, col_map.get("uan"))
+        if uan_val is None or str(uan_val).strip() == "":
+            continue
+        acc = f"__UAN__{str(uan_val).strip()}"
         name_val = cell_val(row_cells, col_map.get("name"))
         name = str(name_val).strip() if name_val is not None else ""
         if not name:
@@ -227,28 +231,58 @@ def import_wages_from_excel(filepath: str, sheet_name=None):
 
         wages = [0.0] * 12
         gross_wages = [0.0] * 12
-        for month_idx in range(12):
-            col_idx = col_map["months"].get(month_idx)
-            val = cell_val(row_cells, col_idx)
-            if val is None or val == "":
-                wages[month_idx] = 0.0
-            else:
-                try:
-                    wages[month_idx] = float(val)
-                except (TypeError, ValueError):
-                    wages[month_idx] = 0.0
-                    warnings.append(f"Row {r}: could not read the {MONTHS[month_idx]} wage value "
-                                     f"for account {acc} ('{val}') -- treated as 0.")
+        ncp_days = [0] * 12
+        
+        if import_type == "monthly" and month_idx is not None and 0 <= month_idx < 12:
+            g_val = cell_val(row_cells, col_map.get("gross_wages_single"))
+            w_val = cell_val(row_cells, col_map.get("epf_wages_single"))
+            n_val = cell_val(row_cells, col_map.get("ncp_single"))
             
-            g_col_idx = col_map["gross_months"].get(month_idx)
-            g_val = cell_val(row_cells, g_col_idx)
-            if g_val is None or g_val == "":
-                gross_wages[month_idx] = wages[month_idx]
-            else:
-                try:
-                    gross_wages[month_idx] = float(g_val)
-                except (TypeError, ValueError):
-                    gross_wages[month_idx] = wages[month_idx]
+            try:
+                gross_wages[month_idx] = float(g_val) if g_val is not None and g_val != "" else 0.0
+            except (TypeError, ValueError):
+                pass
+            
+            try:
+                wages[month_idx] = float(w_val) if w_val is not None and w_val != "" else 0.0
+            except (TypeError, ValueError):
+                warnings.append(f"Row {r}: could not read wage value for account {acc} ('{w_val}') -- treated as 0.")
+
+            try:
+                ncp_days[month_idx] = int(n_val) if n_val is not None and n_val != "" else 0
+            except (TypeError, ValueError):
+                pass
+        else:
+            for m_idx in range(12):
+                col_idx = col_map["months"].get(m_idx)
+                val = cell_val(row_cells, col_idx)
+                if val is None or val == "":
+                    wages[m_idx] = 0.0
+                else:
+                    try:
+                        wages[m_idx] = float(val)
+                    except (TypeError, ValueError):
+                        wages[m_idx] = 0.0
+                        warnings.append(f"Row {r}: could not read the {MONTHS[m_idx]} wage value "
+                                         f"for account {acc} ('{val}') -- treated as 0.")
+                
+                g_col_idx = col_map["gross_months"].get(m_idx)
+                g_val = cell_val(row_cells, g_col_idx)
+                if g_val is None or g_val == "":
+                    gross_wages[m_idx] = wages[m_idx]
+                else:
+                    try:
+                        gross_wages[m_idx] = float(g_val)
+                    except (TypeError, ValueError):
+                        gross_wages[m_idx] = wages[m_idx]
+                        
+                n_col_idx = col_map["ncp_months"].get(m_idx)
+                n_val = cell_val(row_cells, n_col_idx)
+                if n_val is not None and n_val != "":
+                    try:
+                        ncp_days[m_idx] = int(n_val)
+                    except (TypeError, ValueError):
+                        pass
 
         def format_date(val):
             import pandas as pd
@@ -276,6 +310,8 @@ def import_wages_from_excel(filepath: str, sheet_name=None):
             "member_id": acc, 
             "name": name, 
             "wages": wages, 
+            "gross_wages": gross_wages,
+            "ncp_days": ncp_days,
             "uan": get_val("uan"),
             "father_name": get_val("father_name"),
             "dob": get_val("dob"),
@@ -512,6 +548,7 @@ class Employee:
     uan: str = ''         # Universal Account Number -- shown on Form 3A alongside Member ID
     wages: List[float] = field(default_factory=lambda: [0.0] * 12)  # APR..MAR
     gross_wages: List[float] = field(default_factory=lambda: [0.0] * 12)
+    ncp_days: List[int] = field(default_factory=lambda: [0] * 12)
     higher_epf: bool = False
     age_crosses_58: bool = False
 
@@ -629,6 +666,7 @@ class YearEntry:
     member_id: str = ""
     wages: List[float] = field(default_factory=lambda: [0.0] * 12)  # APR..MAR
     gross_wages: List[float] = field(default_factory=lambda: [0.0] * 12)
+    ncp_days: List[int] = field(default_factory=lambda: [0] * 12)
     higher_epf: bool = False
     age_crosses_58: bool = False
 
@@ -817,18 +855,30 @@ class Project:
         return None
 
     # ---- entries (employee wages for a given year) ----
-    def upsert_entry(self, year_key, member_id, wages, gross_wages=None, higher_epf=False, age_crosses_58=False):
+    def get_entry(self, year_key, member_id):
+        yr = self.years.get(year_key)
+        if not yr: return None
+        member_id = normalize_member_id(member_id)
+        for e in yr.entries:
+            if e.member_id == member_id:
+                return e
+        return None
+
+
+    def upsert_entry(self, year_key, member_id, wages, gross_wages=None, ncp_days=None, higher_epf=False, age_crosses_58=False):
         yr = self.years[year_key]
         member_id = normalize_member_id(member_id)
         if gross_wages is None: gross_wages = wages.copy()
+        if ncp_days is None: ncp_days = [0] * 12
         for e in yr.entries:
             if e.member_id == member_id:
                 e.wages = wages
                 e.gross_wages = gross_wages
+                e.ncp_days = ncp_days
                 e.higher_epf = higher_epf
                 e.age_crosses_58 = age_crosses_58
                 return
-        yr.entries.append(YearEntry(member_id=member_id, wages=wages, gross_wages=gross_wages, higher_epf=higher_epf, age_crosses_58=age_crosses_58))
+        yr.entries.append(YearEntry(member_id=member_id, wages=wages, gross_wages=gross_wages, ncp_days=ncp_days, higher_epf=higher_epf, age_crosses_58=age_crosses_58))
 
     def remove_entry(self, year_key, index):
         del self.years[year_key].entries[index]
@@ -854,7 +904,7 @@ class Project:
             father = m.father_name if m else ""
             uan = m.uan if m else ""
             result.append(Employee(member_id=e.member_id, name=name, father_name=father, uan=uan,
-                                    wages=list(e.wages), gross_wages=list(e.gross_wages),
+                                    wages=list(e.wages), gross_wages=list(e.gross_wages), ncp_days=list(getattr(e, 'ncp_days', [0]*12)),
                                     higher_epf=e.higher_epf, age_crosses_58=e.age_crosses_58))
         return result
 
@@ -2357,7 +2407,8 @@ def generate_ecr_month(est, employees: List[Employee], year_record: YearRecord, 
         edli_w = round(min(w, wage_ceilings[month_idx]))
         
         # UAN#~#Member Name#~#Gross Wages#~#EPF Wages#~#EPS Wages#~#EDLI Wages#~#EE Share Remitted#~#EPS Contribution Remitted#~#ER EPF Contribution Remitted#~#NCP Days#~#Refund of Advances
-        line = f"{emp.uan or ''}#~#{emp.name}#~#{gross}#~#{epf_w}#~#{eps_w}#~#{edli_w}#~#{w_epf}#~#{e_eps}#~#{e_epf}#~#0#~#0"
+        ncp = emp.ncp_days[month_idx] if hasattr(emp, 'ncp_days') and emp.ncp_days and len(emp.ncp_days) > month_idx else 0
+        line = f"{emp.uan or ''}#~#{emp.name}#~#{gross}#~#{epf_w}#~#{eps_w}#~#{edli_w}#~#{w_epf}#~#{e_eps}#~#{e_epf}#~#{ncp}#~#0"
         lines.append(line)
     
     return "\n".join(lines)
