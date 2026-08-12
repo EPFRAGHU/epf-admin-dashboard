@@ -82,14 +82,42 @@ App.registerPage('wages', async (container) => {
       <div class="empty-state-text">No wage entries for ${currentYearKey}.</div>
     </div>` : ''}
 
-    <div style="display:flex; flex-direction:column; gap:24px">
-      ${currentWagesData.employees.map(renderWageCard).join('')}
+    <div style="display:flex; flex-direction:column; gap:24px" id="wages-cards-container">
+      <!-- Rendered via JS -->
     </div>
+    <div id="wages-cards-pagination"></div>
   </div>`;
+  
+  renderWageCardsPage();
 });
+
+let currentWageCardsPage = 1;
+const WAGE_CARDS_PAGE_SIZE = 50;
+
+window.setWageCardsPage = (page) => {
+    currentWageCardsPage = page;
+    renderWageCardsPage();
+};
+
+function renderWageCardsPage() {
+    const container = document.getElementById('wages-cards-container');
+    const pgContainer = document.getElementById('wages-cards-pagination');
+    if (!container) return;
+    
+    const emps = currentWagesData.employees;
+    const start = (currentWageCardsPage - 1) * WAGE_CARDS_PAGE_SIZE;
+    const sliced = emps.slice(start, start + WAGE_CARDS_PAGE_SIZE);
+    
+    container.innerHTML = sliced.map(renderWageCard).join('');
+    
+    if (pgContainer) {
+        pgContainer.innerHTML = App.renderPagination(emps.length, currentWageCardsPage, WAGE_CARDS_PAGE_SIZE, 'setWageCardsPage');
+    }
+}
 
 window.switchWageYear = () => {
   currentYearKey = document.getElementById('wage-year-select').value;
+  currentWageCardsPage = 1;
   App.navigate('wages');
 };
 
@@ -711,6 +739,201 @@ window.runBulkImport = async (token) => {
 window.showMonthlyWageModal = async () => {
     // Ensure master employees are loaded
     const { employees: masterEmployees } = await App.get('/api/employees');
+  const body = `
+    <div style="margin-bottom:16px">
+      <div class="form-group">
+        <label class="form-label">Import Type</label>
+        <div style="display:flex; gap:16px; align-items:center;">
+          <label style="cursor:pointer; display:flex; align-items:center; gap:6px;"><input type="radio" name="import-type" value="yearly" checked onchange="toggleImportMonth()"> Yearly (All 12 Months)</label>
+          <label style="cursor:pointer; display:flex; align-items:center; gap:6px;"><input type="radio" name="import-type" value="monthly" onchange="toggleImportMonth()"> Monthly (Single Month)</label>
+        </div>
+      </div>
+      <div class="form-group" id="import-month-group" style="display:none; margin-top:12px;">
+        <label class="form-label">Select Month</label>
+        <select class="form-select" id="single-import-month">
+          ${monthOptions}
+        </select>
+      </div>
+      <p style="color:var(--text2); font-size:13px; line-height:1.5; margin-top:12px;" id="import-instructions">
+        Upload an Excel file to import wages for <strong>${currentWagesData.label}</strong>. The file must have a header row and columns like:
+        <br><br>
+        <code>UAN | Name | APR | APR NCP | MAY | MAY NCP ...</code>
+      </p>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Excel File</label>
+      <input type="file" id="single-import-file" accept=".xlsx,.xls,.csv" class="form-input">
+    </div>
+  `;
+  const footer = `
+    <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="runSingleImport()">Import Data</button>
+  `;
+  App.openModal(`Import Wages — ${currentWagesData.label}`, body, footer);
+};
+
+window.toggleImportMonth = () => {
+    const type = document.querySelector('input[name="import-type"]:checked').value;
+    document.getElementById('import-month-group').style.display = type === 'monthly' ? 'block' : 'none';
+    const instructions = document.getElementById('import-instructions');
+    if (type === 'monthly') {
+        instructions.innerHTML = `
+          Upload an Excel file to import wages for the selected month. The file must have a header row and columns like:
+          <br><br>
+          <code>UAN | NAME | GROSS WAGES | EPF WAGES | NCP DAYS</code>
+        `;
+    } else {
+        instructions.innerHTML = `
+          Upload an Excel file to import wages for <strong>${currentWagesData.label}</strong>. The file must have a header row and columns like:
+          <br><br>
+          <code>UAN | Name | APR | APR NCP | MAY | MAY NCP ...</code>
+        `;
+    }
+};
+
+window.runSingleImport = async () => {
+  const fileInput = document.getElementById('single-import-file');
+  if (!fileInput.files.length) return App.toast('Please select a file', 'error');
+  
+  const type = document.querySelector('input[name="import-type"]:checked').value;
+  const monthIdx = type === 'monthly' ? document.getElementById('single-import-month').value : -1;
+  
+  App.toast('Uploading and processing...', 'info');
+  App.closeModal();
+  
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+  formData.append('import_type', type);
+  formData.append('month_idx', monthIdx);
+  
+  try {
+    const res = await fetch(`/api/import/${currentYearKey}`, { method: 'POST', body: formData });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    
+    let msg = `Successfully imported ${data.imported} wage records.`;
+    if (data.warnings && data.warnings.length) {
+      msg += `\n\nWarnings:\n- ${data.warnings.join('\n- ')}`;
+      App.toast('Imported with warnings', 'info');
+      alert(msg);
+    } else {
+      App.toast(msg);
+    }
+    App.navigate('wages');
+  } catch (e) {
+    App.toast(e.message, 'error');
+  }
+};
+
+// ── Multi-Sheet Bulk Import ──────────────────────────────────────────────
+
+window.showBulkImportModal = () => {
+  const body = `
+    <div style="margin-bottom:16px">
+      <p style="color:var(--text2); font-size:13px; line-height:1.5">
+        Upload a multi-sheet Excel file. The app will detect all sheets and allow you to select which ones to import.
+        Missing years will be auto-created automatically!
+      </p>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Excel File</label>
+      <input type="file" id="import-file" accept=".xlsx,.xls" class="form-input">
+    </div>
+  `;
+  const footer = `
+    <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
+    <button class="btn btn-primary" onclick="analyzeBulkImport()">Analyze File</button>
+  `;
+  App.openModal(`Bulk Import — Auto Create Missing Years`, body, footer);
+};
+
+window.downloadYearPDF = (form) => {
+  window.open(`/api/reports/${currentYearKey}?format=pdf&forms=${form}`, '_blank');
+};
+
+window.downloadYearExcel = (form) => {
+  window.open(`/api/reports/${currentYearKey}?format=excel&forms=${form}`, '_blank');
+};
+
+window.downloadEmployeePDF = (memberId) => {
+  window.open(`/api/reports/${currentYearKey}/employee/${encodeURIComponent(memberId)}?format=pdf&forms=3A`, '_blank');
+};
+
+window.analyzeBulkImport = async () => {
+  const fileInput = document.getElementById('import-file');
+  if (!fileInput.files.length) return App.toast('Please select a file', 'error');
+  
+  App.toast('Analyzing file...', 'info');
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+  
+  try {
+    const res = await fetch('/api/wages/bulk_analyze', { method: 'POST', body: formData });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    
+    // Show step 2: sheet selection
+    let sheetCheckboxes = data.sheets.map(s => `
+      <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px; cursor:pointer;">
+        <input type="checkbox" class="sheet-checkbox" value="${App.esc(s)}" checked>
+        <span>${App.esc(s)}</span>
+      </label>
+    `).join('');
+    
+    const body = `
+      <div style="margin-bottom:16px">
+        <p style="color:var(--text2); font-size:13px; line-height:1.5">
+          Found <strong>${data.sheets.length}</strong> sheets. Select the sheets you want to import.
+        </p>
+      </div>
+      <div style="max-height: 200px; overflow-y: auto; background: var(--bg); padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
+        ${sheetCheckboxes}
+      </div>
+    `;
+    const footer = `
+      <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="runBulkImport('${data.token}')">Import Selected</button>
+    `;
+    App.openModal(`Select Years to Import`, body, footer);
+  } catch (e) {
+    App.toast(e.message, 'error');
+  }
+};
+
+window.runBulkImport = async (token) => {
+  const selectedSheets = Array.from(document.querySelectorAll('.sheet-checkbox:checked')).map(cb => cb.value);
+  if (!selectedSheets.length) return App.toast('Please select at least one sheet', 'error');
+  
+  App.toast(`Importing ${selectedSheets.length} sheets... This may take a moment.`, 'info');
+  App.closeModal(); // close modal so user sees loading state if any
+  
+  try {
+    const res = await fetch('/api/wages/bulk_import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, sheets: selectedSheets })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    
+    let msg = `Successfully imported ${data.imported} wage records across ${selectedSheets.length} sheets.`;
+    if (data.warnings && data.warnings.length) {
+      msg += `\n\nWarnings:\n- ${data.warnings.join('\n- ')}`;
+      App.toast('Imported with warnings', 'info');
+      alert(msg);
+    } else {
+      App.toast(msg);
+    }
+    
+    App.navigate('years'); // Refresh list of years so user sees newly auto-created ones
+  } catch (e) {
+    App.toast(e.message, 'error');
+  }
+};
+
+window.showMonthlyWageModal = async () => {
+    // Ensure master employees are loaded
+    const { employees: masterEmployees } = await App.get('/api/employees');
     window._masterEmployees = masterEmployees;
 
     const mths = constantsCache.months;
@@ -719,11 +942,11 @@ window.showMonthlyWageModal = async () => {
     const body = `
       <div class="form-group" style="margin-bottom: 16px;">
         <label class="form-label">Select Month</label>
-        <select class="form-select" id="bulk-month-select" onchange="renderMonthlyTable()" style="width:200px">
+        <select class="form-select" id="bulk-month-select" onchange="initBulkTableState()" style="width:200px">
           ${monthOptions}
         </select>
       </div>
-      <div class="table-wrap" style="max-height:60vh; overflow-y:auto;">
+      <div class="table-wrap" style="max-height:55vh; overflow-y:auto;">
         <table class="wage-table">
           <thead style="position: sticky; top: 0; background: var(--bg2); z-index: 10;">
             <tr>
@@ -746,6 +969,7 @@ window.showMonthlyWageModal = async () => {
           </tbody>
         </table>
       </div>
+      <div id="bulk-pagination-container"></div>
     `;
     const footer = `
       <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
@@ -756,8 +980,68 @@ window.showMonthlyWageModal = async () => {
     
     // Automatically render the first month (Mar)
     setTimeout(() => {
-        renderMonthlyTable();
+        initBulkTableState();
     }, 100);
+};
+
+let bulkTableState = {};
+let currentBulkPage = 1;
+const BULK_PAGE_SIZE = 50;
+
+window.initBulkTableState = () => {
+    const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
+    bulkTableState = {};
+    const allEmps = window._masterEmployees || [];
+    const prevMonthIdx = monthIdx > 0 ? monthIdx - 1 : -1;
+    
+    allEmps.forEach(master => {
+        const existingData = currentWagesData.employees.find(e => e.member_id === master.member_id);
+        let g = 0, w = 0, n = 0, higher = false, age58 = false, isCopied = false;
+        
+        if (existingData) {
+            g = existingData.gross_wages[monthIdx] || 0;
+            w = existingData.wages[monthIdx] || 0;
+            n = existingData.ncp_days[monthIdx] || 0;
+            higher = existingData.higher_epf || false;
+            age58 = existingData.age_crosses_58 || false;
+            
+            if (g === 0 && w === 0 && prevMonthIdx >= 0) {
+                const prevG = existingData.gross_wages[prevMonthIdx] || 0;
+                const prevW = existingData.wages[prevMonthIdx] || 0;
+                if (prevG > 0 || prevW > 0) {
+                    g = prevG;
+                    w = prevW;
+                    n = existingData.ncp_days[prevMonthIdx] || 0;
+                    isCopied = true;
+                }
+            }
+        }
+        bulkTableState[master.member_id] = { g, w, n, higher, age58, isCopied };
+    });
+    
+    currentBulkPage = 1;
+    renderMonthlyTable();
+};
+
+window.syncBulkTableState = () => {
+    document.querySelectorAll('.bulk-row').forEach(tr => {
+        const member_id = tr.getAttribute('data-id');
+        if (bulkTableState[member_id]) {
+            bulkTableState[member_id].g = parseFloat(tr.querySelector('.b-gross').value) || 0;
+            bulkTableState[member_id].w = parseFloat(tr.querySelector('.b-epf').value) || 0;
+            bulkTableState[member_id].n = parseInt(tr.querySelector('.b-ncp').value, 10) || 0;
+            bulkTableState[member_id].higher = tr.querySelector('.b-higher').checked;
+            bulkTableState[member_id].age58 = tr.querySelector('.b-age58').checked;
+            // Clear isCopied once it's rendered and synced, to avoid showing the badge forever if edited
+            bulkTableState[member_id].isCopied = false;
+        }
+    });
+};
+
+window.setBulkPage = (page) => {
+    syncBulkTableState();
+    currentBulkPage = page;
+    renderMonthlyTable();
 };
 
 window.renderMonthlyTable = () => {
@@ -776,41 +1060,21 @@ window.renderMonthlyTable = () => {
     else monthNumber = monthIdx + 3;
     
     const daysInMonth = new Date(targetYear, monthNumber, 0).getDate();
-    const prevMonthIdx = monthIdx > 0 ? monthIdx - 1 : -1;
     
     let html = '';
     
-    allEmps.forEach((master, index) => {
-        const existingData = currentWagesData.employees.find(e => e.member_id === master.member_id);
+    const start = (currentBulkPage - 1) * BULK_PAGE_SIZE;
+    const sliced = allEmps.slice(start, start + BULK_PAGE_SIZE);
+    
+    sliced.forEach((master, idx) => {
+        const state = bulkTableState[master.member_id] || { g:0, w:0, n:0, higher:false, age58:false, isCopied:false };
+        const { g, w, n, higher, age58, isCopied } = state;
         
-        let g = 0, w = 0, n = 0, higher = false, age58 = false;
-        let isCopied = false;
-        
-        if (existingData) {
-            g = existingData.gross_wages[monthIdx] || 0;
-            w = existingData.wages[monthIdx] || 0;
-            n = existingData.ncp_days[monthIdx] || 0;
-            higher = existingData.higher_epf || false;
-            age58 = existingData.age_crosses_58 || false;
-            
-            // Auto copy logic if currently empty
-            if (g === 0 && w === 0 && prevMonthIdx >= 0) {
-                const prevG = existingData.gross_wages[prevMonthIdx] || 0;
-                const prevW = existingData.wages[prevMonthIdx] || 0;
-                if (prevG > 0 || prevW > 0) {
-                    g = prevG;
-                    w = prevW;
-                    n = existingData.ncp_days[prevMonthIdx] || 0;
-                    isCopied = true;
-                }
-            }
-        }
-        
-        const workDays = daysInMonth - n;
+        const workDays = Math.max(0, daysInMonth - n);
         
         html += `
             <tr class="bulk-row" data-id="${App.esc(master.member_id)}" data-ceiling="${r.wage_ceilings ? r.wage_ceilings[monthIdx] : 15000}">
-              <td style="text-align:center">${index + 1}</td>
+              <td style="text-align:center">${start + idx + 1}</td>
               <td>${App.esc(master.uan || '-')}</td>
               <td>
                 <div style="font-weight:500; margin-bottom:4px;">${App.esc(master.name)}</div>
@@ -836,6 +1100,11 @@ window.renderMonthlyTable = () => {
     });
     
     tbody.innerHTML = html;
+    
+    const pgContainer = document.getElementById('bulk-pagination-container');
+    if (pgContainer) {
+        pgContainer.innerHTML = App.renderPagination(allEmps.length, currentBulkPage, BULK_PAGE_SIZE, 'setBulkPage');
+    }
     
     // Attach listeners
     tbody.querySelectorAll('.bulk-row').forEach(tr => {
@@ -912,19 +1181,17 @@ window.calcBulkRow = (tr) => {
 };
 
 window.saveMonthlyWages = async () => {
+    syncBulkTableState();
     const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
-    const employees = [];
     
-    document.querySelectorAll('.bulk-row').forEach(tr => {
-        const member_id = tr.getAttribute('data-id');
-        const gross_wage = parseFloat(tr.querySelector('.b-gross').value) || 0;
-        const epf_wage = parseFloat(tr.querySelector('.b-epf').value) || 0;
-        const ncp_days = parseInt(tr.querySelector('.b-ncp').value, 10) || 0;
-        const higher_epf = tr.querySelector('.b-higher').checked;
-        const age_crosses_58 = tr.querySelector('.b-age58').checked;
-        
-        employees.push({ member_id, gross_wage, epf_wage, ncp_days, higher_epf, age_crosses_58 });
-    });
+    const employees = Object.entries(bulkTableState).map(([member_id, state]) => ({
+        member_id,
+        gross_wage: state.g,
+        epf_wage: state.w,
+        ncp_days: state.n,
+        higher_epf: state.higher,
+        age_crosses_58: state.age58
+    }));
     
     try {
         await App.post(`/api/years/${currentYearKey}/wages/bulk_month`, { month_idx: monthIdx, employees });

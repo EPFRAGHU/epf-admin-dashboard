@@ -248,6 +248,23 @@ const App = (() => {
     } catch (_) {}
   }
 
+  function renderPagination(totalItems, currentPage, pageSize, callbackFnName) {
+    if (totalItems <= pageSize) return '';
+    const totalPages = Math.ceil(totalItems / pageSize);
+    const prevDis = currentPage <= 1 ? 'disabled' : '';
+    const nextDis = currentPage >= totalPages ? 'disabled' : '';
+    
+    return `
+      <div style="display:flex; justify-content:center; align-items:center; gap:8px; margin-top:16px; padding:12px; border-top:1px solid var(--border);">
+        <button class="btn btn-ghost" onclick="${callbackFnName}(1)" ${prevDis}>First</button>
+        <button class="btn btn-ghost" onclick="${callbackFnName}(${currentPage - 1})" ${prevDis}>Prev</button>
+        <span style="font-size:13px; color:var(--text2); margin:0 12px;">Page ${currentPage} of ${totalPages} (${totalItems} items)</span>
+        <button class="btn btn-ghost" onclick="${callbackFnName}(${currentPage + 1})" ${nextDis}>Next</button>
+        <button class="btn btn-ghost" onclick="${callbackFnName}(${totalPages})" ${nextDis}>Last</button>
+      </div>
+    `;
+  }
+
   function logout() {
     if (window.confirm("Are you sure you want to log out?")) {
       localStorage.removeItem('epf_logged_in');
@@ -259,7 +276,7 @@ const App = (() => {
     init, navigate, registerPage,
     api, get, post, put, del,
     toast, openModal, closeModal, confirm,
-    toggleSidebar, save, fmt, fmtD, esc, fmtId,
+    toggleSidebar, save, fmt, fmtD, esc, fmtId, renderPagination,
     showProjectManager, switchProject, newProject, logout, showLogin, doLogin, refreshTopbar,
     get currentPage() { return currentPage; },
   };

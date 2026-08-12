@@ -1,13 +1,17 @@
 /* ================================================================
    Employees — CRUD for Employee Master (Form 9)
    ================================================================ */
+let masterEmployees = [];
+let filteredEmployees = [];
+let currentEmpPage = 1;
+const EMP_PAGE_SIZE = 50;
 
 App.registerPage('employees', async (container) => {
   const { employees } = await App.get('/api/employees');
-  renderPage(container, employees);
-});
-
-function renderPage(container, employees) {
+  masterEmployees = employees;
+  filteredEmployees = [...employees];
+  currentEmpPage = 1;
+  
   container.innerHTML = `<div class="fade-in">
     <div class="toolbar">
       <div class="toolbar-left">
@@ -15,7 +19,7 @@ function renderPage(container, employees) {
           <span class="search-icon">🔍</span>
           <input class="form-input" id="emp-search" placeholder="Search employees…" oninput="filterEmpTable()">
         </div>
-        <span style="color:var(--text3);font-size:12px">${employees.length} employees</span>
+        <span style="color:var(--text3);font-size:12px" id="emp-count-label">${filteredEmployees.length} employees</span>
       </div>
       <div class="toolbar-right">
         <button class="btn btn-glass" onclick="showMasterImportModal()">📥 Bulk Import Master</button>
@@ -32,14 +36,53 @@ function renderPage(container, employees) {
               <th>DOJ</th><th>DOE</th><th>Reason</th><th>Actions</th>
             </tr>
           </thead>
-          <tbody>
-            ${employees.map((e, i) => empRow(e, i)).join('')}
+          <tbody id="emp-tbody">
+            <!-- Rendered via JS -->
           </tbody>
         </table>
       </div>
+      <div id="emp-pagination-container"></div>
     </div>
   </div>`;
+  
+  renderEmpTable();
+});
+
+window.setEmpPage = (page) => {
+  currentEmpPage = page;
+  renderEmpTable();
+};
+
+function renderEmpTable() {
+  const start = (currentEmpPage - 1) * EMP_PAGE_SIZE;
+  const sliced = filteredEmployees.slice(start, start + EMP_PAGE_SIZE);
+  
+  const tbody = document.getElementById('emp-tbody');
+  if (tbody) {
+      tbody.innerHTML = sliced.map((e, i) => empRow(e, start + i)).join('');
+  }
+  
+  const pgContainer = document.getElementById('emp-pagination-container');
+  if (pgContainer) {
+      pgContainer.innerHTML = App.renderPagination(filteredEmployees.length, currentEmpPage, EMP_PAGE_SIZE, 'setEmpPage');
+  }
+  
+  const countLabel = document.getElementById('emp-count-label');
+  if (countLabel) countLabel.textContent = `${filteredEmployees.length} employees`;
 }
+
+window.filterEmpTable = () => {
+  const q = document.getElementById('emp-search').value.toLowerCase();
+  if (!q) {
+      filteredEmployees = [...masterEmployees];
+  } else {
+      filteredEmployees = masterEmployees.filter(e => 
+          (e.member_id + ' ' + e.name + ' ' + (e.uan || '')).toLowerCase().includes(q)
+      );
+  }
+  currentEmpPage = 1;
+  renderEmpTable();
+};
 
 function empRow(e) {
   const superCls = e.superannuation ? ' superannuation-row' : '';
@@ -60,13 +103,6 @@ function empRow(e) {
       <button class="btn btn-danger btn-xs" onclick="deleteEmp('${App.fmtId(e.member_id)}')">🗑️</button>
     </td>
   </tr>`;
-}
-
-function filterEmpTable() {
-  const q = document.getElementById('emp-search').value.toLowerCase();
-  document.querySelectorAll('#emp-table tbody tr').forEach(tr => {
-    tr.style.display = (tr.dataset.search || '').includes(q) ? '' : 'none';
-  });
 }
 
 function showEmpModal(emp = null) {

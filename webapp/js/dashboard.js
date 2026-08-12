@@ -191,6 +191,41 @@ App.registerPage('dashboard', async (container) => {
   });
 });
 
+let currentDashboardMonthEmps = [];
+let currentDashboardMonthPage = 1;
+const DASHBOARD_MONTH_PAGE_SIZE = 50;
+
+window.setDashboardMonthPage = (page) => {
+    currentDashboardMonthPage = page;
+    renderMonthEmployeesTable();
+};
+
+window.renderMonthEmployeesTable = () => {
+    const start = (currentDashboardMonthPage - 1) * DASHBOARD_MONTH_PAGE_SIZE;
+    const sliced = currentDashboardMonthEmps.slice(start, start + DASHBOARD_MONTH_PAGE_SIZE);
+    
+    const tbody = document.getElementById('dashboard-month-emp-tbody');
+    if (tbody) {
+        tbody.innerHTML = sliced.map(e => `
+            <tr>
+                <td><span class="badge badge-amber">${App.esc(e.uan || '-')}</span></td>
+                <td><strong>${App.esc(e.name)}</strong></td>
+                <td class="num">₹${App.fmt(e.gross_wages)}</td>
+                <td class="num">₹${App.fmt(e.epf_wages)}</td>
+                <td class="num">₹${App.fmt(e.eps_wages)}</td>
+                <td class="num" style="color: var(--blue); font-weight: bold;">₹${App.fmt(e.worker_share)}</td>
+                <td class="num" style="color: var(--green); font-weight: bold;">₹${App.fmt(e.employer_pf)}</td>
+                <td class="num" style="color: var(--purple); font-weight: bold;">₹${App.fmt(e.employer_eps)}</td>
+            </tr>
+        `).join('');
+    }
+    
+    const pgContainer = document.getElementById('dashboard-month-emp-pagination');
+    if (pgContainer) {
+        pgContainer.innerHTML = App.renderPagination(currentDashboardMonthEmps.length, currentDashboardMonthPage, DASHBOARD_MONTH_PAGE_SIZE, 'setDashboardMonthPage');
+    }
+};
+
 window.showMonthEmployees = async (yearKey, monthIdx, monthLabel) => {
     try {
         const data = await App.get(`/api/dashboard/month_employees/${yearKey}/${monthIdx}`);
@@ -199,6 +234,9 @@ window.showMonthEmployees = async (yearKey, monthIdx, monthLabel) => {
             App.toast('No employees found for this month');
             return;
         }
+        
+        currentDashboardMonthEmps = data.employees;
+        currentDashboardMonthPage = 1;
         
         const html = `
             <div class="table-wrap" style="max-height: 400px; overflow-y: auto; border: 1px solid var(--card-border); border-radius: var(--radius);">
@@ -215,27 +253,21 @@ window.showMonthEmployees = async (yearKey, monthIdx, monthLabel) => {
                             <th class="num">Pension Fund</th>
                         </tr>
                     </thead>
-                    <tbody>
-                        ${data.employees.map(e => `
-                            <tr>
-                                <td><span class="badge badge-amber">${App.esc(e.uan || '-')}</span></td>
-                                <td><strong>${App.esc(e.name)}</strong></td>
-                                <td class="num">₹${App.fmt(e.gross_wages)}</td>
-                                <td class="num">₹${App.fmt(e.epf_wages)}</td>
-                                <td class="num">₹${App.fmt(e.eps_wages)}</td>
-                                <td class="num" style="color: var(--blue); font-weight: bold;">₹${App.fmt(e.worker_share)}</td>
-                                <td class="num" style="color: var(--green); font-weight: bold;">₹${App.fmt(e.employer_pf)}</td>
-                                <td class="num" style="color: var(--purple); font-weight: bold;">₹${App.fmt(e.employer_eps)}</td>
-                            </tr>
-                        `).join('')}
+                    <tbody id="dashboard-month-emp-tbody">
+                        <!-- Rendered via JS -->
                     </tbody>
                 </table>
             </div>
+            <div id="dashboard-month-emp-pagination"></div>
         `;
         
         const estHeader = data.establishment ? `<div style="font-size:14px; font-weight: 500; color: var(--text2); margin-bottom: 12px; margin-top: -4px;">${App.esc(data.establishment.name)} <span class="badge badge-blue" style="margin-left:8px;">${App.esc(data.establishment.code)}</span></div>` : '';
         
         App.openModal(`Employees in ${monthLabel}`, estHeader + html, `<button class="btn btn-ghost" onclick="App.closeModal()">Close</button>`, true);
+        
+        // Render first page
+        setTimeout(() => renderMonthEmployeesTable(), 50);
+        
     } catch (e) {
         App.toast('Failed to load employee details');
         console.error(e);
