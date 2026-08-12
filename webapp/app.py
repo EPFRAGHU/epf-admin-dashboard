@@ -108,6 +108,12 @@ def _is_valid_for_establishment(member_id: str, est_code: str) -> bool:
         return member_id.upper().startswith(est_clean)
     return True
 
+def _is_valid_uan(uan) -> bool:
+    if not uan:
+        return False
+    uan_str = str(uan).strip()
+    return len(uan_str) == 12 and uan_str.isdigit()
+
 # ── Pydantic schemas ──────────────────────────────────────────────────────
 class EstablishmentIn(BaseModel):
     code: str
@@ -276,6 +282,11 @@ async def import_master(file: UploadFile = File(...)):
             from epf_engine import normalize_member_id
             norm_id = normalize_member_id(member_id)
             
+            if not _is_valid_uan(uan):
+                warnings.append(f"Skipped {norm_id or r.get('name', 'Unknown')}: Missing or invalid 12-digit UAN")
+                skipped_count += 1
+                continue
+                
             if (uan and uan in existing_uans) or (norm_id and norm_id in existing_ids):
                 skipped_count += 1
                 continue
@@ -697,7 +708,13 @@ async def bulk_import_wages(req: BulkImportReq):
             
             records, warnings = import_wages_from_excel(filepath, sheet_name=sheet_name)
             for r in records:
-                resolved_id = project.resolve_member_id(r["member_id"], r.get("uan", ""))
+                uan = r.get("uan", "")
+                resolved_id = project.resolve_member_id(r["member_id"], uan)
+                
+                if not _is_valid_uan(uan):
+                    warnings.append(f"Skipped {resolved_id or r.get('name', 'Unknown')}: Missing or invalid 12-digit UAN")
+                    continue
+                    
                 if not _is_valid_for_establishment(resolved_id, project.code):
                     warnings.append(f"Skipped {resolved_id}: Does not belong to establishment {project.code}")
                     continue
@@ -737,8 +754,13 @@ async def import_wages(key: str, import_type: str = Form("yearly"), month_idx: i
         tmp.write(await file.read()); tmp.close()
         records, warnings = import_wages_from_excel(tmp.name, import_type=import_type, month_idx=month_idx if month_idx >= 0 else None)
         for r in records:
-            resolved_id = project.resolve_member_id(r["member_id"], r.get("uan", ""))
+            uan = r.get("uan", "")
+            resolved_id = project.resolve_member_id(r["member_id"], uan)
             
+            if not _is_valid_uan(uan):
+                warnings.append(f"Skipped {resolved_id or r.get('name', 'Unknown')}: Missing or invalid 12-digit UAN")
+                continue
+                
             if not _is_valid_for_establishment(resolved_id, project.code):
                 warnings.append(f"Skipped {resolved_id}: Does not belong to establishment {project.code}")
                 continue
