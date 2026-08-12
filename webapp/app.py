@@ -755,8 +755,13 @@ async def import_wages(key: str, import_type: str = Form("yearly"), month_idx: i
 # ── Save ──────────────────────────────────────────────────────────────────
 @app.post("/api/save")
 async def save_project():
+    global project_filepath
     if not project_filepath:
-        raise HTTPException(400, "No file path")
+        parent = Path(__file__).resolve().parent.parent
+        safe_name = project.name.replace("/", "-").replace("\\", "-").strip() if project.name else "Default_Establishment"
+        filename = f"{safe_name}_project.epfproj.json"
+        project_filepath = str(parent / filename)
+        _save_settings(filename)
     project.save(project_filepath)
     return {"ok": True, "file": os.path.basename(project_filepath)}
 
