@@ -96,6 +96,18 @@ def _save():
             pass
 
 
+def _is_valid_for_establishment(member_id: str, est_code: str) -> bool:
+    if not est_code or not member_id or member_id.startswith('__UAN__'):
+        return True
+    est_clean = "".join(c for c in est_code if c.isalnum())[:15].upper()
+    if not est_clean:
+        return True
+    
+    # EPFO full member IDs are typically 22 chars (15 est code + 7 member id)
+    if len(member_id) >= len(est_clean):
+        return member_id.upper().startswith(est_clean)
+    return True
+
 # ── Pydantic schemas ──────────────────────────────────────────────────────
 class EstablishmentIn(BaseModel):
     code: str
@@ -265,6 +277,11 @@ async def import_master(file: UploadFile = File(...)):
             norm_id = normalize_member_id(member_id)
             
             if (uan and uan in existing_uans) or (norm_id and norm_id in existing_ids):
+                skipped_count += 1
+                continue
+                
+            if not _is_valid_for_establishment(norm_id, project.code):
+                warnings.append(f"Skipped {norm_id}: Member ID does not belong to establishment {project.code}")
                 skipped_count += 1
                 continue
                 
@@ -681,6 +698,9 @@ async def bulk_import_wages(req: BulkImportReq):
             records, warnings = import_wages_from_excel(filepath, sheet_name=sheet_name)
             for r in records:
                 resolved_id = project.resolve_member_id(r["member_id"], r.get("uan", ""))
+                if not _is_valid_for_establishment(resolved_id, project.code):
+                    warnings.append(f"Skipped {resolved_id}: Does not belong to establishment {project.code}")
+                    continue
                 project.upsert_master(
                     resolved_id, 
                     r["name"], 
@@ -718,6 +738,11 @@ async def import_wages(key: str, import_type: str = Form("yearly"), month_idx: i
         records, warnings = import_wages_from_excel(tmp.name, import_type=import_type, month_idx=month_idx if month_idx >= 0 else None)
         for r in records:
             resolved_id = project.resolve_member_id(r["member_id"], r.get("uan", ""))
+            
+            if not _is_valid_for_establishment(resolved_id, project.code):
+                warnings.append(f"Skipped {resolved_id}: Does not belong to establishment {project.code}")
+                continue
+                
             project.upsert_master(
                 resolved_id, 
                 r["name"], 
