@@ -4,6 +4,7 @@
 
 const App = (() => {
   let currentPage = 'dashboard';
+  let currentEstablishment = { name: '', code: '' };
 
   /* ── API helpers ─────────────────────────────────────────────── */
   async function api(url, opts = {}) {
@@ -46,9 +47,20 @@ const App = (() => {
     const modal = document.getElementById('modal');
     const overlay = document.getElementById('modal-overlay');
     modal.className = `modal${wide ? ' wide' : ''}`;
+    
+    const estHtml = (currentEstablishment.name || currentEstablishment.code) 
+      ? `<div style="font-size: 13px; color: var(--text2); margin-top: 4px; display:flex; align-items:center; gap:6px;">
+           <span style="font-weight: 600; color: var(--primary);">${esc(currentEstablishment.name)}</span> 
+           ${currentEstablishment.code ? `<span class="badge" style="font-size:10px">${esc(currentEstablishment.code)}</span>` : ''}
+         </div>` 
+      : '';
+
     modal.innerHTML = `
-      <div class="modal-header">
-        <h3 class="modal-title">${title}</h3>
+      <div class="modal-header" style="align-items: flex-start;">
+        <div>
+          <h3 class="modal-title">${title}</h3>
+          ${estHtml}
+        </div>
         <button class="modal-close" onclick="App.closeModal()">×</button>
       </div>
       <div class="modal-body">${bodyHtml}</div>
@@ -115,6 +127,7 @@ const App = (() => {
   async function refreshTopbar() {
     try {
       const est = await get('/api/establishment');
+      currentEstablishment = est;
       const tr = document.getElementById('topbar-right');
       if (tr) {
         if (est.name || est.code) {
