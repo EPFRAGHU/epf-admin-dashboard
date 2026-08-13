@@ -666,8 +666,9 @@ async def calculate_remittances(key: str, month: str):
     employees = project.build_employees_for_year(key)
     employees = [emp for emp in employees if sum(emp.wages) > 0]
     
-    month_idx = get_month_num(month) - 1
-    if month_idx < 0 or month_idx > 11:
+    try:
+        month_idx = ["MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC", "JAN", "FEB"].index(month[:3].upper())
+    except ValueError:
         raise HTTPException(400, "Invalid month")
         
     all_month_rows = [emp.month_rows(est.worker_epf_rate, est.worker_eps_rate,

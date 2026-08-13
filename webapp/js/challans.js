@@ -95,6 +95,7 @@ const Challans = {
                                 <div class="form-group col-6">
                                     <label>Wage Month</label>
                                     <select id="challan-month" required class="form-control">
+                                        <option value="March">March</option>
                                         <option value="April">April</option>
                                         <option value="May">May</option>
                                         <option value="June">June</option>
@@ -106,7 +107,6 @@ const Challans = {
                                         <option value="December">December</option>
                                         <option value="January">January</option>
                                         <option value="February">February</option>
-                                        <option value="March">March</option>
                                     </select>
                                 </div>
                                 <div class="form-group col-6" style="display:flex; align-items:flex-end;">
