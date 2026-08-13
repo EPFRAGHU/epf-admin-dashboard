@@ -110,7 +110,117 @@ App.registerPage('reports', async (container) => {
       </div>
     </div>
 
+    <div class="card" style="margin-top:24px">
+      <div class="card-header"><div class="card-title">4. Employee Wage History</div></div>
+      <p style="color:var(--text2); font-size:13px; margin-bottom:12px">
+        View the complete member profile and year-wise wage entries for a specific employee.
+      </p>
+      <div class="form-group" style="max-width:300px">
+        <label class="form-label">Select Employee</label>
+        <select class="form-select" id="r-emp-select">
+          <option value="">-- Loading Employees --</option>
+        </select>
+      </div>
+      
+      <div id="r-emp-history-view" style="margin-top: 16px; display: none;"></div>
+    </div>
+
   </div>`;
+  
+  // Load employees for the dropdown
+  App.get('/api/employees').then(res => {
+      const select = document.getElementById('r-emp-select');
+      if(select && res.employees) {
+          select.innerHTML = '<option value="">-- Select Employee --</option>' + 
+            res.employees.map(e => `<option value="${e.member_id}">${e.name} (${e.uan || e.member_id})</option>`).join('');
+          
+          $(select).select2({
+              placeholder: 'Search for an employee...',
+              allowClear: true,
+              width: '100%',
+              dropdownAutoWidth: true
+          });
+          
+          $(select).on('change', async (e) => {
+              const member_id = e.target.value;
+              const view = document.getElementById('r-emp-history-view');
+              if(!member_id) {
+                  view.style.display = 'none';
+                  view.innerHTML = '';
+                  return;
+              }
+              
+              view.style.display = 'block';
+              view.innerHTML = '<div style="color:var(--text2); padding:16px;">Loading history...</div>';
+              
+              try {
+                  const data = await App.get(`/api/reports/employee_wage_history/${member_id}`);
+                  const p = data.profile;
+                  let html = `
+                    <div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:16px; margin-bottom:16px;">
+                      <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:16px; margin-bottom:16px;">
+                        <div>
+                          <div style="font-weight:600; color:var(--text1); font-size:16px;">${App.esc(p.name)}</div>
+                          <div style="font-size:12px; color:var(--text2); margin-top:2px;">S/D of: ${App.esc(p.father_name)}</div>
+                        </div>
+                        <div style="text-align:right;">
+                          <div style="font-size:12px; color:var(--text2);">UAN: <span style="color:var(--text1); font-weight:500">${App.esc(p.uan) || '-'}</span></div>
+                          <div style="font-size:12px; color:var(--text2);">Member ID: <span style="color:var(--text1); font-weight:500">${App.esc(p.member_id)}</span></div>
+                        </div>
+                      </div>
+                      
+                      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:12px; font-size:12px;">
+                        <div><div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Date of Birth</div><div style="color:var(--text1); font-weight:500">${App.esc(p.dob)}</div></div>
+                        <div><div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Date of Joining</div><div style="color:var(--text1); font-weight:500">${App.esc(p.doj)}</div></div>
+                        <div><div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Date of Leaving</div><div style="color:var(--text1); font-weight:500">${App.esc(p.doe) || '-'}</div></div>
+                        <div><div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Reason of Leaving</div><div style="color:var(--text1); font-weight:500">${App.esc(p.reason_leaving) || '-'}</div></div>
+                      </div>
+                    </div>
+                  `;
+                  
+                  if(data.years.length === 0) {
+                      html += `<div style="text-align:center; padding:24px; color:var(--text3);">No wage records found.</div>`;
+                  } else {
+                      let trs = '';
+                      data.years.forEach(y => {
+                          let tds = '';
+                          for(let i=0; i<12; i++) {
+                              tds += `<td style="text-align:right;">${y.wages[i] || 0}</td>`;
+                          }
+                          trs += `
+                            <tr>
+                              <td style="font-weight:500; white-space:nowrap;">${y.year}</td>
+                              ${tds}
+                              <td style="text-align:right; font-weight:600; color:var(--primary);">${y.total}</td>
+                            </tr>
+                          `;
+                      });
+                      
+                      html += `
+                        <div style="overflow-x:auto;">
+                          <table class="data-table" style="width:100%; font-size:12px;">
+                            <thead>
+                              <tr>
+                                <th>Year</th>
+                                <th style="text-align:right">Mar</th><th style="text-align:right">Apr</th><th style="text-align:right">May</th><th style="text-align:right">Jun</th>
+                                <th style="text-align:right">Jul</th><th style="text-align:right">Aug</th><th style="text-align:right">Sep</th><th style="text-align:right">Oct</th>
+                                <th style="text-align:right">Nov</th><th style="text-align:right">Dec</th><th style="text-align:right">Jan</th><th style="text-align:right">Feb</th>
+                                <th style="text-align:right">Total</th>
+                              </tr>
+                            </thead>
+                            <tbody>${trs}</tbody>
+                          </table>
+                        </div>
+                      `;
+                  }
+                  
+                  view.innerHTML = html;
+              } catch(err) {
+                  view.innerHTML = `<div style="color:var(--red); padding:16px;">Error loading history: ${err.message}</div>`;
+              }
+          });
+      }
+  });
 });
 
 window.downloadECR = () => {

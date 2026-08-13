@@ -757,6 +757,48 @@ async def del_all_wages(key: str):
 
 
 # ── Reports ───────────────────────────────────────────────────────────────
+@app.get("/api/reports/employee_wage_history/{member_id}")
+async def report_employee_wage_history(member_id: str):
+    master = project.get_master(member_id)
+    if not master:
+        raise HTTPException(404, "Employee not found")
+
+    years_data = []
+    for yk in project.year_keys_sorted():
+        yr = project.years[yk]
+        emps = project.build_employees_for_year(yk)
+        emp = next((e for e in emps if e.member_id == member_id), None)
+        
+        if emp and emp.wages:
+            wages = emp.wages
+        else:
+            wages = [0] * 12
+            
+        total_wages = sum((w or 0) for w in wages)
+        
+        # Only add years where there is some data or the employee was employed
+        # But for history, showing all years or just years since DOJ makes sense.
+        # It's fine to show all, or filter to > 0 total wages. We'll include all.
+        years_data.append({
+            "year": yr.label,
+            "wages": wages,
+            "total": total_wages
+        })
+
+    return {
+        "profile": {
+            "member_id": master.member_id,
+            "uan": master.uan,
+            "name": master.name,
+            "father_name": master.father_name,
+            "dob": master.dob,
+            "doj": master.doj,
+            "doe": master.doe,
+            "reason_leaving": master.reason_leaving
+        },
+        "years": years_data
+    }
+
 @app.get("/api/reports/{key}")
 async def generate_report(key: str, format: str = 'excel', forms: str = ''):
     if key not in project.years:
