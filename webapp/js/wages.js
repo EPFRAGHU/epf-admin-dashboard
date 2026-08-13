@@ -935,28 +935,33 @@ window.showMonthlyWageModal = async () => {
     // Ensure master employees are loaded
     const { employees: masterEmployees } = await App.get('/api/employees');
     window._masterEmployees = masterEmployees;
+    
+    // Fetch previous year data for March fallback
+    window._previousYearWages = null;
+    try {
+        const parts = currentYearKey.split('-');
+        const prevYearKey = `${parseInt(parts[0]) - 1}-${parseInt(parts[1]) - 1}`;
+        const res = await fetch(`/api/wages/${prevYearKey}`);
+        if (res.ok) {
+            window._previousYearWages = await res.json();
+        }
+    } catch (e) {}
 
     const mths = constantsCache.months;
     const monthOptions = mths.map((m, i) => `<option value="${i}">${m}</option>`).join('');
 
     // Determine default month
     let defaultMonthIdx = 0;
-    let maxDataIdx = -1;
-    if (currentWagesData && currentWagesData.employees) {
-        currentWagesData.employees.forEach(emp => {
-            emp.wages.forEach((w, i) => { if (w > 0) maxDataIdx = Math.max(maxDataIdx, i); });
-            emp.gross_wages.forEach((g, i) => { if (g > 0) maxDataIdx = Math.max(maxDataIdx, i); });
-        });
-    }
-    if (maxDataIdx >= 0) {
-        defaultMonthIdx = Math.min(11, maxDataIdx + 1);
-    } else {
-        const d = new Date();
-        const m = d.getMonth() + 1; // 1-12
-        // Mar=0, Apr=1...
-        let idx = (m >= 3) ? (m - 3) : (m + 9);
-        defaultMonthIdx = Math.max(0, idx - 1);
-    }
+    const d = new Date();
+    const m = d.getMonth() + 1; // 1-12
+    // Mar=0, Apr=1...
+    let idx = (m >= 3) ? (m - 3) : (m + 9);
+    // Select previous month
+    let prevIdx = idx - 1;
+    // Wrap around correctly if necessary, though we clamp to 0 for simplicity,
+    // actually previous month of March is Feb (11) of previous year, but we only show current year.
+    // So if idx - 1 is negative, we default to 0 (March).
+    defaultMonthIdx = Math.max(0, prevIdx);
 
     const body = `
       <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom: 16px;">
@@ -1056,6 +1061,13 @@ window.initBulkTableState = () => {
         return s && (s.g > 0 || s.w > 0);
     });
     
+    let prevYearHasAnyFebData = false;
+    if (window._previousYearWages && window._previousYearWages.employees) {
+        prevYearHasAnyFebData = window._previousYearWages.employees.some(e => 
+            (e.wages && e.wages[11] > 0) || (e.gross_wages && e.gross_wages[11] > 0)
+        );
+    }
+    
     allEmps.forEach(master => {
         const existingData = currentWagesData.employees.find(e => e.member_id === master.member_id);
         let g = 0, w = 0, n = 0, higher = false, age58 = false, isCopied = false;
@@ -1085,6 +1097,21 @@ window.initBulkTableState = () => {
             }
         }
         
+        if (monthIdx === 0 && window._previousYearWages && window._previousYearWages.employees) {
+            const prevEmpData = window._previousYearWages.employees.find(e => e.member_id === master.member_id);
+            if (prevEmpData) {
+                const prevG = prevEmpData.gross_wages ? (prevEmpData.gross_wages[11] || 0) : 0;
+                const prevW = prevEmpData.wages ? (prevEmpData.wages[11] || 0) : 0;
+                if (prevG > 0 || prevW > 0) hasPrev = true;
+                if (g === 0 && w === 0 && hasPrev) {
+                    g = prevG;
+                    w = prevW;
+                    n = prevEmpData.ncp_days ? (prevEmpData.ncp_days[11] || 0) : 0;
+                    isCopied = true;
+                }
+            }
+        }
+        
         // Preserve un-saved data from previous visits to this month in the same session
         if (bulkTableState[master.member_id]) {
             const currentSessionState = bulkTableState[master.member_id];
@@ -1100,18 +1127,18 @@ window.initBulkTableState = () => {
         }
         
         // Logic for visibility:
-        // Show if they have data in current month OR if they had data in previous month OR if manually added
         const isManuallyAdded = window.bulkTableManualIds.includes(master.member_id);
         
-        // If it's the first month (Mar, prevMonthIdx = -1), show them if they have current data, 
-        // or just show ALL employees if it's the start of the year. Let's just show those with data for now
-        // to keep it consistent, but if it's the first time ever, it might be blank.
-        // Actually, if monthIdx == 0 and hasCurrent is false, we might want to show them if they are active.
-        // For simplicity, we show them if they have current data, OR if month == 0 and they are active.
-        const isActive = master.status !== 'inactive';
-        
         let shouldShow = hasCurrent || hasPrev || isManuallyAdded;
-        if (monthIdx === 0 && isActive) shouldShow = true; // For March, show all active by default if no filtering
+        
+        const isActive = master.status !== 'inactive';
+        if (monthIdx === 0 && isActive) {
+            // If no previous year February data exists AT ALL, show all active employees.
+            // Otherwise, only show them if they have previous (Feb) data or current data.
+            if (!prevYearHasAnyFebData) {
+                shouldShow = true;
+            }
+        }
         
         if (shouldShow) {
             window.bulkTableVisibleIds.push(master.member_id);
