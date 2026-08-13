@@ -1,9 +1,38 @@
 App.registerPage('challans', async (container) => {
+    const { years } = await App.get('/api/years');
+    if (years.length === 0) {
+        container.innerHTML = `<div class="empty-state">
+          <div class="empty-state-icon">🏦</div>
+          <div class="empty-state-text">No financial years available. Add a year first.</div>
+        </div>`;
+        return;
+    }
+    
+    if (typeof window.currentYearKey === 'undefined') {
+        window.currentYearKey = '';
+    }
+    
+    // Default to the last year if no global currentYearKey is set
+    if (!window.currentYearKey || !years.find(y => y.key === window.currentYearKey)) {
+        window.currentYearKey = years[years.length - 1].key;
+    }
+
     container.innerHTML = `
         <div class="fade-in">
+            <div class="page-header">
+                <div>
+                    <div class="section-title">Challans / Remittances</div>
+                    <div class="page-desc">Manage manual challans and auto-fill from entered wages.</div>
+                </div>
+                <div class="toolbar-right">
+                    <select class="form-select" id="challans-year-select" onchange="Challans.switchYear(this.value)">
+                        ${years.map(y => `<option value="${y.key}" ${y.key === window.currentYearKey ? 'selected' : ''}>${y.label}</option>`).join('')}
+                    </select>
+                </div>
+            </div>
             <div class="card">
                 <div class="card-header flex-between">
-                    <h3>Remittances / Challans</h3>
+                    <h3>Remittance Entries</h3>
                     <button class="btn btn-primary btn-sm" id="btn-add-challan">Add Challan</button>
                 </div>
                 <div class="card-body">
@@ -182,14 +211,19 @@ const Challans = {
     },
 
     async load() {
-        if (!currentYearKey) return;
+        if (!window.currentYearKey) return;
         try {
-            const res = await App.get('/api/years/' + encodeURIComponent(currentYearKey) + '/remittances');
+            const res = await App.get('/api/years/' + encodeURIComponent(window.currentYearKey) + '/remittances');
             this.remittances = res.remittances || [];
             this.render();
         } catch(e) {
             console.error('Failed to load remittances', e);
         }
+    },
+
+    switchYear(key) {
+        window.currentYearKey = key;
+        this.load();
     },
 
     render() {
@@ -263,13 +297,13 @@ const Challans = {
     },
 
     async autoCalc() {
-        if (!currentYearKey) return;
+        if (!window.currentYearKey) return;
         const month = document.getElementById('challan-month').value;
         const btn = this.$btnCalc;
         btn.disabled = true;
         btn.textContent = "Calculating...";
         try {
-            const res = await App.get('/api/years/' + encodeURIComponent(currentYearKey) + '/remittances/calculate?month=' + encodeURIComponent(month));
+            const res = await App.get('/api/years/' + encodeURIComponent(window.currentYearKey) + '/remittances/calculate?month=' + encodeURIComponent(month));
             document.getElementById('challan-ac1').value = res.acc_01 || 0;
             document.getElementById('challan-ac2').value = res.acc_02 || 0;
             document.getElementById('challan-ac10').value = res.acc_10 || 0;
@@ -303,9 +337,9 @@ const Challans = {
         const idx = document.getElementById('challan-idx').value;
         try {
             if (idx !== '') {
-                await App.put('/api/years/' + encodeURIComponent(currentYearKey) + '/remittances/' + idx, payload);
+                await App.put('/api/years/' + encodeURIComponent(window.currentYearKey) + '/remittances/' + idx, payload);
             } else {
-                await App.post('/api/years/' + encodeURIComponent(currentYearKey) + '/remittances', payload);
+                await App.post('/api/years/' + encodeURIComponent(window.currentYearKey) + '/remittances', payload);
             }
             this.closeModal();
             this.load();
@@ -323,7 +357,7 @@ const Challans = {
     async del(id) {
         if (!confirm('Are you sure you want to delete this challan?')) return;
         try {
-            await App.del('/api/years/' + encodeURIComponent(currentYearKey) + '/remittances/' + id);
+            await App.del('/api/years/' + encodeURIComponent(window.currentYearKey) + '/remittances/' + id);
             this.load();
         } catch(e) {
             alert('Error deleting challan');
