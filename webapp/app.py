@@ -774,7 +774,7 @@ async def report_employee_wage_history(member_id: str):
         else:
             wages = [0] * 12
             
-        total_wages = sum((w or 0) for w in wages)
+        total_wages = sum((int(w) if w else 0) for w in wages)
         
         # Only add years where there is some data or the employee was employed
         # But for history, showing all years or just years since DOJ makes sense.
@@ -791,9 +791,9 @@ async def report_employee_wage_history(member_id: str):
             "uan": master.uan,
             "name": master.name,
             "father_name": master.father_name,
-            "dob": master.dob,
-            "doj": master.doj,
-            "doe": master.doe,
+            "dob": master.dob.isoformat() if hasattr(master.dob, 'isoformat') else master.dob,
+            "doj": master.doj.isoformat() if hasattr(master.doj, 'isoformat') else master.doj,
+            "doe": master.doe.isoformat() if hasattr(master.doe, 'isoformat') else master.doe,
             "reason_leaving": master.reason_leaving
         },
         "years": years_data
