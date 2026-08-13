@@ -225,7 +225,7 @@ window.showWageModal = async (emp = null) => {
         <div id="w-emp-dropdown" style="display:none; position:absolute; top:100%; left:0; right:0; max-height:250px; overflow-y:auto; background:var(--bg2); border:1px solid var(--border); border-radius:4px; z-index:100; box-shadow:0 4px 12px rgba(0,0,0,0.15);"></div>
       </div>
       
-      <div id="w-emp-details" style="flex:1.5; display:${emp ? 'block' : 'none'}; font-size:12px; background:var(--surface); padding:8px 12px; border-radius:6px; line-height:1.6; border:1px solid var(--card-border);">
+      <div id="w-emp-details" style="flex:1.5; display:block; font-size:12px; background:var(--surface); padding:8px 12px; border-radius:6px; line-height:1.6; border:1px solid var(--card-border);">
         ${emp ? `
           <div style="font-weight:600; font-size:13px; color:var(--text1); margin-bottom:4px; display:flex; justify-content:space-between;">
              <span>${App.esc(emp.name)}</span>
@@ -238,7 +238,19 @@ window.showWageModal = async (emp = null) => {
             <div><strong>Gender:</strong> ${App.esc(emp.sex) || '-'}</div>
             <div><strong>DOJ:</strong> ${App.esc(emp.doj || '-')}</div>
           </div>
-        ` : ''}
+        ` : `
+          <div style="font-weight:600; font-size:13px; color:var(--text3); margin-bottom:4px; display:flex; justify-content:space-between;">
+             <span>Select an employee to view details</span>
+             <span class="badge" style="background:var(--border); color:var(--text2)">-</span>
+          </div>
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:2px 8px; color:var(--text3);">
+            <div><strong>UAN:</strong> -</div>
+            <div><strong>Father:</strong> -</div>
+            <div><strong>DOB:</strong> -</div>
+            <div><strong>Gender:</strong> -</div>
+            <div><strong>DOJ:</strong> -</div>
+          </div>
+        `}
       </div>
 
       <div style="display:flex; flex-direction:column; gap:8px;">
