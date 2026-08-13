@@ -110,6 +110,11 @@ window.autoFillToYear = () => {
   const f = parseInt(document.getElementById('y-from').value);
   if (!isNaN(f) && f > 1950 && f < 2100) {
     document.getElementById('y-to').value = (f + 1).toString();
+    const schemeSelect = document.getElementById('y-scheme');
+    if (schemeSelect) {
+      schemeSelect.value = f >= 1997 ? 'post_1997' : 'pre_1997';
+      autoFillRates();
+    }
   }
 };
 
