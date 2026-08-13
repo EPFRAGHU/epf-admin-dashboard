@@ -245,11 +245,13 @@ const Challans = {
             document.getElementById('challan-idx').value = '';
         }
         this.updateTotal();
-        this.$modal.style.display = 'block';
+        document.getElementById('modal-overlay').classList.add('open');
+        this.$modal.classList.add('open');
     },
 
     closeModal() {
-        this.$modal.style.display = 'none';
+        document.getElementById('modal-overlay').classList.remove('open');
+        this.$modal.classList.remove('open');
     },
 
     updateTotal() {

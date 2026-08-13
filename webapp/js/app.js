@@ -71,7 +71,7 @@ const App = (() => {
 
   function closeModal() {
     document.getElementById('modal-overlay').classList.remove('open');
-    document.getElementById('modal').classList.remove('open');
+    document.querySelectorAll('.modal').forEach(m => m.classList.remove('open'));
   }
 
   /* ── Confirm ─────────────────────────────────────────────────── */
