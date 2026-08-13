@@ -614,95 +614,72 @@ async def del_year(key: str):
 
 # ── Remittances ───────────────────────────────────────────────────────────
 
+from pydantic import BaseModel
+from typing import List
+
+class BulkRemittanceIn(BaseModel):
+    remittances: List[RemittanceIn]
+
 @app.get("/api/years/{key}/remittances")
-async def list_remittances(key: str):
+async def get_remittances(key: str):
+    from epf_engine import get_month_num, calendar_year_for_month, account2_rate_percent, account22_rate_percent, ACCOUNT_21_RATE, ACCOUNT_22_MIN, MONTHS
     if key not in project.years:
         raise HTTPException(404, "Year not found")
-    yr = project.years[key]
-    remittances = []
-    for idx, r in enumerate(yr.remittances):
-        remittances.append({"id": idx, **r})
-    return {"remittances": remittances}
-
-@app.post("/api/years/{key}/remittances")
-async def add_remittance(key: str, d: RemittanceIn):
-    if key not in project.years:
-        raise HTTPException(404, "Year not found")
-    yr = project.years[key]
-    yr.remittances.append(d.dict())
-    _save()
-    return {"ok": True, "id": len(yr.remittances) - 1}
-
-@app.put("/api/years/{key}/remittances/{idx}")
-async def edit_remittance(key: str, idx: int, d: RemittanceIn):
-    if key not in project.years:
-        raise HTTPException(404, "Year not found")
-    yr = project.years[key]
-    if idx < 0 or idx >= len(yr.remittances):
-        raise HTTPException(404, "Remittance not found")
-    yr.remittances[idx] = d.dict()
-    _save()
-    return {"ok": True}
-
-@app.delete("/api/years/{key}/remittances/{idx}")
-async def del_remittance(key: str, idx: int):
-    if key not in project.years:
-        raise HTTPException(404, "Year not found")
-    yr = project.years[key]
-    if idx < 0 or idx >= len(yr.remittances):
-        raise HTTPException(404, "Remittance not found")
-    yr.remittances.pop(idx)
-    _save()
-    return {"ok": True}
-
-@app.get("/api/years/{key}/remittances/calculate")
-async def calculate_remittances(key: str, month: str):
-    from epf_engine import get_month_num, calendar_year_for_month, account2_rate_percent, account22_rate_percent, ACCOUNT_21_RATE, ACCOUNT_22_MIN
-    if key not in project.years:
-        raise HTTPException(404, "Year not found")
-    
+        
     yr = project.years[key]
     est = project.build_establishment_for_year(key)
     employees = project.build_employees_for_year(key)
+    # Only include employees with wages
     employees = [emp for emp in employees if sum(emp.wages) > 0]
     
-    try:
-        month_idx = ["MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC", "JAN", "FEB"].index(month[:3].upper())
-    except ValueError:
-        raise HTTPException(400, "Invalid month")
+    all_month_rows = [emp.month_rows(est.worker_epf_rate, est.worker_eps_rate, est.employer_epf_rate, est.employer_eps_rate) for emp in employees]
+    
+    results = []
+    
+    for i, month_label in enumerate(MONTHS):
+        # Find if user saved data for this month
+        saved_entry = next((r for r in yr.remittances if r.get("month_label") == month_label), {})
         
-    all_month_rows = [emp.month_rows(est.worker_epf_rate, est.worker_eps_rate,
-                                      est.employer_epf_rate, est.employer_eps_rate)
-                      for emp in employees]
-                      
-    wages_total = sum(rows[month_idx][0] for rows in all_month_rows)
-    ee_total = sum(rows[month_idx][1] for rows in all_month_rows)
-    er_total = sum(rows[month_idx][4] for rows in all_month_rows)
-    a10_total = sum(rows[month_idx][5] for rows in all_month_rows)
-    
-    cal_year = calendar_year_for_month(month, est.year_from, est.year_to)
-    a2_rate = account2_rate_percent(cal_year, get_month_num(month))
-    a22_rate = account22_rate_percent(cal_year, get_month_num(month))
-    
-    a2_amt = round(wages_total * a2_rate / 100)
-    a21_amt = round(wages_total * ACCOUNT_21_RATE / 100)
-    a22_amt = (max(round(wages_total * a22_rate / 100), ACCOUNT_22_MIN)
-              if (a22_rate > 0 and wages_total > 0) else 0)
-              
-    # For A/c 1, it's EE + ER
-    acc_01 = ee_total + er_total
-    
-    # Active members in this month
-    active_members = sum(1 for rows in all_month_rows if rows[month_idx][0] > 0)
-    
-    return {
-        "acc_01": acc_01,
-        "acc_02": a2_amt,
-        "acc_10": a10_total,
-        "acc_21": a21_amt,
-        "acc_22": a22_amt,
-        "members": active_members
-    }
+        cal_year = calendar_year_for_month(month_label, est.year_from, est.year_to)
+        a2_rate = account2_rate_percent(cal_year, get_month_num(month_label))
+        a22_rate = account22_rate_percent(cal_year, get_month_num(month_label))
+        
+        wages_total = sum(rows[i][0] for rows in all_month_rows)
+        ee_total = sum(rows[i][1] for rows in all_month_rows)
+        er_total = sum(rows[i][4] for rows in all_month_rows)
+        a10_total = sum(rows[i][5] for rows in all_month_rows)
+        
+        a2_amt = round(wages_total * a2_rate / 100)
+        a21_amt = round(wages_total * ACCOUNT_21_RATE / 100)
+        a22_amt = (max(round(wages_total * a22_rate / 100), ACCOUNT_22_MIN) if (a22_rate > 0 and wages_total > 0) else 0)
+        
+        members = sum(1 for rows in all_month_rows if rows[i][0] > 0)
+        acc_01 = ee_total + er_total
+        
+        results.append({
+            "month_label": month_label,
+            "trrn": saved_entry.get("trrn", ""),
+            "crrn": saved_entry.get("crrn", ""),
+            "credit_date": saved_entry.get("credit_date", ""),
+            "members": members,
+            "acc_01": acc_01,
+            "acc_02": a2_amt,
+            "acc_10": a10_total,
+            "acc_21": a21_amt,
+            "acc_22": a22_amt
+        })
+        
+    return {"remittances": results}
+
+@app.post("/api/years/{key}/remittances/bulk")
+async def save_remittances_bulk(key: str, data: BulkRemittanceIn):
+    if key not in project.years:
+        raise HTTPException(404, "Year not found")
+        
+    yr = project.years[key]
+    yr.remittances = [r.dict() for r in data.remittances]
+    _save()
+    return {"ok": True}
 
 
 
