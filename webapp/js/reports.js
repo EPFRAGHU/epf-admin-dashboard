@@ -195,7 +195,7 @@ App.registerPage('reports', async (container) => {
               view.innerHTML = '<div style="color:var(--text2); padding:16px;">Loading history...</div>';
               
               try {
-                  const data = await App.get(`/api/reports/employee_wage_history/${member_id}`);
+                  const data = await App.get(`/api/reports/employee_wage_history/${encodeURIComponent(member_id)}`);
                   const p = data.profile;
                   let html = `
                     <div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:16px; margin-bottom:16px;">

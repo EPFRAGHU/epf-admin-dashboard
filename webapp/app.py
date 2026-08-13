@@ -757,7 +757,7 @@ async def del_all_wages(key: str):
 
 
 # ── Reports ───────────────────────────────────────────────────────────────
-@app.get("/api/reports/employee_wage_history/{member_id}")
+@app.get("/api/reports/employee_wage_history/{member_id:path}")
 async def report_employee_wage_history(member_id: str):
     master = project.get_master(member_id)
     if not master:
@@ -830,7 +830,7 @@ async def generate_report(key: str, format: str = 'excel', forms: str = ''):
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
-@app.get("/api/reports/{key}/employee/{member_id}")
+@app.get("/api/reports/{key}/employee/{member_id:path}")
 async def generate_employee_report(key: str, member_id: str, format: str = 'pdf', forms: str = '3A'):
     if key not in project.years:
         raise HTTPException(404, "Year not found")
