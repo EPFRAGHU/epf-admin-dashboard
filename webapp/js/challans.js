@@ -110,24 +110,50 @@ const Challans = {
             return;
         }
         
+        let grandMembers = 0, grandA1 = 0, grandA2 = 0, grandA10 = 0, grandA21 = 0, grandA22 = 0, grandTot = 0;
+        
         this.remittances.forEach((r, idx) => {
             const total = r.acc_01 + r.acc_02 + r.acc_10 + r.acc_21 + r.acc_22;
+            grandMembers += r.members;
+            grandA1 += r.acc_01;
+            grandA2 += r.acc_02;
+            grandA10 += r.acc_10;
+            grandA21 += r.acc_21;
+            grandA22 += r.acc_22;
+            grandTot += total;
+            
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td class="txt">${r.month_label}</td>
                 <td class="txt"><input type="text" class="form-control challan-trrn" data-idx="${idx}" value="${r.trrn || ''}"></td>
                 <td class="txt"><input type="text" class="form-control challan-crrn" data-idx="${idx}" value="${r.crrn || ''}"></td>
-                <td>${r.members}</td>
-                <td>${r.acc_01}</td>
-                <td>${r.acc_02}</td>
-                <td>${r.acc_10}</td>
-                <td>${r.acc_21}</td>
-                <td>${r.acc_22}</td>
-                <td><strong>${total}</strong></td>
+                <td style="font-size: 1.1em;">${r.members}</td>
+                <td style="font-size: 1.1em;">${r.acc_01}</td>
+                <td style="font-size: 1.1em;">${r.acc_02}</td>
+                <td style="font-size: 1.1em;">${r.acc_10}</td>
+                <td style="font-size: 1.1em;">${r.acc_21}</td>
+                <td style="font-size: 1.1em;">${r.acc_22}</td>
+                <td style="font-size: 1.1em;"><strong>${total}</strong></td>
                 <td class="txt"><input type="date" class="form-control challan-date" data-idx="${idx}" value="${r.credit_date || ''}"></td>
             `;
             this.$tbody.appendChild(tr);
         });
+        
+        const grandTr = document.createElement('tr');
+        grandTr.innerHTML = `
+            <td colspan="3" class="txt" style="text-align: right; font-size: 1.1em;"><strong>GRAND TOTAL</strong></td>
+            <td style="font-size: 1.1em;"><strong>${grandMembers}</strong></td>
+            <td style="font-size: 1.1em;"><strong>${grandA1}</strong></td>
+            <td style="font-size: 1.1em;"><strong>${grandA2}</strong></td>
+            <td style="font-size: 1.1em;"><strong>${grandA10}</strong></td>
+            <td style="font-size: 1.1em;"><strong>${grandA21}</strong></td>
+            <td style="font-size: 1.1em;"><strong>${grandA22}</strong></td>
+            <td style="font-size: 1.1em;"><strong>${grandTot}</strong></td>
+            <td></td>
+        `;
+        grandTr.style.backgroundColor = '#f9fafb';
+        grandTr.style.borderTop = '2px solid #e5e7eb';
+        this.$tbody.appendChild(grandTr);
     },
 
     async saveChallansBulk() {

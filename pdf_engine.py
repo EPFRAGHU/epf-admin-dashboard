@@ -440,6 +440,9 @@ def generate_form_12a_pdf(project, year_key: str, filepath: str):
             a1 = int(r.get("acc_01", 0))
             a2 = int(r.get("acc_02", 0))
             a10 = int(r.get("acc_10", 0))
+            a21 = int(r.get("acc_21", 0))
+            a22 = int(r.get("acc_22", 0))
+            cdate = r.get("credit_date", "-")
             
             tot = a1 + a2 + a10 + a21 + a22
             
@@ -470,6 +473,7 @@ def generate_form_12a_pdf(project, year_key: str, filepath: str):
                 Paragraph(str(a21), style_amount),
                 Paragraph(str(a22), style_amount),
                 Paragraph(str(tot), style_amount),
+                Paragraph(str(cdate), style_cell)
             ])
             
     data.append([
@@ -490,6 +494,8 @@ def generate_form_12a_pdf(project, year_key: str, filepath: str):
     
     table = Table(data, colWidths=col_widths, repeatRows=1)
     tstyle = _default_table_style()
+    tstyle.add('BOTTOMPADDING', (0, 0), (-1, -1), 2)
+    tstyle.add('TOPPADDING', (0, 0), (-1, -1), 2)
     tstyle.add('SPAN', (0,-1), (2,-1))
     tstyle.add('BACKGROUND', (0,0), (-1,0), colors.lightgrey)
     table.setStyle(tstyle)
