@@ -99,7 +99,7 @@ def generate_form_9_pdf(project, filepath: str):
             data.append([Paragraph(str(i), style_cell)] + [Paragraph("", style_cell)] * 12)
             
     available_width = doc.pagesize[0] - doc.rightMargin - doc.leftMargin
-    weights = [0.04, 0.08, 0.08, 0.12, 0.12, 0.06, 0.04, 0.06, 0.08, 0.08, 0.06, 0.09, 0.09]
+    weights = [0.04, 0.08, 0.10, 0.13, 0.13, 0.08, 0.05, 0.08, 0.06, 0.06, 0.04, 0.08, 0.07]
     col_widths = [w * available_width for w in weights]
     
     table = Table(data, colWidths=col_widths, repeatRows=1)
