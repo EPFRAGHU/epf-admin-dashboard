@@ -1814,102 +1814,8 @@ class ExcelGenerator:
 # PDF export and batch (year-range) generation
 # --------------------------------------------------------------------------
 
-def _get_excel_app():
-    """
-    Starts (or connects to) Excel via COM automation, for PDF export.
-    Requires Microsoft Excel installed on this Windows PC, plus the
-    'pywin32' package:   pip install pywin32
-    Raises RuntimeError with a clear, actionable message if either is missing.
-    """
-    try:
-        import win32com.client as win32
-    except ImportError as e:
-        raise RuntimeError(
-            "PDF export needs Microsoft Excel plus the 'pywin32' package on this "
-            "Windows PC. Install it with:\n\n    pip install pywin32\n\n"
-            "then try again. (Any Excel files have already been saved.)"
-        ) from e
-    excel = win32.gencache.EnsureDispatch("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    excel.AskToUpdateLinks = False   # never pop up a hidden "update links?" dialog
-    excel.EnableEvents = False       # skip any workbook_open macros/add-ins that could show a dialog
-    return excel
-
-
-def _export_pdf_with_app(excel_app, xlsx_path: str, pdf_path: str):
-    """
-    Uses an already-running Excel COM Application object to export one
-    workbook to PDF. See convert_workbook_to_pdf for the standalone version.
-
-    If pdf_path already exists (e.g. left open in a PDF viewer from a
-    previous run), Excel's ExportAsFixedFormat fails with a vague
-    "Document not saved" COM error -- so it's removed first, and if that
-    removal itself fails (file locked), a clear message is raised
-    immediately instead of letting Excel produce the confusing one.
-    """
-    xlsx_path = os.path.abspath(xlsx_path)
-    pdf_path = os.path.abspath(pdf_path)
-
-    if os.path.exists(pdf_path):
-        try:
-            os.remove(pdf_path)
-        except OSError as e:
-            raise RuntimeError(
-                f"Could not overwrite the existing PDF:\n{pdf_path}\n\n"
-                f"It's probably open in a PDF viewer (Adobe Reader, Edge, a browser tab, "
-                f"etc.) -- please close it and try again."
-            ) from e
-
-    try:
-        wb = excel_app.Workbooks.Open(xlsx_path, UpdateLinks=0, IgnoreReadOnlyRecommended=True)
-    except Exception as e:
-        raise RuntimeError(
-            f"Excel could not open the workbook it just wrote:\n{xlsx_path}\n\n"
-            f"({e})\n\n"
-            f"If Excel shows a hidden dialog box (e.g. a compatibility or protected-view "
-            f"prompt), close it, then also check Task Manager for any leftover background "
-            f"EXCEL.EXE process and end it before trying again."
-        ) from e
-
-    try:
-        try:
-            wb.ExportAsFixedFormat(0, pdf_path)  # 0 = xlTypePDF
-        except Exception as e:
-            raise RuntimeError(
-                f"Excel refused to save the PDF for this file:\n{xlsx_path}\n\n"
-                f"({e})\n\n"
-                f"This is almost always one of:\n"
-                f"  - the PDF is already open in a viewer -- close it and retry\n"
-                f"  - a leftover invisible EXCEL.EXE process from an earlier run -- end it "
-                f"in Task Manager and retry\n"
-                f"  - Excel is showing a hidden dialog box off-screen -- check the taskbar\n\n"
-                f"The Excel (.xlsx) file itself was already saved successfully; only the "
-                f"PDF step failed. You can also untick \"PDF (.pdf)\" and generate Excel-only "
-                f"to confirm the data is fine, then retry PDF separately."
-            ) from e
-    finally:
-        wb.Close(SaveChanges=False)
-    return pdf_path
-
-
-def convert_workbook_to_pdf(xlsx_path: str, pdf_path: str):
-    """
-    Converts a single .xlsx file to .pdf, honouring each sheet's own page
-    setup (A4, fit-to-width, print area -- see ExcelGenerator._apply_a4_page_setup).
-    Launches and quits its own Excel instance -- fine for a one-off export.
-    For generating many years at once, generate_forms_for_year_range shares
-    a single Excel instance across the whole batch instead (much faster).
-    """
-    excel = _get_excel_app()
-    try:
-        return _export_pdf_with_app(excel, xlsx_path, pdf_path)
-    finally:
-        excel.Quit()
-
-
 def generate_forms_for_year(project: "Project", year_key: str, output_dir: str,
-                             make_excel: bool = True, make_pdf: bool = True, excel_app=None):
+                             make_excel: bool = True, make_pdf: bool = True):
     """
     Generates the Form 3A/6A workbook (and, optionally, a matching PDF) for
     ONE year, saved into output_dir. Both forms live in a single file per
@@ -1938,10 +1844,7 @@ def generate_forms_for_year(project: "Project", year_key: str, output_dir: str,
 
     if make_pdf:
         pdf_path = os.path.join(output_dir, f"{base}.pdf")
-        if excel_app is not None:
-            _export_pdf_with_app(excel_app, xlsx_path, pdf_path)
-        else:
-            convert_workbook_to_pdf(xlsx_path, pdf_path)
+        convert_excel_to_pdf(xlsx_path, pdf_path)
         written["pdf"] = pdf_path
         if not make_excel:
             # they only wanted the PDF -- clean up the intermediate xlsx
@@ -1983,22 +1886,19 @@ def generate_forms_for_year_range(project: "Project", start_year_key: str, end_y
         i_start, i_end = i_end, i_start
     keys_in_range = ordered_keys[i_start:i_end + 1]
 
-    excel_app = _get_excel_app() if make_pdf else None
     results = []
     try:
         for i, key in enumerate(keys_in_range):
             if progress_callback:
                 progress_callback(i, len(keys_in_range), key)
             try:
-                written = generate_forms_for_year(project, key, output_dir, make_excel, make_pdf,
-                                                   excel_app=excel_app)
+                written = generate_forms_for_year(project, key, output_dir, make_excel, make_pdf)
             except Exception as e:
                 e.results = results
                 raise
             results.append((key, written))
     finally:
-        if excel_app is not None:
-            excel_app.Quit()
+        pass
     return results
 
 
@@ -2493,31 +2393,52 @@ def _build_form5_form10_sheets(self, wb, forms_to_generate=None):
 ExcelGenerator._build_form5_form10_sheets = _build_form5_form10_sheets
 
 def convert_excel_to_pdf(excel_path: str, pdf_path: str):
-    import win32com.client
+    import subprocess
+    import shutil
     import os
-    import pythoncom
+
+    soffice = shutil.which("soffice") or shutil.which("soffice.exe")
+    if not soffice:
+        # Fallbacks for Windows if it's not in PATH
+        possible_paths = [
+            r"C:\Program Files\LibreOffice\program\soffice.exe",
+            r"C:\Program Files (x86)\LibreOffice\program\soffice.exe"
+        ]
+        for p in possible_paths:
+            if os.path.exists(p):
+                soffice = p
+                break
+
+    if not soffice:
+        raise RuntimeError(
+            "LibreOffice not found — install it from libreoffice.org and ensure 'soffice' is on PATH. "
+            "It is required to generate PDFs across platforms without Microsoft Excel."
+        )
+
+    excel_path = os.path.abspath(excel_path)
+    outdir = os.path.dirname(os.path.abspath(pdf_path))
     
-    pythoncom.CoInitialize()
-    excel = None
-    try:
-        try:
-            excel = win32com.client.DispatchEx("Excel.Application")
-        except Exception as e:
-            raise RuntimeError(f"Could not start Microsoft Excel. Ensure Excel is installed on the server. ({str(e)})")
-            
-        excel.Visible = False
-        excel.DisplayAlerts = False
-        wb = excel.Workbooks.Open(os.path.abspath(excel_path))
-        # 0 = xlTypePDF
-        wb.ExportAsFixedFormat(0, os.path.abspath(pdf_path))
-        wb.Close(False)
-    finally:
-        if excel:
+    # Run LibreOffice headless
+    result = subprocess.run(
+        [soffice, "--headless", "--convert-to", "pdf", "--outdir", outdir, excel_path],
+        capture_output=True, text=True
+    )
+    
+    if result.returncode != 0:
+        raise RuntimeError(f"LibreOffice PDF conversion failed: {result.stderr or result.stdout}")
+        
+    # LibreOffice saves the file with the same basename as the input file, but with .pdf
+    base_name = os.path.splitext(os.path.basename(excel_path))[0]
+    generated_pdf = os.path.join(outdir, f"{base_name}.pdf")
+    
+    # If the requested pdf_path is different from what LibreOffice generated, rename it
+    if os.path.abspath(generated_pdf) != os.path.abspath(pdf_path):
+        if os.path.exists(pdf_path):
             try:
-                excel.Quit()
-            except:
-                pass
-        pythoncom.CoUninitialize()
+                os.remove(pdf_path)
+            except OSError as e:
+                raise RuntimeError(f"Could not overwrite existing PDF (is it open in another program?): {pdf_path}") from e
+        os.rename(generated_pdf, pdf_path)
 
 def generate_ecr_month(est, employees: List[Employee], year_record: YearRecord, month_idx: int) -> str:
     """

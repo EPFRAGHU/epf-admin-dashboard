@@ -15,3 +15,9 @@ This document summarizes the recent changes and bug fixes implemented during our
 3. **Frontend Hangs (Loading showing nothing)**: Resolved an issue causing the Wage Entry page to get stuck on "Loading..." due to a javascript formatting exception when an employee's Member ID was interpreted as an integer instead of a string.
 
 > **Note**: For all backend API changes to take effect (such as the new PDF endpoints or modified Excel importing logic), you must restart your Python server (`CTRL+C` -> `python app.py`).
+
+## System Requirements
+- **Python 3.8+**
+- **LibreOffice**: Required for generating PDF forms (Form 3A, 6A, 12A) from templates. 
+  - *Installation*: Install from [libreoffice.org](https://www.libreoffice.org/). Ensure the `soffice` command is available in your system `PATH`.
+  - *Platform*: Works fully headless on Windows, macOS, and Linux (including deployment servers like Render.com).
