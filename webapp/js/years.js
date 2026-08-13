@@ -71,7 +71,7 @@ function showYearModal(yr = null) {
     <div class="form-grid">
       <div class="form-group">
         <label class="form-label">Year From</label>
-        <input class="form-input" id="y-from" placeholder="YYYY (e.g. 2001)" onchange="autoFillToYear()">
+        <input class="form-input" id="y-from" placeholder="YYYY (e.g. 2001)" oninput="autoFillToYear()">
       </div>
       <div class="form-group">
         <label class="form-label">Year To</label>
