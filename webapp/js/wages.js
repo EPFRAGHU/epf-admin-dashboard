@@ -251,42 +251,32 @@ window.showWageModal = async (emp = null) => {
       </div>
     </div>
     
-    <div class="table-wrap">
-      <table class="wage-table">
-        <thead style="position: sticky; top: 0; background: var(--bg2); z-index: 10;">
-          <tr>
-            <th>Month</th>
-            <th style="width: 100px">Gross Wages</th>
-            <th style="width: 100px">EPF Wages</th>
-            <th style="width: 70px">NCP Days</th>
-            <th style="text-align:right">Worker EPF<br><small>(${r.w_epf}%)</small></th>
-            <th style="text-align:right">Employer EPF<br><small>(${r.e_epf}%)</small></th>
-            <th style="text-align:right">${r.eps_label}<br><small>(${r.e_eps}%)</small></th>
-          </tr>
-        </thead>
-        <tbody id="wage-entry-body">
-          ${mths.map((m, i) => `
-            <tr>
-              <td style="font-weight: 500">${m}</td>
-              <td><input class="form-input num g-input" data-idx="${i}" type="number" value="${grossWagesArr[i] != null ? grossWagesArr[i] : ''}" placeholder="0" style="width: 100%; padding: 4px 8px;"></td>
-              <td><input class="form-input num w-input" data-idx="${i}" type="number" value="${wagesArr[i] != null ? wagesArr[i] : ''}" placeholder="0" style="width: 100%; padding: 4px 8px;"></td>
-              <td><input class="form-input num ncp-input" data-idx="${i}" type="number" value="${ncpDaysArr[i] != null ? ncpDaysArr[i] : ''}" placeholder="0" style="width: 100%; padding: 4px 8px;"></td>
-              <td class="num calc-w-epf" style="color:var(--text2)">0</td>
-              <td class="num calc-e-epf" style="color:var(--text2)">0</td>
-              <td class="num calc-e-eps" style="color:var(--text2)">0</td>
-            </tr>
-          `).join('')}
-          <tr class="grand-total">
-            <td>TOTAL</td>
-            <td class="num" id="g-total">₹0</td>
-            <td class="num" id="w-total">₹0</td>
-            <td class="num" id="ncp-total">0</td>
-            <td class="num" id="w-epf-total">₹0</td>
-            <td class="num" id="e-epf-total">₹0</td>
-            <td class="num" id="e-eps-total">₹0</td>
-          </tr>
-        </tbody>
-      </table>
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 16px;" id="wage-entry-body">
+      ${mths.map((m, i) => `
+        <div class="month-row" style="background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 12px;">
+          <div style="font-weight: 600; margin-bottom: 8px; font-size: 14px; border-bottom: 1px solid var(--border); padding-bottom: 4px;">${m}</div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+            <div class="form-group" style="margin-bottom:0"><label class="form-label" style="font-size:11px">Gross</label><input class="form-input num g-input" data-idx="${i}" type="number" value="${grossWagesArr[i] != null ? grossWagesArr[i] : ''}" placeholder="0" style="padding: 4px 8px;"></div>
+            <div class="form-group" style="margin-bottom:0"><label class="form-label" style="font-size:11px">EPF Wage</label><input class="form-input num w-input" data-idx="${i}" type="number" value="${wagesArr[i] != null ? wagesArr[i] : ''}" placeholder="0" style="padding: 4px 8px;"></div>
+            <div class="form-group" style="margin-bottom:0; grid-column: span 2"><label class="form-label" style="font-size:11px">NCP Days</label><input class="form-input num ncp-input" data-idx="${i}" type="number" value="${ncpDaysArr[i] != null ? ncpDaysArr[i] : ''}" placeholder="0" style="padding: 4px 8px;"></div>
+          </div>
+          <div style="margin-top: 8px; font-size: 11px; color: var(--text2); display: flex; justify-content: space-between; background: var(--bg2); padding: 4px; border-radius: 4px;">
+            <div style="text-align:center">EE (${r.w_epf}%)<br><b class="calc-w-epf num">0</b></div>
+            <div style="text-align:center">ER EPF (${r.e_epf}%)<br><b class="calc-e-epf num">0</b></div>
+            <div style="text-align:center">${r.eps_label} (${r.e_eps}%)<br><b class="calc-e-eps num">0</b></div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+    
+    <div class="grand-total" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 16px; padding: 12px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; font-weight: 600; text-align: center; font-size: 13px;">
+        <div style="grid-column: span 3; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 8px;">ANNUAL TOTALS</div>
+        <div>Gross: <span id="g-total" class="num">₹0</span></div>
+        <div>EPF Wages: <span id="w-total" class="num">₹0</span></div>
+        <div>NCP Days: <span id="ncp-total" class="num">0</span></div>
+        <div>Worker EPF: <span id="w-epf-total" class="num">₹0</span></div>
+        <div>Employer EPF: <span id="e-epf-total" class="num">₹0</span></div>
+        <div>Pension: <span id="e-eps-total" class="num">₹0</span></div>
     </div>
   `;
 
@@ -307,7 +297,7 @@ window.showWageModal = async (emp = null) => {
     const isHigherEpf = document.getElementById('w-higher-epf').checked;
     const isAge58 = document.getElementById('w-age-58').checked;
     
-    document.querySelectorAll('#wage-entry-body tr:not(.grand-total)').forEach((tr, i) => {
+    document.querySelectorAll('#wage-entry-body .month-row').forEach((tr, i) => {
       const gInp = tr.querySelector('.g-input');
       const wInp = tr.querySelector('.w-input');
       const nInp = tr.querySelector('.ncp-input');
@@ -364,7 +354,7 @@ window.showWageModal = async (emp = null) => {
   const handleBlur = (e) => {
     if (e.target.value === '') e.target.value = '0';
     
-    const tr = e.target.closest('tr');
+    const tr = e.target.closest('.month-row');
     if (tr) {
       const gInp = tr.querySelector('.g-input');
       const wInp = tr.querySelector('.w-input');

@@ -222,6 +222,13 @@ class EmployeeIn(BaseModel):
     doe: str = ""
     reason_leaving: str = ""
     serial_no: Optional[int] = None
+    relationship: str = ""
+    marital_status: str = ""
+    mobile: str = ""
+    email: str = ""
+    aadhaar: str = ""
+    bank_account: str = ""
+    ifsc: str = ""
 
 
 class YearIn(BaseModel):
@@ -457,7 +464,9 @@ async def add_employee(d: EmployeeIn):
     if project.get_master(d.member_id):
         raise HTTPException(400, f"Account {d.member_id} already exists")
     project.upsert_master(d.member_id, d.name, d.father_name, d.uan,
-                          d.dob, d.sex, d.doj, d.doe, d.reason_leaving, d.serial_no)
+                          d.dob, d.sex, d.doj, d.doe, d.reason_leaving, d.serial_no,
+                          d.relationship, d.marital_status, d.mobile, d.email, d.aadhaar,
+                          d.bank_account, d.ifsc)
     _save()
     return {"ok": True}
 
@@ -469,7 +478,9 @@ async def edit_employee(acc: str, d: EmployeeIn):
             raise HTTPException(400, f"Account {d.member_id} already exists")
         project.rename_account(acc, d.member_id)
     project.upsert_master(d.member_id, d.name, d.father_name, d.uan,
-                          d.dob, d.sex, d.doj, d.doe, d.reason_leaving, d.serial_no)
+                          d.dob, d.sex, d.doj, d.doe, d.reason_leaving, d.serial_no,
+                          d.relationship, d.marital_status, d.mobile, d.email, d.aadhaar,
+                          d.bank_account, d.ifsc)
     _save()
     return {"ok": True}
 

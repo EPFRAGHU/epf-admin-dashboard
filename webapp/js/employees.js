@@ -110,7 +110,7 @@ function showEmpModal(emp = null) {
   const title = isEdit ? `Edit Employee — ${emp.name}` : 'Add New Employee';
   const e = emp || {};
   const body = `
-    <div class="form-grid">
+    <div class="form-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
       <div class="form-group">
         <label class="form-label">Member ID *</label>
         <input class="form-input" id="m-acc" value="${App.esc(e.member_id || '')}" maxlength="7" ${isEdit ? 'data-orig="'+App.fmtId(e.member_id)+'"' : ''}>
@@ -124,8 +124,16 @@ function showEmpModal(emp = null) {
         <input class="form-input" id="m-name" value="${App.esc(e.name || '')}">
       </div>
       <div class="form-group">
-        <label class="form-label">Father's Name</label>
+        <label class="form-label">Father/Husband Name</label>
         <input class="form-input" id="m-father" value="${App.esc(e.father_name || '')}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Relationship</label>
+        <select class="form-select" id="m-relationship">
+          <option value="">—</option>
+          <option value="Father" ${e.relationship==='Father'?'selected':''}>Father</option>
+          <option value="Husband" ${e.relationship==='Husband'?'selected':''}>Husband</option>
+        </select>
       </div>
       <div class="form-group">
         <label class="form-label">Date of Birth</label>
@@ -137,6 +145,16 @@ function showEmpModal(emp = null) {
           <option value="">—</option>
           <option value="Male" ${e.sex==='Male'?'selected':''}>Male</option>
           <option value="Female" ${e.sex==='Female'?'selected':''}>Female</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Marital Status</label>
+        <select class="form-select" id="m-marital">
+          <option value="">—</option>
+          <option value="Married" ${e.marital_status==='Married'?'selected':''}>Married</option>
+          <option value="Unmarried" ${e.marital_status==='Unmarried'?'selected':''}>Unmarried</option>
+          <option value="Widow/Widower" ${e.marital_status==='Widow/Widower'?'selected':''}>Widow/Widower</option>
+          <option value="Divorcee" ${e.marital_status==='Divorcee'?'selected':''}>Divorcee</option>
         </select>
       </div>
       <div class="form-group">
@@ -161,6 +179,26 @@ function showEmpModal(emp = null) {
         </select>
       </div>
       <div class="form-group">
+        <label class="form-label">Mobile Number</label>
+        <input class="form-input" id="m-mobile" value="${App.esc(e.mobile || '')}" maxlength="10">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Email ID</label>
+        <input class="form-input" id="m-email" value="${App.esc(e.email || '')}" type="email">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Aadhaar</label>
+        <input class="form-input" id="m-aadhaar" value="${App.esc(e.aadhaar || '')}" maxlength="12">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Bank Account Number</label>
+        <input class="form-input" id="m-bank" value="${App.esc(e.bank_account || '')}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">IFSC</label>
+        <input class="form-input" id="m-ifsc" value="${App.esc(e.ifsc || '')}" maxlength="11" style="text-transform: uppercase">
+      </div>
+      <div class="form-group">
         <label class="form-label">Serial No.</label>
         <input class="form-input" id="m-sl" type="number" value="${e.serial_no || ''}">
       </div>
@@ -183,6 +221,13 @@ async function saveEmp(origAcc) {
     doe: document.getElementById('m-doe').value.trim(),
     reason_leaving: document.getElementById('m-reason').value,
     serial_no: parseInt(document.getElementById('m-sl').value) || null,
+    relationship: document.getElementById('m-relationship').value,
+    marital_status: document.getElementById('m-marital').value,
+    mobile: document.getElementById('m-mobile').value.trim(),
+    email: document.getElementById('m-email').value.trim(),
+    aadhaar: document.getElementById('m-aadhaar').value.trim(),
+    bank_account: document.getElementById('m-bank').value.trim(),
+    ifsc: document.getElementById('m-ifsc').value.trim().toUpperCase(),
   };
   if (!d.member_id || !d.name) { App.toast('Member ID and Name are required', 'error'); return; }
   try {
