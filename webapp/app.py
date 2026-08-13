@@ -780,7 +780,7 @@ async def report_employee_wage_history(member_id: str):
         # But for history, showing all years or just years since DOJ makes sense.
         # It's fine to show all, or filter to > 0 total wages. We'll include all.
         years_data.append({
-            "year": yr.label,
+            "year": f"{yr.year_from}-{yr.year_to}",
             "wages": wages,
             "total": total_wages
         })
