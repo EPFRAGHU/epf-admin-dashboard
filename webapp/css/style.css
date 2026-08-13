@@ -6,20 +6,20 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:          #0B1120;
-  --bg2:         #111827;
-  --card:        #1E293B;
-  --card-hover:  #263548;
-  --card-border: #334155;
-  --surface:     #0F172A;
-  --text:        #F1F5F9;
-  --text2:       #94A3B8;
+  --bg:          #EEF0F2;
+  --bg2:         #FFFFFF;
+  --card:        #FFFFFF;
+  --card-hover:  #F8FAFC;
+  --card-border: #D4D8DC;
+  --surface:     #FFFFFF;
+  --text:        #131B24;
+  --text2:       #4A5568;
   --text3:       #64748B;
-  --accent:      #3B82F6;
-  --accent2:     #2563EB;
-  --accent-glow: rgba(59,130,246,.25);
+  --accent:      #24405F;
+  --accent2:     #152A42;
+  --accent-glow: rgba(36, 64, 95, .15);
   --green:       #10B981;
-  --green-glow:  rgba(16,185,129,.2);
+  --green-glow:  rgba(16,185,129,.1);
   --amber:       #F59E0B;
   --red:         #EF4444;
   --purple:      #8B5CF6;
@@ -27,10 +27,12 @@
   --topbar-h:    60px;
   --radius:      12px;
   --radius-sm:   8px;
-  --shadow:      0 4px 24px rgba(0,0,0,.3);
-  --shadow-lg:   0 8px 40px rgba(0,0,0,.45);
+  --shadow:      0 4px 24px rgba(0,0,0,.1);
+  --shadow-lg:   0 8px 40px rgba(0,0,0,.15);
   --transition:  .25s cubic-bezier(.4,0,.2,1);
-  --font:        'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font:        'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-heading: 'Fraunces', serif;
+  --font-mono:    'IBM Plex Mono', monospace;
 }
 
 html { font-size: 14px; }
@@ -59,7 +61,7 @@ a { color: var(--accent); text-decoration: none; }
 .sidebar {
   width: var(--sidebar-w);
   min-width: var(--sidebar-w);
-  background: linear-gradient(180deg, #0F172A 0%, #1E293B 100%);
+  background: var(--surface);
   border-right: 1px solid var(--card-border);
   display: flex;
   flex-direction: column;
@@ -73,10 +75,10 @@ a { color: var(--accent); text-decoration: none; }
   align-items: center;
   gap: 12px;
   padding: 20px 20px 16px;
-  border-bottom: 1px solid rgba(255,255,255,.06);
+  border-bottom: 1px solid var(--card-border);
 }
 .brand-icon { font-size: 28px; }
-.brand-title { font-size: 16px; font-weight: 700; letter-spacing: -.3px; }
+.brand-title { font-size: 16px; font-weight: 700; letter-spacing: -.3px; font-family: var(--font-heading); }
 .brand-sub { font-size: 11px; color: var(--text3); font-weight: 500; text-transform: uppercase; letter-spacing: 1px; }
 
 .sidebar-nav { flex: 1; padding: 12px 10px; overflow-y: auto; }
@@ -93,7 +95,7 @@ a { color: var(--accent); text-decoration: none; }
   transition: all var(--transition);
   margin-bottom: 2px;
 }
-.nav-item:hover { background: rgba(255,255,255,.06); color: var(--text); }
+.nav-item:hover { background: rgba(0,0,0,.06); color: var(--text); }
 .nav-item.active {
   background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%);
   color: #fff;

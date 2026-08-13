@@ -125,9 +125,9 @@ App.registerPage('dashboard', async (container) => {
   const employerData = data.year_stats.map(y => y.employer);
   const empCountData = data.year_stats.map(y => y.employees);
 
-  const chartFont = { family: "'Inter', sans-serif" };
-  const gridColor = 'rgba(255,255,255,.06)';
-  const tickColor = '#64748B';
+  const chartFont = { family: "'IBM Plex Sans', sans-serif" };
+  const gridColor = 'rgba(0,0,0,.06)';
+  const tickColor = '#4A5568';
 
   new Chart(document.getElementById('chart-contributions'), {
     type: 'line',
