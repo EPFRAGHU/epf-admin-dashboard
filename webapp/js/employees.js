@@ -90,12 +90,12 @@ function empRow(e) {
     <td>${e.serial_no || ''}</td>
     <td><strong>${App.fmtId(e.member_id)}</strong></td>
     <td>${App.esc(e.uan)}</td>
-    <td>${App.esc(e.name)}</td>
+    <td class="txt">${App.esc(e.name)}</td>
     <td>${App.esc(e.father_name)}</td>
-    <td>${App.esc(e.dob)}${e.superannuation ? '<br><span class="badge badge-red" style="margin-top:2px; display:inline-block">58+</span>' : ''}</td>
+    <td>${App.esc(e.dob)}${e.superannuation ? '<br><span class="badge high" style="margin-top:2px; display:inline-block">58+</span>' : ''}</td>
     <td>
-      ${e.higher_epf_ee ? '<span class="badge badge-blue" style="margin-bottom:2px">H.EPF(EE)</span><br>' : ''}
-      ${e.higher_epf_er ? '<span class="badge badge-purple">H.EPF(ER)</span>' : ''}
+      ${e.higher_epf_ee ? '<span class="badge low" style="margin-bottom:2px">H.EPF(EE)</span><br>' : ''}
+      ${e.higher_epf_er ? '<span class="badge low">H.EPF(ER)</span>' : ''}
     </td>
     <td>${App.esc(e.sex)}</td>
     <td>${App.esc(e.doj)}</td>

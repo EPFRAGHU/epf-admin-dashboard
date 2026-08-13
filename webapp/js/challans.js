@@ -31,7 +31,7 @@ App.registerPage('challans', async (container) => {
                 </div>
             </div>
             <div class="card">
-                <div class="card-header flex-between">
+                <div class="card-head flex-between">
                     <h3>Remittance Entries</h3>
                     <button class="btn btn-primary btn-sm" id="btn-add-challan">Add Challan</button>
                 </div>
@@ -40,9 +40,9 @@ App.registerPage('challans', async (container) => {
                         <table class="table" id="challans-table">
                             <thead>
                                 <tr>
-                                    <th>Month</th>
-                                    <th>TRRN</th>
-                                    <th>CRRN</th>
+                                    <th class="txt">Month</th>
+                                    <th class="txt">TRRN</th>
+                                    <th class="txt">CRRN</th>
                                     <th>Members</th>
                                     <th>A/c 1</th>
                                     <th>A/c 2</th>
@@ -50,8 +50,8 @@ App.registerPage('challans', async (container) => {
                                     <th>A/c 21</th>
                                     <th>A/c 22</th>
                                     <th>Total</th>
-                                    <th>Credit Date</th>
-                                    <th>Actions</th>
+                                    <th class="txt">Credit Date</th>
+                                    <th class="txt">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -239,9 +239,9 @@ const Challans = {
             const total = r.acc_01 + r.acc_02 + r.acc_10 + r.acc_21 + r.acc_22;
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td>${r.month_label}</td>
-                <td>${r.trrn}</td>
-                <td>${r.crrn || '-'}</td>
+                <td class="txt">${r.month_label}</td>
+                <td class="txt">${r.trrn}</td>
+                <td class="txt">${r.crrn || '-'}</td>
                 <td>${r.members}</td>
                 <td>${r.acc_01}</td>
                 <td>${r.acc_02}</td>
@@ -249,8 +249,8 @@ const Challans = {
                 <td>${r.acc_21}</td>
                 <td>${r.acc_22}</td>
                 <td><strong>${total}</strong></td>
-                <td>${r.credit_date || '-'}</td>
-                <td>
+                <td class="txt">${r.credit_date || '-'}</td>
+                <td class="txt">
                     <button class="btn btn-sm btn-secondary" onclick="Challans.edit(${r.id})">Edit</button>
                     <button class="btn btn-sm btn-danger" onclick="Challans.del(${r.id})">Delete</button>
                 </td>

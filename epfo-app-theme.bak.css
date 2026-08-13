@@ -1,0 +1,136 @@
+/* ============================================================
+   EPFO app theme — extracted from the Form 12A / swarm demo pages.
+   Pure CSS. No JS, no framework. Safe to import on top of any
+   existing HTML templates without touching backend/database code.
+   ============================================================ */
+
+/* 1. Fonts — add this link tag once in your base HTML <head>: */
+/* <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet"> */
+
+:root{
+  --paper:#EEF0F2;        /* page background */
+  --panel:#FFFFFF;        /* card / table background */
+  --ink:#131B24;          /* primary text */
+  --ink-soft:#4A5568;     /* secondary text */
+  --navy:#24405F;         /* accent / links / labels */
+  --navy-deep:#152A42;    /* headings, table header bg */
+  --gold:#B08A3E;         /* highlight / note border */
+  --line:#D4D8DC;         /* borders, dividers */
+  --subtotal-bg:#EEF2F6;  /* subtotal row background */
+  --grand-bg:#1E344F;     /* grand total row background */
+  --risk:#9C3B2E;         /* error / high-risk state */
+  --teal:#3F6B5D;         /* success / low-risk state */
+}
+
+body{
+  margin:0;
+  background:var(--paper);
+  color:var(--ink);
+  font-family:'IBM Plex Sans',sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+
+h1, h2, h3, .doc-title{
+  font-family:'Fraunces',serif;
+  font-weight:600;
+  color:var(--navy-deep);
+  margin:0 0 10px;
+}
+
+.eyebrow{
+  font-family:'IBM Plex Mono',monospace;
+  font-size:11px;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  color:var(--navy);
+  opacity:.8;
+}
+
+.mono, .data-cell, td.mono{
+  font-family:'IBM Plex Mono',monospace;
+}
+
+.note{
+  font-size:12.5px;
+  color:var(--ink-soft);
+  border-left:3px solid var(--gold);
+  padding:8px 12px;
+  background:rgba(176,138,62,0.08);
+  line-height:1.5;
+}
+
+.card, .doc, .panel{
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:2px;
+  overflow:hidden;
+}
+
+.card-head{
+  padding:14px 18px;
+  border-bottom:1px solid var(--line);
+}
+
+button, .btn{
+  font-family:'IBM Plex Sans',sans-serif;
+  font-weight:600;
+  font-size:13.5px;
+  background:var(--navy-deep);
+  color:#fff;
+  border:none;
+  padding:10px 20px;
+  border-radius:2px;
+  cursor:pointer;
+  transition:background .15s ease;
+}
+button:hover, .btn:hover{ background:var(--navy); }
+button:focus-visible, .btn:focus-visible{ outline:2px solid var(--gold); outline-offset:2px; }
+
+select, input{
+  font-family:'IBM Plex Sans',sans-serif;
+  font-size:13.5px;
+  padding:8px 10px;
+  border:1px solid var(--line);
+  border-radius:2px;
+  background:#fff;
+  color:var(--ink);
+}
+select:focus-visible, input:focus-visible{ outline:2px solid var(--gold); outline-offset:1px; }
+
+/* Table styling — matches the Form 9 / Form 12A layouts */
+table{ border-collapse:collapse; width:100%; font-size:12px; }
+th, td{ border:1px solid var(--line); padding:7px 8px; text-align:right; }
+th{
+  background:var(--navy-deep);
+  color:#fff;
+  font-family:'IBM Plex Mono',monospace;
+  font-weight:500;
+  font-size:10.5px;
+  letter-spacing:.03em;
+  text-transform:uppercase;
+}
+td.txt, th.txt{ text-align:left; }
+
+tr.subtotal td{
+  background:var(--subtotal-bg);
+  font-weight:600;
+  font-family:'IBM Plex Mono',monospace;
+}
+
+tfoot tr td{
+  background:var(--grand-bg);
+  color:#fff;
+  font-weight:600;
+  font-family:'IBM Plex Mono',monospace;
+  padding:10px 8px;
+}
+
+.badge{
+  display:inline-block;
+  font-family:'IBM Plex Mono',monospace;
+  font-size:10.5px;
+  padding:2px 8px;
+  border-radius:10px;
+}
+.badge.high{ background:rgba(156,59,46,.12); color:var(--risk); }
+.badge.low{ background:rgba(63,107,93,.12); color:var(--teal); }

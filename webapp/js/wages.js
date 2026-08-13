@@ -47,7 +47,7 @@ App.registerPage('wages', async (container) => {
     <div class="card" style="margin-bottom:16px">
       <div style="display:flex; justify-content:space-between; align-items:center">
         <div>
-          <span class="badge ${currentWagesData.scheme === 'post_1997' ? 'badge-blue' : 'badge-amber'}">${currentWagesData.scheme === 'post_1997' ? 'Post-1997 Scheme' : 'Pre-1997 Scheme'}</span>
+          <span class="badge ${currentWagesData.scheme === 'post_1997' ? 'low' : 'high'}">${currentWagesData.scheme === 'post_1997' ? 'Post-1997 Scheme' : 'Pre-1997 Scheme'}</span>
           <span style="font-size:12px; color:var(--text2); margin-left:12px">${currentWagesData.rates.text}</span>
         </div>
         <div style="display:flex; gap:8px; align-items:center">
@@ -125,7 +125,7 @@ function renderWageCard(emp) {
   const r = currentWagesData.rates;
   return `
     <div class="card wage-card">
-      <div class="card-header" style="margin-bottom:12px">
+      <div class="card-head" style="margin-bottom:12px">
         <div>
           <div class="card-title">${App.esc(emp.name)}</div>
           <div class="card-subtitle">Member ID: <strong>${App.fmtId(emp.member_id)}</strong> ${emp.uan ? `| UAN: <strong>${App.esc(emp.uan)}</strong>` : ''}</div>
@@ -138,9 +138,9 @@ function renderWageCard(emp) {
           </div>
           ${emp.higher_epf_ee || emp.higher_epf_er || emp.age_crosses_58 ? `
           <div style="margin-top: 8px; display: flex; gap: 8px;">
-            ${emp.higher_epf_ee ? `<span class="badge badge-blue" style="font-size: 10px;">✓ H.EPF(EE)</span>` : ''}
-            ${emp.higher_epf_er ? `<span class="badge badge-purple" style="font-size: 10px;">✓ H.EPF(ER)</span>` : ''}
-            ${emp.age_crosses_58 ? `<span class="badge badge-amber" style="font-size: 10px;">✓ Age > 58 (EPS=0)</span>` : ''}
+            ${emp.higher_epf_ee ? `<span class="badge low" style="font-size: 10px;">✓ H.EPF(EE)</span>` : ''}
+            ${emp.higher_epf_er ? `<span class="badge low" style="font-size: 10px;">✓ H.EPF(ER)</span>` : ''}
+            ${emp.age_crosses_58 ? `<span class="badge high" style="font-size: 10px;">✓ Age > 58 (EPS=0)</span>` : ''}
           </div>
           ` : ''}
         </div>
@@ -155,7 +155,7 @@ function renderWageCard(emp) {
         <table class="wage-table">
           <thead>
             <tr>
-              <th>Month</th>
+              <th class="txt">Month</th>
               <th style="text-align:right">Gross Wages</th>
               <th style="text-align:right">EPF Wages</th>
               <th style="text-align:right">NCP Days</th>
@@ -229,7 +229,7 @@ window.showWageModal = async (emp = null) => {
         ${emp ? `
           <div style="font-weight:600; font-size:13px; color:var(--text1); margin-bottom:4px; display:flex; justify-content:space-between;">
              <span>${App.esc(emp.name)}</span>
-             <span class="badge badge-amber">${App.esc(emp.member_id)}</span>
+             <span class="badge high">${App.esc(emp.member_id)}</span>
           </div>
           <div style="display:grid; grid-template-columns: 1fr 1fr; gap:2px 8px; color:var(--text2);">
             <div><strong>UAN:</strong> ${App.esc(emp.uan || '-')}</div>
@@ -270,7 +270,7 @@ window.showWageModal = async (emp = null) => {
       <table class="wage-table">
         <thead style="position: sticky; top: 0; background: var(--bg2); z-index: 10;">
           <tr>
-            <th>Month</th>
+            <th class="txt">Month</th>
             <th style="width: 100px">Gross Wages</th>
             <th style="width: 100px">EPF Wages</th>
             <th style="width: 70px">NCP Days</th>
@@ -473,7 +473,7 @@ window.showWageModal = async (emp = null) => {
                 detailsDiv.innerHTML = `
                   <div style="font-weight:600; font-size:13px; color:var(--text1); margin-bottom:4px; display:flex; justify-content:space-between;">
                      <span>${App.esc(matchedMaster.name)}</span>
-                     <span class="badge badge-amber">${App.esc(matchedMaster.member_id)}</span>
+                     <span class="badge high">${App.esc(matchedMaster.member_id)}</span>
                   </div>
                   <div style="display:grid; grid-template-columns: 1fr 1fr; gap:2px 8px; color:var(--text2);">
                     <div><strong>UAN:</strong> ${App.esc(matchedMaster.uan || '-')}</div>
@@ -1001,9 +1001,9 @@ window.showMonthlyWageModal = async () => {
         <table class="wage-table">
           <thead style="position: sticky; top: 0; background: var(--bg2); z-index: 10;">
             <tr>
-              <th style="width:40px">Sl No.</th>
-              <th style="width:120px">UAN</th>
-              <th>Name & Options</th>
+              <th class="txt" style="width:40px">Sl No.</th>
+              <th class="txt" style="width:120px">UAN</th>
+              <th class="txt">Name & Options</th>
               <th style="width:70px; text-align:center">Days<br><small>in Mth</small></th>
               <th style="width:70px">NCP<br>Days</th>
               <th style="width:70px; text-align:center">Work<br>Days</th>

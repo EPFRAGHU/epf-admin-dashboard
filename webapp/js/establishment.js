@@ -17,8 +17,8 @@ App.registerPage('establishment', async (container) => {
       establishments.forEach((eItem, index) => {
         const isActive = eItem.is_active;
         const statusBadge = isActive 
-          ? `<span class="status-badge status-active">Active</span>` 
-          : `<span class="status-badge status-inactive">Inactive</span>`;
+          ? `<span class="badge low">Active</span>` 
+          : `<span class="badge high">Inactive</span>`;
           
         const actionBtn = isActive
           ? `<button class="btn btn-ghost btn-sm" style="color: var(--red); padding: 4px 8px;" onclick="window.toggleEstStatus('${eItem.filename}')">Disable</button>`

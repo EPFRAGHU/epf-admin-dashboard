@@ -220,7 +220,7 @@ const App = (() => {
             <div class="card" style="display:flex; justify-content:space-between; align-items:center; padding: 12px; border: ${p === data.active ? '1px solid var(--primary)' : '1px solid var(--card-border)'};">
               <div>
                 <strong style="color: ${p === data.active ? 'var(--primary)' : 'var(--text1)'}">${p.replace('_project.epfproj.json', '')}</strong>
-                ${p === data.active ? '<span class="badge badge-blue" style="margin-left:8px">Active</span>' : ''}
+                ${p === data.active ? '<span class="badge low" style="margin-left:8px">Active</span>' : ''}
               </div>
               ${p !== data.active ? `<button class="btn btn-ghost btn-sm" onclick="App.switchProject('${p}')">Load</button>` : `<button class="btn btn-ghost btn-sm" disabled>Loaded</button>`}
             </div>

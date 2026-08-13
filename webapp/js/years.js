@@ -24,7 +24,7 @@ App.registerPage('years', async (container) => {
       ${years.map(y => `
         <div class="year-card">
           <div class="year-card-title">${y.label}</div>
-          <div class="year-card-scheme"><span class="badge ${y.scheme === 'post_1997' ? 'badge-blue' : 'badge-amber'}">${y.scheme_label}</span></div>
+          <div class="year-card-scheme"><span class="badge ${y.scheme === 'post_1997' ? 'low' : 'high'}">${y.scheme_label}</span></div>
           <div class="year-card-stat"><span>Employees</span><span>${y.entries}</span></div>
           <div class="year-card-stat"><span>Worker EPF</span><span>${y.emp_epf_rate}%</span></div>
           <div class="year-card-stat"><span>Employer EPF</span><span>${y.er_epf_rate}%</span></div>

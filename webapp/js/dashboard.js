@@ -32,7 +32,7 @@ App.registerPage('dashboard', async (container) => {
 
     <!-- Establishment quick info -->
     <div class="card" style="margin-bottom:24px">
-      <div class="card-header">
+      <div class="card-head">
         <div>
           <div class="card-title">${App.esc(data.establishment.name)}</div>
           <div class="card-subtitle">Code: ${App.esc(data.establishment.code)} · ${App.esc(data.establishment.address)}</div>
@@ -55,7 +55,7 @@ App.registerPage('dashboard', async (container) => {
 
     <!-- Month-wise summary table -->
     <div class="card">
-      <div class="card-header">
+      <div class="card-head">
         <div class="card-title">📊 Month-wise Summary</div>
       </div>
       <div class="table-wrap">
@@ -65,7 +65,7 @@ App.registerPage('dashboard', async (container) => {
                 let html = `
                   <tr>
                     <td colspan="7" style="background-color: var(--bg-color); font-weight: 700; padding: 12px; font-size:14px; border-bottom: 1px solid var(--border);">
-                      Financial Year: ${y.label} <span class="badge badge-blue" style="margin-left: 8px;">${y.scheme}</span>
+                      Financial Year: ${y.label} <span class="badge low" style="margin-left: 8px;">${y.scheme}</span>
                     </td>
                   </tr>
                   <tr style="background-color: rgba(0,0,0,0.1); color: var(--text2); font-size: 11px; text-transform: uppercase; font-weight: 600;">
@@ -212,7 +212,7 @@ window.renderMonthEmployeesTable = () => {
     if (tbody) {
         tbody.innerHTML = sliced.map(e => `
             <tr>
-                <td><span class="badge badge-amber">${App.esc(e.uan || '-')}</span></td>
+                <td><span class="badge high">${App.esc(e.uan || '-')}</span></td>
                 <td><strong>${App.esc(e.name)}</strong></td>
                 <td class="num">₹${App.fmt(e.gross_wages)}</td>
                 <td class="num">₹${App.fmt(e.epf_wages)}</td>
@@ -265,7 +265,7 @@ window.showMonthEmployees = async (yearKey, monthIdx, monthLabel) => {
             <div id="dashboard-month-emp-pagination"></div>
         `;
         
-        const estHeader = data.establishment ? `<div style="font-size:14px; font-weight: 500; color: var(--text2); margin-bottom: 12px; margin-top: -4px;">${App.esc(data.establishment.name)} <span class="badge badge-blue" style="margin-left:8px;">${App.esc(data.establishment.code)}</span></div>` : '';
+        const estHeader = data.establishment ? `<div style="font-size:14px; font-weight: 500; color: var(--text2); margin-bottom: 12px; margin-top: -4px;">${App.esc(data.establishment.name)} <span class="badge low" style="margin-left:8px;">${App.esc(data.establishment.code)}</span></div>` : '';
         
         App.openModal(`Employees in ${monthLabel}`, estHeader + html, `<button class="btn btn-ghost" onclick="App.closeModal()">Close</button>`, true);
         

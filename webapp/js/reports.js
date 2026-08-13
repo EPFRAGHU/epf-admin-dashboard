@@ -22,7 +22,7 @@ App.registerPage('reports', async (container) => {
     </div>
     
     <div class="card" style="margin-bottom:24px">
-      <div class="card-header"><div class="card-title">1. Employee Master (Form 9)</div></div>
+      <div class="card-head"><div class="card-title">1. Employee Master (Form 9)</div></div>
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px;">
         <p style="color:var(--text2); font-size:13px; max-width:400px">Export the entire Employee Master database containing all employee details.</p>
         <div style="display:flex; gap:12px;">
@@ -33,7 +33,7 @@ App.registerPage('reports', async (container) => {
     </div>
     
     <div class="card">
-      <div class="card-header"><div class="card-title">2. Annual Returns (Forms 3A, 6A, 12A, 5, 10)</div></div>
+      <div class="card-head"><div class="card-title">2. Annual Returns (Forms 3A, 6A, 12A, 5, 10)</div></div>
       
       <div class="form-group" style="margin-bottom:20px; max-width:300px">
         <label class="form-label">Select Financial Year</label>
@@ -72,7 +72,7 @@ App.registerPage('reports', async (container) => {
     </div>
 
     <div class="card" style="margin-top:24px">
-      <div class="card-header"><div class="card-title">3. ECR Text File Generator</div></div>
+      <div class="card-head"><div class="card-title">3. ECR Text File Generator</div></div>
       
       <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:20px;">
         <div class="form-group" style="flex:1; min-width:200px">
@@ -111,7 +111,7 @@ App.registerPage('reports', async (container) => {
     </div>
 
     <div class="card" style="margin-top:24px">
-      <div class="card-header"><div class="card-title">4. Employee Wage History</div></div>
+      <div class="card-head"><div class="card-title">4. Employee Wage History</div></div>
       <p style="color:var(--text2); font-size:13px; margin-bottom:12px">
         View the complete member profile and year-wise wage entries for a specific employee.
       </p>
