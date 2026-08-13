@@ -147,7 +147,7 @@ const App = (() => {
     document.querySelector('.topbar').style.display = 'none';
     document.getElementById('content').innerHTML = `
       <div style="display:flex; justify-content:center; align-items:center; height: 100vh; background: var(--bg);">
-        <div class="card" style="width: 100%; max-width: 400px; padding: 32px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+        <div class="card" style="width: 100%; max-width: 400px; padding: 32px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);">
           <div style="text-align:center; margin-bottom: 24px;">
             <span style="font-size: 48px; display: block; margin-bottom: 16px;">🏛️</span>
             <h2 style="margin:0; font-size: 24px;">EPF Dashboard</h2>

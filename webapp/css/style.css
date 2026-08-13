@@ -105,7 +105,7 @@ a { color: var(--accent); text-decoration: none; }
 
 .sidebar-footer {
   padding: 16px;
-  border-top: 1px solid rgba(255,255,255,.06);
+  border-top: 1px solid rgba(0,0,0,.06);
   text-align: center;
 }
 .version { font-size: 10px; color: var(--text3); margin-top: 8px; }
@@ -149,7 +149,7 @@ a { color: var(--accent); text-decoration: none; }
   padding: 20px;
   transition: all var(--transition);
 }
-.card:hover { border-color: rgba(255,255,255,.12); }
+.card:hover { border-color: rgba(0,0,0,.12); }
 
 .card-header {
   display: flex;
@@ -223,12 +223,12 @@ thead th {
 }
 tbody td {
   padding: 10px 14px;
-  border-bottom: 1px solid rgba(255,255,255,.04);
+  border-bottom: 1px solid rgba(0,0,0,.04);
   white-space: nowrap;
 }
 tbody tr { transition: background var(--transition); }
 tbody tr:hover { background: rgba(59,130,246,.06); }
-tbody tr:nth-child(even) { background: rgba(255,255,255,.02); }
+tbody tr:nth-child(even) { background: rgba(0,0,0,.02); }
 tbody tr:nth-child(even):hover { background: rgba(59,130,246,.06); }
 tbody tr.grand-total {
   background: var(--surface) !important;
@@ -289,15 +289,15 @@ td.actions { text-align: center; white-space: nowrap; }
   color: var(--text2);
   border: 1px solid var(--card-border);
 }
-.btn-ghost:hover { background: rgba(255,255,255,.06); color: var(--text); }
+.btn-ghost:hover { background: rgba(0,0,0,.06); color: var(--text); }
 
 .btn-glass {
-  background: rgba(255,255,255,.06);
+  background: rgba(0,0,0,.06);
   color: var(--text2);
-  border: 1px solid rgba(255,255,255,.1);
+  border: 1px solid rgba(0,0,0,.1);
   backdrop-filter: blur(8px);
 }
-.btn-glass:hover { background: rgba(255,255,255,.12); color: var(--text); }
+.btn-glass:hover { background: rgba(0,0,0,.12); color: var(--text); }
 
 .btn-sm { padding: 6px 12px; font-size: 12px; }
 .btn-xs { padding: 4px 8px; font-size: 11px; border-radius: 6px; }
@@ -596,9 +596,6 @@ input[type=number] {
 .month-box.green { background: var(--green); }
 .month-box.red { background: var(--red); }
 .month-box:hover::after { content: attr(title); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: #000; color: #fff; padding: 4px 6px; border-radius: 4px; font-size: 10px; white-space: nowrap; z-index: 10; pointer-events: none; margin-bottom: 4px; }
-.est-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.est-table th, .est-table td { padding: 10px 12px; border-bottom: 1px solid var(--card-border); text-align: left; vertical-align: top; }
-.est-table th { font-weight: 600; color: var(--text2); background: rgba(0,0,0,0.2); white-space: nowrap; }
 .status-badge { padding: 4px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; white-space: nowrap; }
 .status-active { background: rgba(16,185,129,0.2); color: var(--green); }
 .status-inactive { background: rgba(239,68,68,0.2); color: var(--red); }

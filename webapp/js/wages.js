@@ -437,7 +437,7 @@ window.showWageModal = async (emp = null) => {
                 const evt = new Event('change');
                 input.dispatchEvent(evt);
             });
-            opt.addEventListener('mouseenter', () => opt.style.background = 'var(--hover-bg, rgba(255,255,255,0.05))');
+            opt.addEventListener('mouseenter', () => opt.style.background = 'var(--hover-bg, rgba(0,0,0,0.05))');
             opt.addEventListener('mouseleave', () => opt.style.background = 'transparent');
         });
     };

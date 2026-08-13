@@ -68,7 +68,7 @@ App.registerPage('dashboard', async (container) => {
                       Financial Year: ${y.label} <span class="badge low" style="margin-left: 8px;">${y.scheme}</span>
                     </td>
                   </tr>
-                  <tr style="background-color: rgba(0,0,0,0.1); color: var(--text2); font-size: 11px; text-transform: uppercase; font-weight: 600;">
+                  <tr style="background-color: rgba(0,0,0,0.04); color: var(--text2); font-size: 11px; text-transform: uppercase; font-weight: 600;">
                     <td style="padding: 8px 12px;">Month & Year</td>
                     <td class="num" style="text-align:center; padding: 8px 12px;">Employees</td>
                     <td class="num" style="padding: 8px 12px;">Gross Wages</td>
@@ -91,7 +91,7 @@ App.registerPage('dashboard', async (container) => {
                     </tr>`;
                 });
                 
-                html += `<tr style="background-color: rgba(255, 255, 255, 0.05); border-top: 2px solid var(--card-border);">
+                html += `<tr style="background-color: rgba(0,0,0,0.05); border-top: 2px solid var(--card-border);">
                     <td style="font-weight: bold; color: var(--text1);">Total for ${y.label}</td>
                     <td>-</td>
                     <td class="num" style="font-weight: bold; color: var(--text1);">₹${App.fmt(y.totals.gross_wages)}</td>

@@ -46,7 +46,7 @@ App.registerPage('reports', async (container) => {
         Select the specific statutory forms you wish to generate for this year.
       </p>
 
-      <div style="display:flex; flex-wrap:wrap; gap:16px; margin-bottom:24px; padding:12px; background:rgba(0,0,0,0.2); border-radius:8px;">
+      <div style="display:flex; flex-wrap:wrap; gap:16px; margin-bottom:24px; padding:12px; background:rgba(0,0,0,0.05); border-radius:8px;">
         <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
           <input type="checkbox" class="form-checkbox" id="chk-3a" value="3A" checked> <span>Form 3A</span>
         </label>
