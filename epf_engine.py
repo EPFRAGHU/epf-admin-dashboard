@@ -1689,7 +1689,8 @@ class ExcelGenerator:
 
         # Every employee's per-month figures, using this year's contribution scheme
         all_month_rows = [emp.month_rows(est.worker_epf_rate, est.worker_eps_rate,
-                                          est.employer_epf_rate, est.employer_eps_rate)
+                                         est.employer_epf_rate, est.employer_eps_rate)
+                          for emp in employees]
         row = header_row + 1
         first_data_row = row
         a2_rates_used, a22_rates_used = [], []
