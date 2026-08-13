@@ -38,7 +38,12 @@ App.registerPage('establishment', async (container) => {
               for(let i = 0; i < 12; i++) {
                  const hasData = enteredMonths[i];
                  const boxClass = hasData ? 'green' : 'red';
-                 boxes += `<div class="month-box ${boxClass}" title="${months[i]}"></div>`;
+                 boxes += `
+                   <div style="display: flex; flex-direction: column; align-items: center; gap: 2px;">
+                     <span style="font-size: 9px; color: var(--text3); text-transform: capitalize;">${months[i]}</span>
+                     <div class="month-box ${boxClass}" title="${months[i]}"></div>
+                   </div>
+                 `;
               }
               wageHtml += `
                 <div class="est-wage-year">
@@ -60,8 +65,13 @@ App.registerPage('establishment', async (container) => {
             <td>${App.esc(eItem.created_at)}</td>
             <td>${statusBadge}</td>
             <td>${wageHtml}</td>
-            <td style="display: flex; flex-direction: column; gap: 4px;">${loadBtn}</td>
-            <td style="display: flex; flex-direction: column; gap: 4px;">${editBtn} ${actionBtn}</td>
+            <td>${loadBtn}</td>
+            <td>
+              <div style="display: flex; flex-direction: column; gap: 4px;">
+                ${editBtn}
+                ${actionBtn}
+              </div>
+            </td>
           </tr>
         `;
       });
