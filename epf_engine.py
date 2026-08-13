@@ -565,6 +565,11 @@ class Employee:
     higher_epf_ee: bool = False
     higher_epf_er: bool = False
     age_crosses_58: bool = False
+    dob: str = ''
+    sex: str = ''
+    doj: str = ''
+    doe: str = ''
+    reason_leaving: str = ''
 
     def month_rows(self, worker_epf_rate: float, worker_eps_rate: float,
                    employer_epf_rate: float, employer_eps_rate: float,
@@ -944,11 +949,17 @@ class Project:
             name = m.name if m else ""
             father = m.father_name if m else ""
             uan = m.uan if m else ""
+            dob = m.dob if m else ""
+            sex = m.sex if m else ""
+            doj = m.doj if m else ""
+            doe = m.doe if m else ""
+            reason_leaving = m.reason_leaving if m else ""
             result.append(Employee(member_id=e.member_id, name=name, father_name=father, uan=uan,
                                     wages=list(e.wages), gross_wages=list(e.gross_wages), ncp_days=list(getattr(e, 'ncp_days', [0]*12)),
                                     higher_epf_ee=m.higher_epf_ee if m else False,
                                     higher_epf_er=m.higher_epf_er if m else False,
-                                    age_crosses_58=e.age_crosses_58))
+                                    age_crosses_58=getattr(e, 'age_crosses_58', False),
+                                    dob=dob, sex=sex, doj=doj, doe=doe, reason_leaving=reason_leaving))
         return result
 
     def build_establishment_for_year(self, year_key) -> Establishment:

@@ -1046,8 +1046,9 @@ async def generate_ecr_txt(year_key: str, month_idx: int):
             emp_obj.wages = entry.wages
             emp_obj.gross_wages = entry.gross_wages
             emp_obj.ncp_days = getattr(entry, 'ncp_days', [0]*12)
-            emp_obj.higher_epf = entry.higher_epf
-            emp_obj.age_crosses_58 = entry.age_crosses_58
+            emp_obj.higher_epf_ee = master_emp.higher_epf_ee
+            emp_obj.higher_epf_er = master_emp.higher_epf_er
+            emp_obj.age_crosses_58 = getattr(entry, 'age_crosses_58', False)
         else:
             emp_obj.wages = [0.0] * 12
             emp_obj.ncp_days = [0] * 12
@@ -1084,8 +1085,9 @@ async def generate_ecr_zip(year_key: str):
             emp_obj.wages = entry.wages
             emp_obj.gross_wages = entry.gross_wages
             emp_obj.ncp_days = getattr(entry, 'ncp_days', [0]*12)
-            emp_obj.higher_epf = entry.higher_epf
-            emp_obj.age_crosses_58 = entry.age_crosses_58
+            emp_obj.higher_epf_ee = master_emp.higher_epf_ee
+            emp_obj.higher_epf_er = master_emp.higher_epf_er
+            emp_obj.age_crosses_58 = getattr(entry, 'age_crosses_58', False)
         else:
             emp_obj.wages = [0.0] * 12
             emp_obj.ncp_days = [0] * 12
