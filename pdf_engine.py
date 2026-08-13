@@ -154,8 +154,11 @@ def generate_form_3a_pdf(project, year_key: str, filepath: str):
             [Paragraph("5.", style_cell_left), Paragraph("Statutory Rate of Contribution", style_cell_left), Paragraph(":", style_cell_left), Paragraph(rate_val, style_cell_left)],
             [Paragraph("", style_cell_left), Paragraph("Voluntary higher rate of employee's contribution, if any", style_cell_left), Paragraph(":", style_cell_left), Paragraph("", style_cell_left)]
         ]
-        info_table = Table(info_data, colWidths=[30, 250, 20, 300])
-        info_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'TOP')]))
+        info_table = Table(info_data, colWidths=[20, 200, 10, 350], hAlign='LEFT')
+        info_table.setStyle(TableStyle([
+            ('VALIGN', (0,0), (-1,-1), 'TOP'),
+            ('LEFTPADDING', (0,0), (0,-1), 0)
+        ]))
         block.append(info_table)
         block.append(Spacer(1, 12))
         
