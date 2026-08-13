@@ -16,6 +16,8 @@ style_cell_left = ParagraphStyle(name='CellLeft', parent=styles['Normal'], fontN
 style_cell_right = ParagraphStyle(name='CellRight', parent=styles['Normal'], fontName='Helvetica', fontSize=8, alignment=TA_RIGHT)
 style_cell_bold = ParagraphStyle(name='CellBold', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=8, alignment=TA_CENTER)
 style_small = ParagraphStyle(name='Small', parent=styles['Normal'], fontName='Helvetica', fontSize=7, alignment=TA_CENTER)
+style_amount = ParagraphStyle(name='Amount', parent=styles['Normal'], fontName='Helvetica', fontSize=10, alignment=TA_RIGHT)
+style_amount_bold = ParagraphStyle(name='AmountBold', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=10, alignment=TA_RIGHT)
 
 def _build_pdf_doc(filename, orientation="portrait"):
     pagesize = landscape(A4) if orientation == "landscape" else A4
@@ -388,8 +390,8 @@ def generate_form_12a_pdf(project, year_key: str, filepath: str):
     story.append(Paragraph(f"<i>Statement of Contribution for the currency period from 1st April {est.year_from} to 31st March {est.year_to}</i>", style_header))
     story.append(Spacer(1, 12))
     
-    story.append(Paragraph(f"<b>Name & Address of the Establishment :- </b> {est.name}, {est.address}", style_header))
-    story.append(Paragraph(f"<b>Code No. of the Establishment :- </b> {est.code}", style_header))
+    story.append(Paragraph(f"<b>Name & Address of the Establishment :- </b> {est.name}, {est.address}", style_title))
+    story.append(Paragraph(f"<b>Code No. of the Establishment :- </b> {est.code}", style_title))
     story.append(Spacer(1, 12))
     
     headers = [
@@ -446,35 +448,47 @@ def generate_form_12a_pdf(project, year_key: str, filepath: str):
             
             grand[1] += a1; grand[2] += a2; grand[3] += a10; grand[4] += a21; grand[5] += a22; grand[6] += tot
             
-            display_month = month_label if idx == 0 else ""
+            
+            if idx == 0:
+                parts = month_label.split(" Paid in ")
+                if len(parts) == 2:
+                    wage_month = parts[0]
+                    paid_month = parts[1]
+                    wage_yr = calendar_year_for_month(wage_month, est.year_from, est.year_to)
+                    paid_yr = calendar_year_for_month(paid_month, est.year_from, est.year_to)
+                    display_month = f"{wage_month} {wage_yr}<br/>Paid in<br/>{paid_month} {paid_yr}"
+                else:
+                    display_month = month_label
+            else:
+                display_month = ""
             
             data.append([
                 Paragraph(display_month, style_cell),
                 Paragraph(str(trrn), style_cell),
                 Paragraph(str(crrn), style_cell),
-                Paragraph(str(members), style_cell_right),
-                Paragraph(str(a1), style_cell_right),
-                Paragraph(str(a2), style_cell_right),
-                Paragraph(str(a10), style_cell_right),
-                Paragraph(str(a21), style_cell_right),
-                Paragraph(str(a22), style_cell_right),
-                Paragraph(str(tot), style_cell_right),
+                Paragraph(str(members), style_amount),
+                Paragraph(str(a1), style_amount),
+                Paragraph(str(a2), style_amount),
+                Paragraph(str(a10), style_amount),
+                Paragraph(str(a21), style_amount),
+                Paragraph(str(a22), style_amount),
+                Paragraph(str(tot), style_amount),
                 Paragraph(str(cdate), style_cell)
             ])
             
     data.append([
         Paragraph("<b>GRAND TOTAL</b>", style_cell_bold), "", "", "",
-        Paragraph(f"<b>{grand[1]}</b>", style_cell_right),
-        Paragraph(f"<b>{grand[2]}</b>", style_cell_right),
-        Paragraph(f"<b>{grand[3]}</b>", style_cell_right),
-        Paragraph(f"<b>{grand[4]}</b>", style_cell_right),
-        Paragraph(f"<b>{grand[5]}</b>", style_cell_right),
-        Paragraph(f"<b>{grand[6]}</b>", style_cell_right),
+        Paragraph(f"<b>{grand[1]}</b>", style_amount_bold),
+        Paragraph(f"<b>{grand[2]}</b>", style_amount_bold),
+        Paragraph(f"<b>{grand[3]}</b>", style_amount_bold),
+        Paragraph(f"<b>{grand[4]}</b>", style_amount_bold),
+        Paragraph(f"<b>{grand[5]}</b>", style_amount_bold),
+        Paragraph(f"<b>{grand[6]}</b>", style_amount_bold),
         ""
     ])
     
     aw = doc.pagesize[0] - doc.rightMargin - doc.leftMargin
-    weights = [0.08, 0.12, 0.12, 0.06, 0.1, 0.1, 0.1, 0.08, 0.08, 0.08, 0.08]
+    weights = [0.12, 0.09, 0.09, 0.06, 0.10, 0.10, 0.10, 0.08, 0.08, 0.09, 0.09]
     col_widths = [w * aw for w in weights]
     
     table = Table(data, colWidths=col_widths, repeatRows=1)
