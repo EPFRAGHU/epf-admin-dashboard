@@ -939,12 +939,37 @@ window.showMonthlyWageModal = async () => {
     const mths = constantsCache.months;
     const monthOptions = mths.map((m, i) => `<option value="${i}">${m}</option>`).join('');
 
+    // Determine default month
+    let defaultMonthIdx = 0;
+    let maxDataIdx = -1;
+    if (currentWagesData && currentWagesData.employees) {
+        currentWagesData.employees.forEach(emp => {
+            emp.wages.forEach((w, i) => { if (w > 0) maxDataIdx = Math.max(maxDataIdx, i); });
+            emp.gross_wages.forEach((g, i) => { if (g > 0) maxDataIdx = Math.max(maxDataIdx, i); });
+        });
+    }
+    if (maxDataIdx >= 0) {
+        defaultMonthIdx = Math.min(11, maxDataIdx + 1);
+    } else {
+        const d = new Date();
+        const m = d.getMonth() + 1; // 1-12
+        // Mar=0, Apr=1...
+        let idx = (m >= 3) ? (m - 3) : (m + 9);
+        defaultMonthIdx = Math.max(0, idx - 1);
+    }
+
     const body = `
-      <div class="form-group" style="margin-bottom: 16px;">
-        <label class="form-label">Select Month</label>
-        <select class="form-select" id="bulk-month-select" onchange="initBulkTableState()" style="width:200px">
-          ${monthOptions}
-        </select>
+      <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom: 16px;">
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Select Month</label>
+          <select class="form-select" id="bulk-month-select" onchange="initBulkTableState()" style="width:200px">
+            ${monthOptions}
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom: 0; display:flex; gap:8px;">
+          <input type="text" class="form-input" id="bulk-add-uan" placeholder="Enter UAN to add employee..." style="width:250px">
+          <button class="btn btn-secondary" onclick="addEmployeeByUAN()">Add Employee</button>
+        </div>
       </div>
       <div class="table-wrap" style="max-height:55vh; overflow-y:auto;">
         <table class="wage-table">
@@ -978,25 +1003,64 @@ window.showMonthlyWageModal = async () => {
 
     App.openModal(`Monthly Wage Entry — ${currentWagesData.label}`, body, footer, true);
     
-    // Automatically render the first month (Mar)
     setTimeout(() => {
+        document.getElementById('bulk-month-select').value = defaultMonthIdx;
         initBulkTableState();
     }, 100);
 };
 
 let bulkTableState = {};
+window.bulkTableVisibleIds = [];
+window.bulkTableManualIds = [];
 let currentBulkPage = 1;
 const BULK_PAGE_SIZE = 50;
 
+window.addEmployeeByUAN = () => {
+    const uan = document.getElementById('bulk-add-uan').value.trim();
+    if (!uan) return App.toast('Please enter a UAN', 'error');
+    
+    const emp = window._masterEmployees.find(e => e.uan === uan);
+    if (!emp) {
+        return App.toast('Employee not found with this UAN. Please add them in the main Employees menu first.', 'error');
+    }
+    
+    if (!window.bulkTableVisibleIds.includes(emp.member_id)) {
+        window.bulkTableVisibleIds.push(emp.member_id);
+        if (!window.bulkTableManualIds.includes(emp.member_id)) {
+            window.bulkTableManualIds.push(emp.member_id);
+        }
+        
+        if (!bulkTableState[emp.member_id]) {
+            bulkTableState[emp.member_id] = { g:0, w:0, n:0, higher:false, age58:false, isCopied:false };
+        }
+        
+        App.toast(`Added ${emp.name}`, 'success');
+        document.getElementById('bulk-add-uan').value = '';
+        renderMonthlyTable();
+    } else {
+        App.toast('Employee already in the list for this month', 'info');
+    }
+};
+
 window.initBulkTableState = () => {
     const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
-    bulkTableState = {};
+    syncBulkTableState(); // Sync current state before re-initializing (if navigating months)
+    
     const allEmps = window._masterEmployees || [];
     const prevMonthIdx = monthIdx > 0 ? monthIdx - 1 : -1;
+    
+    window.bulkTableVisibleIds = [];
+    // Only keep manual IDs that have actual data entered, otherwise drop them on month change
+    window.bulkTableManualIds = window.bulkTableManualIds.filter(id => {
+        const s = bulkTableState[id];
+        return s && (s.g > 0 || s.w > 0);
+    });
     
     allEmps.forEach(master => {
         const existingData = currentWagesData.employees.find(e => e.member_id === master.member_id);
         let g = 0, w = 0, n = 0, higher = false, age58 = false, isCopied = false;
+        let hasCurrent = false;
+        let hasPrev = false;
         
         if (existingData) {
             g = existingData.gross_wages[monthIdx] || 0;
@@ -1005,10 +1069,14 @@ window.initBulkTableState = () => {
             higher = existingData.higher_epf || false;
             age58 = existingData.age_crosses_58 || false;
             
-            if (g === 0 && w === 0 && prevMonthIdx >= 0) {
+            if (g > 0 || w > 0) hasCurrent = true;
+            
+            if (prevMonthIdx >= 0) {
                 const prevG = existingData.gross_wages[prevMonthIdx] || 0;
                 const prevW = existingData.wages[prevMonthIdx] || 0;
-                if (prevG > 0 || prevW > 0) {
+                if (prevG > 0 || prevW > 0) hasPrev = true;
+                
+                if (g === 0 && w === 0 && hasPrev) {
                     g = prevG;
                     w = prevW;
                     n = existingData.ncp_days[prevMonthIdx] || 0;
@@ -1016,7 +1084,39 @@ window.initBulkTableState = () => {
                 }
             }
         }
-        bulkTableState[master.member_id] = { g, w, n, higher, age58, isCopied };
+        
+        // Preserve un-saved data from previous visits to this month in the same session
+        if (bulkTableState[master.member_id]) {
+            const currentSessionState = bulkTableState[master.member_id];
+            if (currentSessionState.g > 0 || currentSessionState.w > 0) {
+                hasCurrent = true;
+                g = currentSessionState.g;
+                w = currentSessionState.w;
+                n = currentSessionState.n;
+                higher = currentSessionState.higher;
+                age58 = currentSessionState.age58;
+                isCopied = currentSessionState.isCopied;
+            }
+        }
+        
+        // Logic for visibility:
+        // Show if they have data in current month OR if they had data in previous month OR if manually added
+        const isManuallyAdded = window.bulkTableManualIds.includes(master.member_id);
+        
+        // If it's the first month (Mar, prevMonthIdx = -1), show them if they have current data, 
+        // or just show ALL employees if it's the start of the year. Let's just show those with data for now
+        // to keep it consistent, but if it's the first time ever, it might be blank.
+        // Actually, if monthIdx == 0 and hasCurrent is false, we might want to show them if they are active.
+        // For simplicity, we show them if they have current data, OR if month == 0 and they are active.
+        const isActive = master.status !== 'inactive';
+        
+        let shouldShow = hasCurrent || hasPrev || isManuallyAdded;
+        if (monthIdx === 0 && isActive) shouldShow = true; // For March, show all active by default if no filtering
+        
+        if (shouldShow) {
+            window.bulkTableVisibleIds.push(master.member_id);
+            bulkTableState[master.member_id] = { g, w, n, higher, age58, isCopied };
+        }
     });
     
     currentBulkPage = 1;
@@ -1049,7 +1149,8 @@ window.renderMonthlyTable = () => {
     const tbody = document.getElementById('bulk-wage-body');
     const r = currentWagesData.rates;
 
-    const allEmps = window._masterEmployees || [];
+    // Only map over visible IDs
+    const allVisibleEmps = (window._masterEmployees || []).filter(e => window.bulkTableVisibleIds.includes(e.member_id));
     
     const startYear = parseInt(currentYearKey.split('-')[0], 10);
     let targetYear = monthIdx < 10 ? startYear : startYear + 1; 
@@ -1064,7 +1165,7 @@ window.renderMonthlyTable = () => {
     let html = '';
     
     const start = (currentBulkPage - 1) * BULK_PAGE_SIZE;
-    const sliced = allEmps.slice(start, start + BULK_PAGE_SIZE);
+    const sliced = allVisibleEmps.slice(start, start + BULK_PAGE_SIZE);
     
     sliced.forEach((master, idx) => {
         const state = bulkTableState[master.member_id] || { g:0, w:0, n:0, higher:false, age58:false, isCopied:false };
@@ -1103,7 +1204,7 @@ window.renderMonthlyTable = () => {
     
     const pgContainer = document.getElementById('bulk-pagination-container');
     if (pgContainer) {
-        pgContainer.innerHTML = App.renderPagination(allEmps.length, currentBulkPage, BULK_PAGE_SIZE, 'setBulkPage');
+        pgContainer.innerHTML = App.renderPagination(allVisibleEmps.length, currentBulkPage, BULK_PAGE_SIZE, 'setBulkPage');
     }
     
     // Attach listeners
