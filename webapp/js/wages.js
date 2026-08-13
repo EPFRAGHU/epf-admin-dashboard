@@ -171,15 +171,15 @@ function renderWageCard(emp) {
             ${emp.months.map((m, i) => `
               <tr>
                 <td>${m.m}</td>
-                <td class="num">${emp.gross_wages && emp.gross_wages[i] != null ? emp.gross_wages[i] : ''}</td>
-                <td class="num">${m.w != null ? m.w : ''}</td>
+                <td class="num">${emp.gross_wages && emp.gross_wages[i] != null && emp.gross_wages[i] !== '' ? Math.round(emp.gross_wages[i]) : ''}</td>
+                <td class="num">${m.w != null && m.w !== '' ? Math.round(m.w) : ''}</td>
                 <td class="num">${emp.ncp_days && emp.ncp_days[i] != null ? emp.ncp_days[i] : ''}</td>
-                <td class="num" style="color:var(--text2)">${m.we != null ? m.we : ''}</td>
-                ${r.w_eps > 0 ? `<td class="num" style="color:var(--text2)">${m.ws != null ? m.ws : ''}</td>` : ''}
-                <td class="num" style="font-weight:600">${m.wt != null ? m.wt : ''}</td>
-                <td class="num" style="color:var(--text2)">${m.ee != null ? m.ee : ''}</td>
-                <td class="num" style="color:var(--text2)">${m.es != null ? m.es : ''}</td>
-                <td class="num" style="font-weight:600">${m.et != null ? m.et : ''}</td>
+                <td class="num" style="color:var(--text2)">${m.we != null && m.we !== '' ? Math.round(m.we) : ''}</td>
+                ${r.w_eps > 0 ? `<td class="num" style="color:var(--text2)">${m.ws != null && m.ws !== '' ? Math.round(m.ws) : ''}</td>` : ''}
+                <td class="num" style="font-weight:600">${m.wt != null && m.wt !== '' ? Math.round(m.wt) : ''}</td>
+                <td class="num" style="color:var(--text2)">${m.ee != null && m.ee !== '' ? Math.round(m.ee) : ''}</td>
+                <td class="num" style="color:var(--text2)">${m.es != null && m.es !== '' ? Math.round(m.es) : ''}</td>
+                <td class="num" style="font-weight:600">${m.et != null && m.et !== '' ? Math.round(m.et) : ''}</td>
               </tr>
             `).join('')}
             <tr class="grand-total">
@@ -283,9 +283,9 @@ window.showWageModal = async (emp = null) => {
           ${mths.map((m, i) => `
             <tr>
               <td style="font-weight: 500">${m}</td>
-              <td><input class="form-input num g-input" data-idx="${i}" type="number" value="${grossWagesArr[i] != null ? grossWagesArr[i] : ''}" placeholder="0" style="width: 100%; padding: 4px 8px;"></td>
-              <td><input class="form-input num w-input" data-idx="${i}" type="number" value="${wagesArr[i] != null ? wagesArr[i] : ''}" placeholder="0" style="width: 100%; padding: 4px 8px;"></td>
-              <td><input class="form-input num ncp-input" data-idx="${i}" type="number" value="${ncpDaysArr[i] != null ? ncpDaysArr[i] : ''}" placeholder="0" style="width: 100%; padding: 4px 8px;"></td>
+              <td><input class="form-input num g-input" data-idx="${i}" type="number" step="1" value="${grossWagesArr[i] != null && grossWagesArr[i] !== '' ? Math.round(grossWagesArr[i]) : ''}" placeholder="0" style="width: 100%; padding: 4px 8px;"></td>
+              <td><input class="form-input num w-input" data-idx="${i}" type="number" step="1" value="${wagesArr[i] != null && wagesArr[i] !== '' ? Math.round(wagesArr[i]) : ''}" placeholder="0" style="width: 100%; padding: 4px 8px;"></td>
+              <td><input class="form-input num ncp-input" data-idx="${i}" type="number" step="1" value="${ncpDaysArr[i] != null && ncpDaysArr[i] !== '' ? ncpDaysArr[i] : ''}" placeholder="0" style="width: 100%; padding: 4px 8px;"></td>
               <td class="num calc-w-epf" style="color:var(--text2)">0</td>
               <td class="num calc-e-epf" style="color:var(--text2)">0</td>
               <td class="num calc-e-eps" style="color:var(--text2)">0</td>
@@ -332,8 +332,8 @@ window.showWageModal = async (emp = null) => {
       const gInp = tr.querySelector('.g-input');
       const wInp = tr.querySelector('.w-input');
       const nInp = tr.querySelector('.ncp-input');
-      const g = parseFloat(gInp.value) || 0;
-      const w = parseFloat(wInp.value) || 0;
+      const g = parseInt(gInp.value, 10) || 0;
+      const w = parseInt(wInp.value, 10) || 0;
       const ncp = parseInt(nInp.value, 10) || 0;
       const ceiling = r.wage_ceilings ? r.wage_ceilings[i] : 15000;
       
@@ -387,8 +387,8 @@ window.showWageModal = async (emp = null) => {
       const gInp = tr.querySelector('.g-input');
       const wInp = tr.querySelector('.w-input');
       if (gInp && wInp) {
-        const g = parseFloat(gInp.value) || 0;
-        const w = parseFloat(wInp.value) || 0;
+        const g = parseInt(gInp.value, 10) || 0;
+        const w = parseInt(wInp.value, 10) || 0;
         if (w > g) {
           wInp.value = g;
         }
@@ -520,8 +520,8 @@ window.saveWages = async () => {
   const wages = [];
   const gross_wages = [];
   const ncp_days = [];
-  document.querySelectorAll('.w-input').forEach(i => wages.push(parseFloat(i.value) || 0));
-  document.querySelectorAll('.g-input').forEach(i => gross_wages.push(parseFloat(i.value) || 0));
+  document.querySelectorAll('.w-input').forEach(i => wages.push(parseInt(i.value, 10) || 0));
+  document.querySelectorAll('.g-input').forEach(i => gross_wages.push(parseInt(i.value, 10) || 0));
   document.querySelectorAll('.ncp-input').forEach(i => ncp_days.push(parseInt(i.value, 10) || 0));
   
   const higher_epf_ee = document.getElementById('w-higher-epf-ee').checked;
@@ -1094,8 +1094,8 @@ window.syncBulkTableState = () => {
     document.querySelectorAll('.bulk-row').forEach(tr => {
         const member_id = tr.getAttribute('data-id');
         if (bulkTableState[member_id]) {
-            bulkTableState[member_id].g = parseFloat(tr.querySelector('.b-gross').value) || 0;
-            bulkTableState[member_id].w = parseFloat(tr.querySelector('.b-epf').value) || 0;
+            bulkTableState[member_id].g = parseInt(tr.querySelector('.b-gross').value, 10) || 0;
+            bulkTableState[member_id].w = parseInt(tr.querySelector('.b-epf').value, 10) || 0;
             bulkTableState[member_id].n = parseInt(tr.querySelector('.b-ncp').value, 10) || 0;
             bulkTableState[member_id].higher = tr.querySelector('.b-higher').checked;
             bulkTableState[member_id].age58 = tr.querySelector('.b-age58').checked;
@@ -1152,13 +1152,13 @@ window.renderMonthlyTable = () => {
                 </div>
               </td>
               <td style="text-align:center" class="b-dim">${daysInMonth}</td>
-              <td><input type="number" class="form-input num b-ncp" style="padding:4px; width:100%" value="${n || ''}" placeholder="0"></td>
+              <td><input type="number" step="1" class="form-input num b-ncp" style="padding:4px; width:100%" value="${n || ''}" placeholder="0"></td>
               <td style="text-align:center" class="b-work">${workDays}</td>
               <td>
-                <input type="number" class="form-input num b-gross" style="padding:4px; width:100%" value="${g || ''}" placeholder="0">
+                <input type="number" step="1" class="form-input num b-gross" style="padding:4px; width:100%" value="${g ? Math.round(g) : ''}" placeholder="0">
                 ${isCopied ? '<div style="font-size:10px; color:var(--primary); text-align:right; margin-top:2px">Auto-copied</div>' : ''}
               </td>
-              <td><input type="number" class="form-input num b-epf" style="padding:4px; width:100%" value="${w || ''}" placeholder="0"></td>
+              <td><input type="number" step="1" class="form-input num b-epf" style="padding:4px; width:100%" value="${w ? Math.round(w) : ''}" placeholder="0"></td>
               <td class="num b-eps-wage" style="color:var(--text2)">0</td>
               <td class="num b-ee-share" style="color:var(--text2)">0</td>
               <td class="num b-er-pf" style="color:var(--text2)">0</td>
@@ -1192,8 +1192,8 @@ window.renderMonthlyTable = () => {
         
         const handleBlur = (e) => {
             if (e.target.value === '') e.target.value = '0';
-            const g = parseFloat(grossInp.value) || 0;
-            const w = parseFloat(epfInp.value) || 0;
+            const g = parseInt(grossInp.value, 10) || 0;
+            const w = parseInt(epfInp.value, 10) || 0;
             if (w > g) epfInp.value = g;
             recalc();
         };
@@ -1210,8 +1210,8 @@ window.calcBulkRow = (tr) => {
     const ncp = parseInt(tr.querySelector('.b-ncp').value, 10) || 0;
     tr.querySelector('.b-work').textContent = Math.max(0, dim - ncp);
     
-    const g = parseFloat(tr.querySelector('.b-gross').value) || 0;
-    const w = parseFloat(tr.querySelector('.b-epf').value) || 0;
+    const g = parseInt(tr.querySelector('.b-gross').value, 10) || 0;
+    const w = parseInt(tr.querySelector('.b-epf').value, 10) || 0;
     const higher = tr.querySelector('.b-higher').checked;
     const age58 = tr.querySelector('.b-age58').checked;
     const ceiling = parseFloat(tr.getAttribute('data-ceiling'));

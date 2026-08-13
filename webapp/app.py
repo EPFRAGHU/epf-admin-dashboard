@@ -727,18 +727,18 @@ async def get_wages(key: str):
             "father_name": emp.father_name,
             "dob": m.dob if m else "", "sex": m.sex if m else "",
             "doj": m.doj if m else "", "doe": m.doe if m else "",
-            "wages": emp.wages,
-            "gross_wages": emp.gross_wages,
+            "wages": [int(round(float(w))) if w is not None else 0 for w in emp.wages],
+            "gross_wages": [int(round(float(g))) if g is not None else 0 for g in emp.gross_wages],
             "ncp_days": getattr(emp, 'ncp_days', [0]*12),
             "higher_epf_ee": emp.higher_epf_ee,
             "higher_epf_er": emp.higher_epf_er,
             "age_crosses_58": emp.age_crosses_58,
-            "months": [{"m": MONTHS[i], "w": r[0],
-                        "we": r[1], "ws": r[2], "wt": r[3],
-                        "ee": r[4], "es": r[5], "et": r[6]}
+            "months": [{"m": MONTHS[i], "w": int(round(r[0])),
+                        "we": int(round(r[1])), "ws": int(round(r[2])), "wt": int(round(r[3])),
+                        "ee": int(round(r[4])), "es": int(round(r[5])), "et": int(round(r[6]))}
                        for i, r in enumerate(mrows)],
-            "totals": {"w": wt, "we": we, "ws": ws, "wt": wto,
-                       "ee": ee, "es": es, "et": eto},
+            "totals": {"w": int(round(wt)), "we": int(round(we)), "ws": int(round(ws)), "wt": int(round(wto)),
+                       "ee": int(round(ee)), "es": int(round(es)), "et": int(round(eto))},
         })
         g[0] += wt; g[1] += we; g[2] += ws; g[3] += wto
         g[4] += ee; g[5] += es; g[6] += eto
@@ -752,8 +752,8 @@ async def get_wages(key: str):
             "wage_ceilings": wage_ceilings,
         },
         "employees": rows,
-        "grand": {"w": g[0], "we": g[1], "ws": g[2], "wt": g[3],
-                  "ee": g[4], "es": g[5], "et": g[6]},
+        "grand": {"w": int(round(g[0])), "we": int(round(g[1])), "ws": int(round(g[2])), "wt": int(round(g[3])),
+                  "ee": int(round(g[4])), "es": int(round(g[5])), "et": int(round(g[6]))},
         "count": len(rows),
     }
 
@@ -768,8 +768,9 @@ async def put_wages(key: str, d: WageIn):
     if not project.get_master(d.member_id):
         raise HTTPException(404, f"Employee {d.member_id} not in master")
     
-    gross_wages = d.gross_wages if d.gross_wages and len(d.gross_wages) == 12 else d.wages.copy()
-    capped_wages = [min(w, g) for w, g in zip(d.wages, gross_wages)]
+    gross_wages = [int(round(float(g))) if g is not None else 0 for g in (d.gross_wages if d.gross_wages and len(d.gross_wages) == 12 else d.wages)]
+    wages_int = [int(round(float(w))) if w is not None else 0 for w in d.wages]
+    capped_wages = [min(w, g) for w, g in zip(wages_int, gross_wages)]
     ncp_days = d.ncp_days if d.ncp_days and len(d.ncp_days) == 12 else [0] * 12
     project.upsert_entry(key, d.member_id, capped_wages, gross_wages=gross_wages, ncp_days=ncp_days, age_crosses_58=d.age_crosses_58, higher_epf_ee=d.higher_epf_ee, higher_epf_er=d.higher_epf_er)
     _save()
@@ -794,19 +795,20 @@ async def bulk_month_wages(key: str, d: BulkMonthWagesIn):
         existing_emp = next((e for e in yr.entries if e.member_id == emp_update.member_id), None)
         
         if existing_emp:
-            wages_arr = existing_emp.wages.copy()
-            gross_wages_arr = existing_emp.gross_wages.copy()
+            wages_arr = [int(round(float(w))) if w is not None else 0 for w in existing_emp.wages]
+            gross_wages_arr = [int(round(float(g))) if g is not None else 0 for g in existing_emp.gross_wages]
             ncp_days_arr = existing_emp.ncp_days.copy()
         else:
-            wages_arr = [0.0] * 12
-            gross_wages_arr = [0.0] * 12
+            wages_arr = [0] * 12
+            gross_wages_arr = [0] * 12
             ncp_days_arr = [0] * 12
             
-        capped_epf_wage = min(emp_update.epf_wage, emp_update.gross_wage)
+        capped_epf_wage = int(round(float(min(emp_update.epf_wage, emp_update.gross_wage))))
+        gross_wage = int(round(float(emp_update.gross_wage)))
         
         # Update just the specific month index
         wages_arr[d.month_idx] = capped_epf_wage
-        gross_wages_arr[d.month_idx] = emp_update.gross_wage
+        gross_wages_arr[d.month_idx] = gross_wage
         ncp_days_arr[d.month_idx] = emp_update.ncp_days
         
         project.upsert_entry(

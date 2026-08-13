@@ -202,13 +202,13 @@ def generate_form_3a_pdf(project, year_key: str, filepath: str):
             wages, w_epf, w_eps, w_total, e_epf, e_eps, e_total = month_rows[i]
             table_data.append([
                 Paragraph(m, style_cell),
-                Paragraph(str(wages) if wages else "", style_cell_right),
-                Paragraph(str(w_epf) if w_epf else "", style_cell_right),
-                Paragraph(str(w_eps) if w_eps else "", style_cell_right),
-                Paragraph(str(w_total) if w_total else "", style_cell_right),
-                Paragraph(str(e_epf) if e_epf else "", style_cell_right),
-                Paragraph(str(e_eps) if e_eps else "", style_cell_right),
-                Paragraph(str(e_total) if e_total else "", style_cell_right),
+                Paragraph(str(int(round(wages))) if wages else "", style_cell_right),
+                Paragraph(str(int(round(w_epf))) if w_epf else "", style_cell_right),
+                Paragraph(str(int(round(w_eps))) if w_eps else "", style_cell_right),
+                Paragraph(str(int(round(w_total))) if w_total else "", style_cell_right),
+                Paragraph(str(int(round(e_epf))) if e_epf else "", style_cell_right),
+                Paragraph(str(int(round(e_eps))) if e_eps else "", style_cell_right),
+                Paragraph(str(int(round(e_total))) if e_total else "", style_cell_right),
                 Paragraph("", style_cell), Paragraph("", style_cell), Paragraph("", style_cell)
             ])
             
@@ -217,13 +217,13 @@ def generate_form_3a_pdf(project, year_key: str, filepath: str):
             
         table_data.append([
             Paragraph("Total", style_cell_bold),
-            Paragraph(str(wt) if wt else "", style_cell_right),
-            Paragraph(str(w_epf_t) if w_epf_t else "", style_cell_right),
-            Paragraph(str(w_eps_t) if w_eps_t else "", style_cell_right),
-            Paragraph(str(w_tot_t) if w_tot_t else "", style_cell_right),
-            Paragraph(str(e_epf_t) if e_epf_t else "", style_cell_right),
-            Paragraph(str(e_eps_t) if e_eps_t else "", style_cell_right),
-            Paragraph(str(e_tot_t) if e_tot_t else "", style_cell_right),
+            Paragraph(str(int(round(wt))) if wt else "", style_cell_right),
+            Paragraph(str(int(round(w_epf_t))) if w_epf_t else "", style_cell_right),
+            Paragraph(str(int(round(w_eps_t))) if w_eps_t else "", style_cell_right),
+            Paragraph(str(int(round(w_tot_t))) if w_tot_t else "", style_cell_right),
+            Paragraph(str(int(round(e_epf_t))) if e_epf_t else "", style_cell_right),
+            Paragraph(str(int(round(e_eps_t))) if e_eps_t else "", style_cell_right),
+            Paragraph(str(int(round(e_tot_t))) if e_tot_t else "", style_cell_right),
             Paragraph("", style_cell), Paragraph("", style_cell), Paragraph("", style_cell)
         ])
         
@@ -325,7 +325,8 @@ def generate_form_6a_pdf(project, year_key: str, filepath: str):
         wt, w_epf, w_eps, w_tot, e_epf, e_eps, e_tot = emp.annual_totals(
             est.worker_epf_rate, est.worker_eps_rate, est.employer_epf_rate, est.employer_eps_rate)
             
-        row_vals = [wt, w_epf, w_eps, w_tot, e_epf, e_eps, e_tot]
+        row_vals = [int(round(wt)), int(round(w_epf)), int(round(w_eps)), int(round(w_tot)),
+                    int(round(e_epf)), int(round(e_eps)), int(round(e_tot))]
         for i, val in enumerate(row_vals):
             grand[i] += val
             
@@ -333,25 +334,25 @@ def generate_form_6a_pdf(project, year_key: str, filepath: str):
             Paragraph(str(sl), style_cell),
             Paragraph(member_id_display, style_cell_left),
             Paragraph(emp.name or "", style_cell_left),
-            Paragraph(str(wt) if wt else "", style_cell_right),
-            Paragraph(str(w_epf) if w_epf else "", style_cell_right),
-            Paragraph(str(w_eps) if w_eps else "", style_cell_right),
-            Paragraph(str(w_tot) if w_tot else "", style_cell_right),
-            Paragraph(str(e_epf) if e_epf else "", style_cell_right),
-            Paragraph(str(e_eps) if e_eps else "", style_cell_right),
-            Paragraph(str(e_tot) if e_tot else "", style_cell_right),
+            Paragraph(str(row_vals[0]) if row_vals[0] else "", style_cell_right),
+            Paragraph(str(row_vals[1]) if row_vals[1] else "", style_cell_right),
+            Paragraph(str(row_vals[2]) if row_vals[2] else "", style_cell_right),
+            Paragraph(str(row_vals[3]) if row_vals[3] else "", style_cell_right),
+            Paragraph(str(row_vals[4]) if row_vals[4] else "", style_cell_right),
+            Paragraph(str(row_vals[5]) if row_vals[5] else "", style_cell_right),
+            Paragraph(str(row_vals[6]) if row_vals[6] else "", style_cell_right),
             Paragraph("", style_cell)
         ])
         
     data.append([
         Paragraph("<b>GRAND TOTAL</b>", style_cell_bold), "", "",
-        Paragraph(f"<b>{grand[0]}</b>", style_cell_right),
-        Paragraph(f"<b>{grand[1]}</b>", style_cell_right),
-        Paragraph(f"<b>{grand[2]}</b>", style_cell_right),
-        Paragraph(f"<b>{grand[3]}</b>", style_cell_right),
-        Paragraph(f"<b>{grand[4]}</b>", style_cell_right),
-        Paragraph(f"<b>{grand[5]}</b>", style_cell_right),
-        Paragraph(f"<b>{grand[6]}</b>", style_cell_right),
+        Paragraph(f"<b>{int(round(grand[0]))}</b>", style_cell_right),
+        Paragraph(f"<b>{int(round(grand[1]))}</b>", style_cell_right),
+        Paragraph(f"<b>{int(round(grand[2]))}</b>", style_cell_right),
+        Paragraph(f"<b>{int(round(grand[3]))}</b>", style_cell_right),
+        Paragraph(f"<b>{int(round(grand[4]))}</b>", style_cell_right),
+        Paragraph(f"<b>{int(round(grand[5]))}</b>", style_cell_right),
+        Paragraph(f"<b>{int(round(grand[6]))}</b>", style_cell_right),
         Paragraph("", style_cell)
     ])
     

@@ -239,12 +239,12 @@ def import_wages_from_excel(filepath: str, sheet_name=None, import_type="yearly"
             n_val = cell_val(row_cells, col_map.get("ncp_single"))
             
             try:
-                gross_wages[month_idx] = float(g_val) if g_val is not None and g_val != "" else 0.0
+                gross_wages[month_idx] = int(round(float(g_val))) if g_val is not None and g_val != "" else 0
             except (TypeError, ValueError):
                 pass
             
             try:
-                wages[month_idx] = float(w_val) if w_val is not None and w_val != "" else 0.0
+                wages[month_idx] = int(round(float(w_val))) if w_val is not None and w_val != "" else 0
             except (TypeError, ValueError):
                 warnings.append(f"Row {r}: could not read wage value for account {acc} ('{w_val}') -- treated as 0.")
 
@@ -257,12 +257,12 @@ def import_wages_from_excel(filepath: str, sheet_name=None, import_type="yearly"
                 col_idx = col_map["months"].get(m_idx)
                 val = cell_val(row_cells, col_idx)
                 if val is None or val == "":
-                    wages[m_idx] = 0.0
+                    wages[m_idx] = 0
                 else:
                     try:
-                        wages[m_idx] = float(val)
+                        wages[m_idx] = int(round(float(val)))
                     except (TypeError, ValueError):
-                        wages[m_idx] = 0.0
+                        wages[m_idx] = 0
                         warnings.append(f"Row {r}: could not read the {MONTHS[m_idx]} wage value "
                                          f"for account {acc} ('{val}') -- treated as 0.")
                 
@@ -272,7 +272,7 @@ def import_wages_from_excel(filepath: str, sheet_name=None, import_type="yearly"
                     gross_wages[m_idx] = wages[m_idx]
                 else:
                     try:
-                        gross_wages[m_idx] = float(g_val)
+                        gross_wages[m_idx] = int(round(float(g_val)))
                     except (TypeError, ValueError):
                         gross_wages[m_idx] = wages[m_idx]
                         
@@ -559,8 +559,8 @@ class Employee:
     name: str = ''
     father_name: str = ''
     uan: str = ''         # Universal Account Number -- shown on Form 3A alongside Member ID
-    wages: List[float] = field(default_factory=lambda: [0.0] * 12)  # APR..MAR
-    gross_wages: List[float] = field(default_factory=lambda: [0.0] * 12)
+    wages: List[int] = field(default_factory=lambda: [0] * 12)  # APR..MAR
+    gross_wages: List[int] = field(default_factory=lambda: [0] * 12)
     ncp_days: List[int] = field(default_factory=lambda: [0] * 12)
     higher_epf_ee: bool = False
     higher_epf_er: bool = False
@@ -584,7 +584,7 @@ class Employee:
 
         rows = []
         for i, w in enumerate(self.wages):
-            w = w or 0
+            w = int(round(float(w))) if w else 0
             ceiling = wage_ceilings[i]
             
             # Post-1997 calculation restrictions:
@@ -693,8 +693,8 @@ class MasterEmployee:
 class YearEntry:
     """One employee's wage entry for one specific year."""
     member_id: str = ""
-    wages: List[float] = field(default_factory=lambda: [0.0] * 12)  # APR..MAR
-    gross_wages: List[float] = field(default_factory=lambda: [0.0] * 12)
+    wages: List[int] = field(default_factory=lambda: [0] * 12)  # APR..MAR
+    gross_wages: List[int] = field(default_factory=lambda: [0] * 12)
     ncp_days: List[int] = field(default_factory=lambda: [0] * 12)
     age_crosses_58: bool = False
 
@@ -707,6 +707,10 @@ class YearEntry:
         if "account_no" in d and "member_id" not in d:
             d["member_id"] = normalize_member_id(d.pop("account_no"))
         d["member_id"] = normalize_member_id(d.get("member_id", ""))
+        if "wages" in d and d["wages"]:
+            d["wages"] = [int(round(float(x))) if x is not None else 0 for x in d["wages"]]
+        if "gross_wages" in d and d["gross_wages"]:
+            d["gross_wages"] = [int(round(float(x))) if x is not None else 0 for x in d["gross_wages"]]
         return YearEntry(**d)
 
 
@@ -908,8 +912,11 @@ class Project:
     def upsert_entry(self, year_key, member_id, wages, gross_wages=None, ncp_days=None, age_crosses_58=False, higher_epf_ee=None, higher_epf_er=None):
         yr = self.years[year_key]
         member_id = normalize_member_id(member_id)
+        wages = [int(round(float(w))) if w is not None else 0 for w in wages]
         if gross_wages is None: gross_wages = wages.copy()
+        else: gross_wages = [int(round(float(g))) if g is not None else 0 for g in gross_wages]
         if ncp_days is None: ncp_days = [0] * 12
+        else: ncp_days = [int(n) if n is not None else 0 for n in ncp_days]
         
         m = self.get_master(member_id)
         if m:
@@ -955,7 +962,9 @@ class Project:
             doe = m.doe if m else ""
             reason_leaving = m.reason_leaving if m else ""
             result.append(Employee(member_id=e.member_id, name=name, father_name=father, uan=uan,
-                                    wages=list(e.wages), gross_wages=list(e.gross_wages), ncp_days=list(getattr(e, 'ncp_days', [0]*12)),
+                                    wages=[int(round(float(x))) if x is not None else 0 for x in e.wages],
+                                    gross_wages=[int(round(float(x))) if x is not None else 0 for x in e.gross_wages],
+                                    ncp_days=list(getattr(e, 'ncp_days', [0]*12)),
                                     higher_epf_ee=m.higher_epf_ee if m else False,
                                     higher_epf_er=m.higher_epf_er if m else False,
                                     age_crosses_58=getattr(e, 'age_crosses_58', False),
@@ -1457,13 +1466,13 @@ class ExcelGenerator:
         for i, m in enumerate(MONTHS):
             wages, w_epf, w_eps, w_total, e_epf, e_eps, e_total = month_rows[i]
             ws.cell(row=r, column=1, value=m).font = NORMAL
-            ws.cell(row=r, column=2, value=wages).font = NORMAL
-            ws.cell(row=r, column=3, value=w_epf).font = NORMAL
-            ws.cell(row=r, column=4, value=w_eps).font = NORMAL
-            ws.cell(row=r, column=5, value=w_total).font = NORMAL
-            ws.cell(row=r, column=6, value=e_epf).font = NORMAL
-            ws.cell(row=r, column=7, value=e_eps).font = NORMAL
-            ws.cell(row=r, column=8, value=e_total).font = NORMAL
+            ws.cell(row=r, column=2, value=int(round(wages)) if wages else "").font = NORMAL
+            ws.cell(row=r, column=3, value=int(round(w_epf)) if w_epf else "").font = NORMAL
+            ws.cell(row=r, column=4, value=int(round(w_eps)) if w_eps else "").font = NORMAL
+            ws.cell(row=r, column=5, value=int(round(w_total)) if w_total else "").font = NORMAL
+            ws.cell(row=r, column=6, value=int(round(e_epf)) if e_epf else "").font = NORMAL
+            ws.cell(row=r, column=7, value=int(round(e_eps)) if e_eps else "").font = NORMAL
+            ws.cell(row=r, column=8, value=int(round(e_total)) if e_total else "").font = NORMAL
             for col in range(1, 12):
                 ws.cell(row=r, column=col).border = BORDER
                 if col >= 2:
@@ -1476,7 +1485,7 @@ class ExcelGenerator:
             w_epf_rate, w_eps_rate, e_epf_rate, e_eps_rate)
         ws.cell(row=total_row, column=1, value="Total").font = BOLD
         for col_idx, val in zip(range(2, 9), [wt, w_epf_t, w_eps_t, w_tot_t, e_epf_t, e_eps_t, e_tot_t]):
-            c = ws.cell(row=total_row, column=col_idx, value=val)
+            c = ws.cell(row=total_row, column=col_idx, value=int(round(val)) if val else "")
             c.font = BOLD
         for col in range(1, 12):
             ws.cell(row=total_row, column=col).border = BORDER
@@ -1604,9 +1613,10 @@ class ExcelGenerator:
             # month-by-month rounding as the 3A card, so the two always agree.
             wt, w_epf, w_eps, w_tot, e_epf, e_eps, e_tot = emp.annual_totals(
                 est.worker_epf_rate, est.worker_eps_rate, est.employer_epf_rate, est.employer_eps_rate)
-            row_values = [wt, w_epf, w_eps, w_tot, e_epf, e_eps, e_tot]
+            row_values = [int(round(wt)), int(round(w_epf)), int(round(w_eps)), int(round(w_tot)),
+                          int(round(e_epf)), int(round(e_eps)), int(round(e_tot))]
             for col_idx, val in zip(range(4, 11), row_values):
-                c = ws.cell(row=row, column=col_idx, value=val)
+                c = ws.cell(row=row, column=col_idx, value=val if val else "")
                 c.font = NORMAL
                 c.border = BORDER
                 c.alignment = RIGHT
@@ -1622,7 +1632,7 @@ class ExcelGenerator:
         for col in (1, 2, 3):
             ws.cell(row=row, column=col).border = BORDER
         for col_idx, val in zip(range(4, 11), grand):
-            c = ws.cell(row=row, column=col_idx, value=val)
+            c = ws.cell(row=row, column=col_idx, value=int(round(val)))
             c.font = BOLD
             c.border = BORDER
             c.alignment = RIGHT

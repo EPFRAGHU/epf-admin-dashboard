@@ -265,13 +265,13 @@ App.registerPage('reports', async (container) => {
                       data.years.forEach(y => {
                           let tds = '';
                           for(let i=0; i<12; i++) {
-                              tds += `<td style="text-align:right;">${y.wages[i] || 0}</td>`;
+                              tds += `<td style="text-align:right;">${y.wages[i] != null ? Math.round(y.wages[i]) : 0}</td>`;
                           }
                           trs += `
                             <tr>
                               <td style="font-weight:500; white-space:nowrap;">${y.year}</td>
                               ${tds}
-                              <td style="text-align:right; font-weight:600; color:var(--primary);">${y.total}</td>
+                              <td style="text-align:right; font-weight:600; color:var(--primary);">${Math.round(y.total || 0)}</td>
                             </tr>
                           `;
                       });
