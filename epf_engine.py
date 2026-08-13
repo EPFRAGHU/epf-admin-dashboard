@@ -2091,14 +2091,13 @@ def _form5_10_signature_and_notes(ws, row, num_cols, note_paragraphs):
     for col in range(sig_col_start, num_cols + 1):
         ws.cell(row=row, column=col).border = Border(top=THIN)
     row += 1
+    ws.cell(row=row, column=1, value="Date").font = NORMAL
     ws.merge_cells(start_row=row, start_column=sig_col_start, end_row=row, end_column=num_cols)
     c = ws.cell(row=row, column=sig_col_start,
                 value="Signature of the employer or other authorised officer and "
                       "stamp of the Factory / Establishment")
     c.font = Font(name="Arial", size=9, italic=True)
     c.alignment = CENTER
-    row += 1
-    ws.cell(row=row, column=1, value="Date").font = NORMAL
     row += 2
 
     for para in note_paragraphs:
@@ -2374,6 +2373,15 @@ def _write_form9_sheet(ws, project: "Project"):
 
     row += 1
     row = _form5_10_signature_and_notes(ws, row, num_cols, [])
+
+    # Repeat table headers
+    ws.print_title_rows = f'{header_row}:{header_row}'
+    
+    # Repeat Establishment Name and Code on Page 2+
+    ws.HeaderFooter.differentFirst = True
+    header_text = f"Name & Address of the Factory/ Establishment :- {project.name}, {project.address}\nCode No. of the Factory/ Establishment :- {project.code}"
+    ws.oddHeader.center.text = header_text
+    ws.evenHeader.center.text = header_text
 
     return row, employees
 
