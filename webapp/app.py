@@ -1187,13 +1187,16 @@ async def get_all_establishments():
         wage_summary = {}
         years_data = data.get("years", {})
         for y_key, y_record in years_data.items():
-            months_entered = [False] * 12
+            employee_counts = [0] * 12
             for entry in y_record.get("entries", []):
                 wages = entry.get("wages", [])
+                gross_wages = entry.get("gross_wages", [])
                 for i in range(12):
-                    if i < len(wages) and (wages[i] or 0) > 0:
-                        months_entered[i] = True
-            wage_summary[y_key] = months_entered
+                    w = wages[i] if i < len(wages) else 0
+                    g = gross_wages[i] if i < len(gross_wages) else 0
+                    if (w and w > 0) or (g and g > 0):
+                        employee_counts[i] += 1
+            wage_summary[y_key] = employee_counts
             
         result.append({
             "filename": filename,
@@ -1203,6 +1206,7 @@ async def get_all_establishments():
             "coverage_date": data.get("coverage_date", ""),
             "created_at": created_at,
             "is_active": data.get("is_active", True),
+            "total_employees": len(data.get("master", [])),
             "wage_summary": wage_summary
         })
     return {"establishments": result}

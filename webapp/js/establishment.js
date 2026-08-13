@@ -36,19 +36,19 @@ App.registerPage('establishment', async (container) => {
               const enteredMonths = eItem.wage_summary[year];
               let boxes = '';
               for(let i = 0; i < 12; i++) {
-                 const hasData = enteredMonths[i];
-                 const boxClass = hasData ? 'green' : 'red';
+                 const employeeCount = enteredMonths[i] || 0;
+                 const boxClass = employeeCount > 0 ? 'green' : 'red';
                  boxes += `
                    <div style="display: flex; flex-direction: column; align-items: center; gap: 2px;">
                      <span style="font-size: 9px; color: var(--text3); text-transform: capitalize;">${months[i]}</span>
-                     <div class="month-box ${boxClass}" title="${months[i]}"></div>
+                     <div class="month-box ${boxClass}" title="${months[i]}" style="width: 24px; height: 16px; display: flex; align-items: center; justify-content: center; font-size: 9px; color: #fff; font-weight: 600; border-radius: 4px;">${employeeCount > 0 ? employeeCount : ''}</div>
                    </div>
                  `;
               }
               wageHtml += `
                 <div class="est-wage-year">
                   <div style="width: 65px; font-weight: 500; color: var(--text2);">${year}</div>
-                  <div class="est-wage-boxes">${boxes}</div>
+                  <div class="est-wage-boxes" style="gap:4px;">${boxes}</div>
                 </div>
               `;
             });
@@ -61,7 +61,12 @@ App.registerPage('establishment', async (container) => {
             <td style="font-weight: 600;">${App.esc(eItem.code)}</td>
             <td style="font-weight: 500; color: var(--text1);">${App.esc(eItem.name)}</td>
             <td style="font-size: 11px; color: var(--text2); max-width: 200px;">${App.esc(eItem.address)}</td>
-            <td>${App.esc(eItem.coverage_date)}</td>
+            <td>
+              <div style="font-weight: 500;">${App.esc(eItem.coverage_date)}</div>
+              <div style="font-size: 11px; color: var(--text2); margin-top: 2px;">
+                <span style="color:var(--primary); font-weight:600;">${eItem.total_employees || 0}</span> Employees
+              </div>
+            </td>
             <td>${App.esc(eItem.created_at)}</td>
             <td>${statusBadge}</td>
             <td>${wageHtml}</td>
