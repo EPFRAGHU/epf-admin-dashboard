@@ -31,7 +31,7 @@ from epf_engine import (
 )
 
 # ── App setup ──────────────────────────────────────────────────────────────
-app = FastAPI(title="EPF Admin Dashboard", version="1.0")
+app = FastAPI(title="EPF Admin Dashboard", version="1.6.0")
 project = Project()
 project_filepath: Optional[str] = None
 

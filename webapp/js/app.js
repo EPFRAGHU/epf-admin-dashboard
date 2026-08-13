@@ -285,12 +285,161 @@ const App = (() => {
     }
   }
 
+  /* ── Version History & Changelog ─────────────────────────────── */
+  const versionHistory = [
+    {
+      version: 'v1.6.0',
+      dateTime: '14-08-2026 04:47 IST',
+      badge: 'Present / Latest',
+      badgeClass: 'high',
+      isLatest: true,
+      title: 'Zero-Wage Auto-Filter, Rupee Precision & Left Panel Live Version Tracking',
+      changes: [
+        'Form 3A and Form 6A automatically filter out employees with zero total wages without altering PDF grid structure or table layouts.',
+        'Wages and statutory contributions strictly rendered and saved as whole rupee integers with zero decimal artifacts (.0 removed across all UI tables and ReportLab PDFs).',
+        'Left side panel live version indicator updated to current present release (v1.6.0) with project timeline progression tracking (11-08-2026 to 14-08-2026).',
+        'Render cloud deployment dependencies synchronized with ReportLab and Pandas native acceleration.'
+      ]
+    },
+    {
+      version: 'v1.5.0',
+      dateTime: '14-08-2026 02:55 IST',
+      badge: 'High Performance',
+      badgeClass: 'low',
+      isLatest: false,
+      title: 'Direct ReportLab Native PDF Engine & EPFO v3.0 ECR Generator',
+      changes: [
+        'Ultra-fast native ReportLab PDF generator replacing external headless LibreOffice and pywin32 desktop dependencies.',
+        'Perfect layout compliance for Form 3A, Form 6A, Form 12A, Form 9, Form 5, and Form 10 with automatic table cell wrapping and landscape fitting.',
+        'Integrated ECR (Electronic Challan cum Return) text file generator conforming strictly to EPFO v3.0 standard with Higher EPF split.',
+        'Enhanced Form 12A Grand Total row span calculation and TRRN/CRRN proximity formatting.'
+      ]
+    },
+    {
+      version: 'v1.4.0',
+      dateTime: '13-08-2026 23:55 IST',
+      badge: 'Major Feature',
+      badgeClass: 'low',
+      isLatest: false,
+      title: 'Statutory Forms Compliance & Form 12A Challan Remittances',
+      changes: [
+        '12-Month static Form 12A Challan Management Grid with auto-calculated Account 2 (Admin Charges), Account 21 (EDLI), and Account 22 statutory dues.',
+        'Multi-challan remittance support allowing multiple paid challan records per month.',
+        'Repeating establishment headers and dynamic page footers across Form 9 and Form 6A multi-page printouts.',
+        'Light theme UI styling propagated across all dashboard views, modals, and tables.'
+      ]
+    },
+    {
+      version: 'v1.3.0',
+      dateTime: '13-08-2026 11:56 IST',
+      badge: 'Feature Update',
+      badgeClass: 'low',
+      isLatest: false,
+      title: 'Employee Wage History & Multi-Year Tabular Analytics',
+      changes: [
+        'Comprehensive Employee Wage History report with year-wise tabular data across all financial years.',
+        'Direct Print-to-PDF functionality with custom establishment header and clean tabular formatting.',
+        'Individual Employee 📄 3A instant card download directly from Wage Entry.',
+        'Higher EPF (EE and ER) contribution split support and dynamic wage ceiling handling.'
+      ]
+    },
+    {
+      version: 'v1.2.0',
+      dateTime: '13-08-2026 01:26 IST',
+      badge: 'Major Feature',
+      badgeClass: 'low',
+      isLatest: false,
+      title: 'Monthly Wage Grid & Interactive Dashboards',
+      changes: [
+        'Monthly bulk wage entry modal with previous month auto-copying and NCP work-days calculation.',
+        'Interactive Month-wise Dashboard summaries, charts, and statutory distribution breakdowns.',
+        'Global pagination across large employee datasets and superannuation age 58 tracking.',
+        'Dynamic month selection defaulting to previous calendar month with March fallback.'
+      ]
+    },
+    {
+      version: 'v1.1.0',
+      dateTime: '12-08-2026 09:15 IST',
+      badge: 'Feature Update',
+      badgeClass: 'low',
+      isLatest: false,
+      title: 'Multi-Sheet Excel Importer & Mandatory 12-Digit UAN',
+      changes: [
+        'Bulk import multi-year Excel spreadsheets simultaneously with automatic financial year creation.',
+        'Automatic Employee Master extraction and population (DOB, DOJ, DOE, Father Name, Gender).',
+        'Mandatory 12-digit UAN validation and member ID establishment code verification.',
+        'Robust file path checking on first save to prevent project data corruption.'
+      ]
+    },
+    {
+      version: 'v1.0.0',
+      dateTime: '11-08-2026 23:12 IST',
+      badge: 'Project Inception',
+      badgeClass: 'low',
+      isLatest: false,
+      title: 'Project Inception & Core Statutory Engine',
+      changes: [
+        'Initial desktop and cloud-ready web dashboard architecture with FastAPI backend.',
+        'Core EPF statutory computation engine supporting Pre-1997 and Post-1997 contribution rules.',
+        'Multi-establishment database management with PostgreSQL/Supabase and local JSON fallback synchronization.',
+        'Standard Form 3A and Form 6A annual return generation foundations.'
+      ]
+    }
+  ];
+
+  function showVersionHistory() {
+    const bodyHtml = `
+      <div style="max-height: 520px; overflow-y: auto; padding-right: 6px;">
+        <!-- Timeline summary header -->
+        <div style="background: linear-gradient(135deg, var(--bg2) 0%, var(--card) 100%); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 18px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px;">
+          <div>
+            <div style="font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px;">Project Progression Timeline</div>
+            <div style="font-size: 14px; font-weight: 700; color: var(--text1); margin-top: 2px;">
+              <span style="color: var(--primary);">v1.0.0</span> (11-08-2026) <span style="color: var(--text3); margin: 0 4px;">➔</span> <span style="color: var(--green);">v1.6.0 Present</span> (14-08-2026)
+            </div>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <div style="background: var(--card); border: 1px solid var(--card-border); padding: 6px 12px; border-radius: var(--radius-sm); text-align: center;">
+              <div style="font-size: 10px; color: var(--text3); font-weight: 500;">Milestones</div>
+              <div style="font-size: 13px; font-weight: 700; color: var(--primary);">${versionHistory.length} Releases</div>
+            </div>
+            <div style="background: var(--card); border: 1px solid var(--card-border); padding: 6px 12px; border-radius: var(--radius-sm); text-align: center;">
+              <div style="font-size: 10px; color: var(--text3); font-weight: 500;">Current State</div>
+              <div style="font-size: 13px; font-weight: 700; color: var(--green);">v1.6.0 Active</div>
+            </div>
+          </div>
+        </div>
+
+        <p style="font-size: 13px; color: var(--text2); margin-top: 0; margin-bottom: 16px; font-weight: 500;">Complete chronological version progression and release changelog from project starting time to till date:</p>
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+          ${versionHistory.map(v => `
+            <div class="card" style="padding: 15px 18px; border-left: 4px solid ${v.isLatest ? 'var(--green)' : 'var(--card-border)'}; background: var(--bg2); position: relative;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
+                <div style="display:flex; align-items:center; gap: 8px;">
+                  <strong style="font-size: 16px; color: ${v.isLatest ? 'var(--primary)' : 'var(--text1)'}">${v.version}</strong>
+                  <span class="badge ${v.badgeClass}" style="font-size:10px">${v.badge}</span>
+                </div>
+                <span style="font-size: 12px; color: var(--text3); font-weight: 600; background: var(--card); padding: 2px 8px; border-radius: 4px; border: 1px solid var(--card-border);">⏱️ ${v.dateTime}</span>
+              </div>
+              <div style="font-size: 13px; font-weight: 600; color: var(--text1); margin-bottom: 8px;">${v.title}</div>
+              <ul style="margin: 0; padding-left: 18px; font-size: 12px; color: var(--text2); line-height: 1.6;">
+                ${v.changes.map(c => `<li style="margin-bottom: 4px;">${c}</li>`).join('')}
+              </ul>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+    openModal('EPF Manager · Version Progression & Changelog (Project Start to Present)', bodyHtml, '<button class="btn btn-primary" onclick="App.closeModal()">Close</button>', true);
+  }
+
   return {
     init, navigate, registerPage,
     api, get, post, put, del,
     toast, openModal, closeModal, confirm,
     toggleSidebar, save, fmt, fmtD, esc, fmtId, renderPagination,
     showProjectManager, switchProject, newProject, logout, showLogin, doLogin, refreshTopbar,
+    showVersionHistory,
     get currentPage() { return currentPage; },
   };
 })();

@@ -48,7 +48,19 @@
             <div class="sidebar-footer">
                 <button class="btn btn-primary btn-sm" style="width:100%; margin-bottom:8px" onclick="App.showProjectManager()">📂 Switch Establishment</button>
                 <button class="btn btn-danger btn-sm" style="width:100%; margin-bottom:8px" onclick="App.logout()">🚪 Logout</button>
-                <p class="version">v1.0 · EPF Manager</p>
+                <div class="version-badge-container" onclick="App.showVersionHistory()" title="Click to view full Version History & Changelog (v1.0.0 to v1.6.0)" style="cursor: pointer; margin-top: 8px; padding: 8px 10px; border-radius: var(--radius-sm); transition: all var(--transition); border: 1px dashed var(--border); background: var(--bg2); text-align: left;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px;">
+                        <span style="font-size: 12px; font-weight: 800; color: var(--primary); letter-spacing: 0.3px;">v1.6.0</span>
+                        <span class="badge high" style="font-size: 9px; padding: 1px 6px; font-weight: 700;">Present</span>
+                    </div>
+                    <div style="font-size: 10px; color: var(--text3); display: flex; align-items: center; gap: 4px; margin-bottom: 4px;">
+                        <span>⏱️ 11-08-2026 → 14-08-2026</span>
+                    </div>
+                    <div style="font-size: 10px; color: var(--primary); font-weight: 600; display: flex; align-items: center; justify-content: space-between; padding-top: 4px; border-top: 1px solid var(--card-border);">
+                        <span>📜 Version History</span>
+                        <span style="font-size: 9px; color: var(--text3); background: var(--card); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--card-border);">7 Releases</span>
+                    </div>
+                </div>
             </div>
         </aside>
 
