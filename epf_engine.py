@@ -1473,17 +1473,17 @@ class ExcelGenerator:
 
         cert1 = ("Certified that the total amount of contribution indicated in this card has already "
                  "been remitted in full in EPF A/c. No. 1 and A/c No. 10 vide note below.")
-        merged(r, cert1, NORMAL, LEFT)
-        ws.row_dimensions[r].height = _row_height_for_cells([(cert1, 130)])
+        merged(r, cert1, NOTE_FONT, LEFT)
+        ws.row_dimensions[r].height = _row_height_for_cells([(cert1, 130)], line_height=11, min_height=13)
         r += 1
         merged(r, "(a) Date of leaving Service:                                (b) Reason for leaving service:", NORMAL, LEFT)
         r += 1
         cert2 = ("Certified that the difference between the total of the contributions shown under Cols. 3 & 4 "
                  "of the above table and that arrived at on the total wages shown in Col. 2 at the prescribed "
                  "rate is solely due to the rounding off of contribution to the nearest rupee under the rules.")
-        merged(r, cert2, NORMAL, LEFT)
-        ws.row_dimensions[r].height = _row_height_for_cells([(cert2, 130)])
-        r += 2
+        merged(r, cert2, NOTE_FONT, LEFT)
+        ws.row_dimensions[r].height = _row_height_for_cells([(cert2, 130)], line_height=11, min_height=13)
+        r += 1
         r = ExcelGenerator._write_signature_block(ws, r, num_cols=11, left_col=1)
 
         return r, total_row
