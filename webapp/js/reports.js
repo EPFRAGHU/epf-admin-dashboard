@@ -184,7 +184,6 @@ App.registerPage('reports', async (container) => {
           });
           
           async function loadEmployeeHistory(member_id) {
-              const member_id = e.target.value;
               const view = document.getElementById('r-emp-history-view');
               if(!member_id) {
                   view.style.display = 'none';
