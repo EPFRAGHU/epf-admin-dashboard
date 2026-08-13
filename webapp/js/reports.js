@@ -263,7 +263,7 @@ App.registerPage('reports', async (container) => {
                   html = `
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;" class="no-print">
                       <div style="font-size:16px; font-weight:600;">Wage History Report</div>
-                      <button class="btn btn-primary" onclick="window.print()">🖨️ Print / Save as PDF</button>
+                      <button class="btn btn-primary" onclick="window.printEmployeeReport('${App.esc(p.name)}', '${App.esc(p.uan || '')}')">🖨️ Print / Save as PDF</button>
                     </div>
                   ` + html;
                   
@@ -275,6 +275,15 @@ App.registerPage('reports', async (container) => {
       }
   });
 });
+
+window.printEmployeeReport = (empName, uan) => {
+  const originalTitle = document.title;
+  const safeName = (empName || "Employee").replace(/[^a-zA-Z0-9 ]/g, "").trim();
+  const safeUan = (uan && uan.trim() !== "") ? uan.trim() : "NO_UAN";
+  document.title = `${safeName} - ${safeUan}`;
+  window.print();
+  document.title = originalTitle;
+};
 
 window.downloadECR = () => {
   const y = document.getElementById('ecr-year').value;

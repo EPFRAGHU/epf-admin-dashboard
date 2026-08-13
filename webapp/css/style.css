@@ -636,6 +636,8 @@ input[type=number] {
   
   #r-emp-history-view th {
     background-color: #f0f0f0 !important;
+    color: #000 !important;
+    font-weight: 900 !important;
     -webkit-print-color-adjust: exact;
     color-adjust: exact;
   }
