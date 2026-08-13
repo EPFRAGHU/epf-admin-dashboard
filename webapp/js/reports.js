@@ -198,6 +198,10 @@ App.registerPage('reports', async (container) => {
                   const data = await App.get(`/api/reports/employee_wage_history/${encodeURIComponent(member_id)}`);
                   const p = data.profile;
                   let html = `
+                    <div style="text-align:center; margin-bottom:16px; border-bottom:2px solid var(--border); padding-bottom:12px;">
+                      <h2 style="margin:0; font-size:18px; font-weight:700; color:var(--text1); text-transform:uppercase;">${App.esc(data.establishment?.name || 'ESTABLISHMENT NAME')}</h2>
+                      <div style="font-size:12px; font-weight:600; color:var(--text2); margin-top:4px;">Code: ${App.esc(data.establishment?.code || 'EST-CODE')}</div>
+                    </div>
                     <div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:16px; margin-bottom:16px;">
                       <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:16px; margin-bottom:16px;">
                         <div>

@@ -61,11 +61,9 @@ App.registerPage('establishment', async (container) => {
             <td style="font-weight: 600;">${App.esc(eItem.code)}</td>
             <td style="font-weight: 500; color: var(--text1);">${App.esc(eItem.name)}</td>
             <td style="font-size: 11px; color: var(--text2); max-width: 200px;">${App.esc(eItem.address)}</td>
+            <td>${App.esc(eItem.coverage_date)}</td>
             <td>
-              <div style="font-weight: 500;">${App.esc(eItem.coverage_date)}</div>
-              <div style="font-size: 11px; color: var(--text2); margin-top: 2px;">
-                <span style="color:var(--primary); font-weight:600;">${eItem.total_employees || 0}</span> Employees
-              </div>
+              <div style="font-size: 13px; font-weight: 600; color: var(--primary);">${eItem.total_employees || 0}</div>
             </td>
             <td>${App.esc(eItem.created_at)}</td>
             <td>${statusBadge}</td>
@@ -137,6 +135,7 @@ App.registerPage('establishment', async (container) => {
               <th>Name</th>
               <th>Address</th>
               <th>Coverage Date</th>
+              <th>Total Employees</th>
               <th>Creation Date</th>
               <th>Status</th>
               <th>Wage Data (Mar-Feb)</th>

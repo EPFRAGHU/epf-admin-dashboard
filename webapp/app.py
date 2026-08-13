@@ -786,6 +786,10 @@ async def report_employee_wage_history(member_id: str):
         })
 
     return {
+        "establishment": {
+            "name": project.name,
+            "code": project.code
+        },
         "profile": {
             "member_id": master.member_id,
             "uan": master.uan,
