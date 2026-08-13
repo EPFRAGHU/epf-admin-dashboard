@@ -13,7 +13,7 @@ App.registerPage('reports', async (container) => {
     return;
   }
   
-  container.innerHTML = `<div class="fade-in" style="max-width:800px">
+  container.innerHTML = `<div class="fade-in" style="max-width:1200px">
     <div class="page-header">
       <div>
         <div class="section-title">Reports & Export</div>
@@ -21,57 +21,66 @@ App.registerPage('reports', async (container) => {
       </div>
     </div>
     
-    <div class="card" style="margin-bottom:24px">
-      <div class="card-head"><div class="card-title">1. Employee Master (Form 9)</div></div>
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px;">
-        <p style="color:var(--text2); font-size:13px; max-width:400px">Export the entire Employee Master database containing all employee details.</p>
-        <div style="display:flex; gap:12px;">
-          <button class="btn btn-primary" onclick="downloadForm9('pdf')">📄 Download PDF</button>
-          <button class="btn btn-success" onclick="downloadForm9('excel')">📊 Download Excel</button>
+    <div style="display: flex; flex-wrap: wrap; gap: 24px;">
+      
+      <!-- Left Column (Forms) -->
+      <div style="flex: 1; min-width: 400px; display: flex; flex-direction: column; gap: 24px;">
+        
+        <div class="card" style="margin:0">
+          <div class="card-head"><div class="card-title">1. Employee Master (Form 9)</div></div>
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px;">
+            <p style="color:var(--text2); font-size:13px; max-width:400px">Export the entire Employee Master database containing all employee details.</p>
+            <div style="display:flex; gap:12px;">
+              <button class="btn btn-primary" onclick="downloadForm9('pdf')">📄 Download PDF</button>
+              <button class="btn btn-success" onclick="downloadForm9('excel')">📊 Download Excel</button>
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
+        
+        <div class="card" style="margin:0">
+          <div class="card-head"><div class="card-title">2. Annual Returns (Forms 3A, 6A, 12A, 5, 10)</div></div>
+          
+          <div class="form-group" style="margin-bottom:20px; max-width:300px">
+            <label class="form-label">Select Financial Year</label>
+            <select class="form-select" id="r-year">
+              ${years.map(y => `<option value="${y.key}">${y.label}</option>`).reverse().join('')}
+            </select>
+          </div>
+          
+          <p style="color:var(--text2); font-size:13px; margin-bottom:12px">
+            Select the specific statutory forms you wish to generate for this year.
+          </p>
     
-    <div class="card">
-      <div class="card-head"><div class="card-title">2. Annual Returns (Forms 3A, 6A, 12A, 5, 10)</div></div>
+          <div style="display:flex; flex-wrap:wrap; gap:16px; margin-bottom:24px; padding:12px; background:rgba(0,0,0,0.05); border-radius:8px;">
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" class="form-checkbox" id="chk-3a" value="3A" checked> <span>Form 3A</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" class="form-checkbox" id="chk-6a" value="6A" checked> <span>Form 6A</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" class="form-checkbox" id="chk-12a" value="12A" checked> <span>Form 12A</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" class="form-checkbox" id="chk-5" value="5" checked> <span>Form 5</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" class="form-checkbox" id="chk-10" value="10" checked> <span>Form 10</span>
+            </label>
+          </div>
+          
+          <div style="display:flex; gap:12px; justify-content:flex-end;">
+            <button class="btn btn-primary" onclick="downloadAnnualReturn('pdf')">📄 Download Selected as PDF</button>
+            <button class="btn btn-success" onclick="downloadAnnualReturn('excel')">📊 Download Selected as Excel</button>
+          </div>
+        </div>
       
-      <div class="form-group" style="margin-bottom:20px; max-width:300px">
-        <label class="form-label">Select Financial Year</label>
-        <select class="form-select" id="r-year">
-          ${years.map(y => `<option value="${y.key}">${y.label}</option>`).reverse().join('')}
-        </select>
       </div>
-      
-      <p style="color:var(--text2); font-size:13px; margin-bottom:12px">
-        Select the specific statutory forms you wish to generate for this year.
-      </p>
 
-      <div style="display:flex; flex-wrap:wrap; gap:16px; margin-bottom:24px; padding:12px; background:rgba(0,0,0,0.05); border-radius:8px;">
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-          <input type="checkbox" class="form-checkbox" id="chk-3a" value="3A" checked> <span>Form 3A</span>
-        </label>
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-          <input type="checkbox" class="form-checkbox" id="chk-6a" value="6A" checked> <span>Form 6A</span>
-        </label>
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-          <input type="checkbox" class="form-checkbox" id="chk-12a" value="12A" checked> <span>Form 12A</span>
-        </label>
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-          <input type="checkbox" class="form-checkbox" id="chk-5" value="5" checked> <span>Form 5</span>
-        </label>
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-          <input type="checkbox" class="form-checkbox" id="chk-10" value="10" checked> <span>Form 10</span>
-        </label>
-      </div>
-      
-      <div style="display:flex; gap:12px; justify-content:flex-end;">
-        <button class="btn btn-primary" onclick="downloadAnnualReturn('pdf')">📄 Download Selected as PDF</button>
-        <button class="btn btn-success" onclick="downloadAnnualReturn('excel')">📊 Download Selected as Excel</button>
-      </div>
-    </div>
-    </div>
-
-    <div class="card" style="margin-top:24px">
+      <!-- Right Column (ECR & History) -->
+      <div style="flex: 1; min-width: 400px; display: flex; flex-direction: column; gap: 24px;">
+        
+        <div class="card" style="margin:0">
       <div class="card-head"><div class="card-title">3. ECR Text File Generator</div></div>
       
       <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:20px;">
@@ -110,20 +119,25 @@ App.registerPage('reports', async (container) => {
       </div>
     </div>
 
-    <div class="card" style="margin-top:24px">
+    <div class="card" style="margin:0">
       <div class="card-head"><div class="card-title">4. Employee Wage History</div></div>
       <p style="color:var(--text2); font-size:13px; margin-bottom:12px">
         View the complete member profile and year-wise wage entries for a specific employee.
       </p>
       <div class="form-group" style="max-width:400px; position:relative;">
         <label class="form-label">Search & Select Employee</label>
-        <input type="text" class="form-input" id="r-emp-search" placeholder="Type name or UAN..." autocomplete="off">
+        <div style="position:relative;">
+          <input type="text" class="form-input" id="r-emp-search" placeholder="Type name or UAN..." autocomplete="off">
+          <button id="r-emp-clear" style="position:absolute; right:8px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; font-size:18px; font-weight:bold; color:var(--text3); display:none;">&times;</button>
+        </div>
         <div id="r-emp-dropdown" class="autocomplete-dropdown" style="display:none; position:absolute; top:100%; left:0; right:0; max-height:250px; overflow-y:auto; background:var(--surface); border:1px solid var(--border); border-radius:4px; z-index:1000; box-shadow:0 4px 12px rgba(0,0,0,0.1);"></div>
       </div>
       
       <div id="r-emp-history-view" style="margin-top: 24px; display: none;"></div>
     </div>
 
+      </div>
+    </div>
   </div>`;
   
   // Load employees for the dropdown
@@ -134,7 +148,16 @@ App.registerPage('reports', async (container) => {
       if(searchInput && res.employees) {
           let selectedMemberId = null;
           
+          const clearBtn = document.getElementById('r-emp-clear');
+          
           const renderDropdown = (query) => {
+              if (selectedMemberId) {
+                  const emp = res.employees.find(e => e.member_id === selectedMemberId);
+                  if (emp && query === emp.name) {
+                      query = ""; // If query exactly matches selected name, show all
+                  }
+              }
+              
               const q = query.toLowerCase();
               const filtered = res.employees.filter(e => 
                   e.name.toLowerCase().includes(q) || 
@@ -160,8 +183,19 @@ App.registerPage('reports', async (container) => {
           });
           
           searchInput.addEventListener('input', (e) => {
+              clearBtn.style.display = e.target.value ? 'block' : 'none';
               renderDropdown(e.target.value);
               dropdown.style.display = 'block';
+          });
+          
+          clearBtn.addEventListener('click', () => {
+              searchInput.value = '';
+              selectedMemberId = null;
+              clearBtn.style.display = 'none';
+              loadEmployeeHistory(null);
+              renderDropdown('');
+              dropdown.style.display = 'block';
+              searchInput.focus();
           });
           
           document.addEventListener('click', (e) => {
@@ -177,6 +211,7 @@ App.registerPage('reports', async (container) => {
               const member_id = item.getAttribute('data-id');
               const emp = res.employees.find(em => em.member_id === member_id);
               searchInput.value = emp.name;
+              clearBtn.style.display = 'block';
               dropdown.style.display = 'none';
               selectedMemberId = member_id;
               
