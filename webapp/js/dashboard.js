@@ -60,20 +60,24 @@ App.registerPage('dashboard', async (container) => {
       </div>
       <div class="table-wrap">
         <table class="est-table">
-          <thead>
-            <tr>
-              <th>Month & Year</th>
-              <th class="num" style="text-align:center">Employees</th>
-              <th class="num">Gross Wages</th>
-              <th class="num">EPF Wages</th>
-              <th class="num">EPS Wages</th>
-              <th class="num">Worker Share</th>
-              <th class="num">Employer Share</th>
-            </tr>
-          </thead>
           <tbody>
-            ${data.year_stats.map(y => {
-                let html = `<tr><td colspan="7" style="background-color: var(--bg-color); font-weight: 600; padding: 12px;">Financial Year: ${y.label} <span class="badge badge-blue" style="margin-left: 8px;">${y.scheme}</span></td></tr>`;
+            ${[...data.year_stats].reverse().map(y => {
+                let html = `
+                  <tr>
+                    <td colspan="7" style="background-color: var(--bg-color); font-weight: 700; padding: 12px; font-size:14px; border-bottom: 1px solid var(--border);">
+                      Financial Year: ${y.label} <span class="badge badge-blue" style="margin-left: 8px;">${y.scheme}</span>
+                    </td>
+                  </tr>
+                  <tr style="background-color: rgba(0,0,0,0.1); color: var(--text2); font-size: 11px; text-transform: uppercase; font-weight: 600;">
+                    <td style="padding: 8px 12px;">Month & Year</td>
+                    <td class="num" style="text-align:center; padding: 8px 12px;">Employees</td>
+                    <td class="num" style="padding: 8px 12px;">Gross Wages</td>
+                    <td class="num" style="padding: 8px 12px;">EPF Wages</td>
+                    <td class="num" style="padding: 8px 12px;">EPS Wages</td>
+                    <td class="num" style="padding: 8px 12px;">Worker Share</td>
+                    <td class="num" style="padding: 8px 12px;">Employer Share</td>
+                  </tr>
+                `;
                 
                 y.monthly_stats.forEach((m, idx) => {
                     html += `<tr>
