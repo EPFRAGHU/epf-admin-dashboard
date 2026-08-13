@@ -2289,8 +2289,9 @@ def _write_form9_sheet(ws, project: "Project"):
     """
     employees = project.master_list()
     num_cols = 13
-    col_widths = {1: 6, 2: 16, 3: 16, 4: 22, 5: 28, 6: 12, 7: 8, 8: 17, 9: 36,
-                  10: 16, 11: 12, 12: 20, 13: 30}
+    # Adjusted column widths to sum up to ~130 for perfect A4 landscape fitting without extreme scaling
+    col_widths = {1: 6, 2: 12, 3: 13, 4: 18, 5: 18, 6: 11, 7: 7, 8: 11, 9: 10,
+                  10: 10, 11: 8, 12: 14, 13: 12}
     for col, w in col_widths.items():
         ws.column_dimensions[get_column_letter(col)].width = w
 
@@ -2332,9 +2333,9 @@ def _write_form9_sheet(ws, project: "Project"):
         c.font = BOLD
         c.fill = HEADER_FILL
         c.border = BORDER
-        c.alignment = CENTER
-    ws.row_dimensions[header_row].height = _row_height_for_cells(
-        [(h, col_widths[i]) for i, h in enumerate(headers, start=1)])
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    # Increase header row height to fit wrapped text nicely
+    ws.row_dimensions[header_row].height = 65
 
     row = header_row + 1
     for i, m in enumerate(employees, start=1):
@@ -2344,7 +2345,15 @@ def _write_form9_sheet(ws, project: "Project"):
             c = ws.cell(row=row, column=col_idx, value=val)
             c.font = NORMAL
             c.border = BORDER
-            c.alignment = CENTER if col_idx in (1, 6) else LEFT
+            align_horiz = "center" if col_idx in (1, 6, 7, 8) else "left"
+            c.alignment = Alignment(horizontal=align_horiz, vertical="center", wrap_text=True)
+            
+        # Dynamically set row height based on text length (approximate)
+        max_chars = max(len(str(val)) for val in values)
+        if max_chars > 20:
+            ws.row_dimensions[row].height = 25
+        elif max_chars > 40:
+            ws.row_dimensions[row].height = 35
         row += 1
     if not employees:
         for i in range(1, 11):  # blank numbered rows, like the printed template, if the Master is empty
