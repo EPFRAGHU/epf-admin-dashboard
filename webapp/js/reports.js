@@ -115,33 +115,75 @@ App.registerPage('reports', async (container) => {
       <p style="color:var(--text2); font-size:13px; margin-bottom:12px">
         View the complete member profile and year-wise wage entries for a specific employee.
       </p>
-      <div class="form-group" style="max-width:300px">
-        <label class="form-label">Select Employee</label>
-        <select class="form-select" id="r-emp-select">
-          <option value="">-- Loading Employees --</option>
-        </select>
+      <div class="form-group" style="max-width:400px; position:relative;">
+        <label class="form-label">Search & Select Employee</label>
+        <input type="text" class="form-input" id="r-emp-search" placeholder="Type name or UAN..." autocomplete="off">
+        <div id="r-emp-dropdown" class="autocomplete-dropdown" style="display:none; position:absolute; top:100%; left:0; right:0; max-height:250px; overflow-y:auto; background:var(--surface); border:1px solid var(--border); border-radius:4px; z-index:1000; box-shadow:0 4px 12px rgba(0,0,0,0.1);"></div>
       </div>
       
-      <div id="r-emp-history-view" style="margin-top: 16px; display: none;"></div>
+      <div id="r-emp-history-view" style="margin-top: 24px; display: none;"></div>
     </div>
 
   </div>`;
   
   // Load employees for the dropdown
   App.get('/api/employees').then(res => {
-      const select = document.getElementById('r-emp-select');
-      if(select && res.employees) {
-          select.innerHTML = '<option value="">-- Select Employee --</option>' + 
-            res.employees.map(e => `<option value="${e.member_id}">${e.name} (${e.uan || e.member_id})</option>`).join('');
+      const searchInput = document.getElementById('r-emp-search');
+      const dropdown = document.getElementById('r-emp-dropdown');
+      
+      if(searchInput && res.employees) {
+          let selectedMemberId = null;
           
-          $(select).select2({
-              placeholder: 'Search for an employee...',
-              allowClear: true,
-              width: '100%',
-              dropdownAutoWidth: true
+          const renderDropdown = (query) => {
+              const q = query.toLowerCase();
+              const filtered = res.employees.filter(e => 
+                  e.name.toLowerCase().includes(q) || 
+                  (e.uan && e.uan.toLowerCase().includes(q)) ||
+                  e.member_id.toLowerCase().includes(q)
+              );
+              
+              if(filtered.length === 0) {
+                  dropdown.innerHTML = '<div style="padding:8px 12px; color:var(--text3);">No matches found</div>';
+              } else {
+                  dropdown.innerHTML = filtered.slice(0, 50).map(e => `
+                      <div class="dropdown-item" data-id="${e.member_id}" style="padding:8px 12px; cursor:pointer; border-bottom:1px solid var(--border);">
+                          <div style="font-weight:500; color:var(--text1); pointer-events:none;">${App.esc(e.name)}</div>
+                          <div style="font-size:11px; color:var(--text2); pointer-events:none;">UAN: ${App.esc(e.uan || '-')} | ID: ${App.esc(e.member_id)}</div>
+                      </div>
+                  `).join('');
+              }
+          };
+
+          searchInput.addEventListener('focus', () => {
+              renderDropdown(searchInput.value);
+              dropdown.style.display = 'block';
           });
           
-          $(select).on('change', async (e) => {
+          searchInput.addEventListener('input', (e) => {
+              renderDropdown(e.target.value);
+              dropdown.style.display = 'block';
+          });
+          
+          document.addEventListener('click', (e) => {
+              if(!searchInput.contains(e.target) && !dropdown.contains(e.target)) {
+                  dropdown.style.display = 'none';
+              }
+          });
+          
+          dropdown.addEventListener('click', async (e) => {
+              const item = e.target.closest('.dropdown-item');
+              if(!item) return;
+              
+              const member_id = item.getAttribute('data-id');
+              const emp = res.employees.find(em => em.member_id === member_id);
+              searchInput.value = emp.name;
+              dropdown.style.display = 'none';
+              selectedMemberId = member_id;
+              
+              await loadEmployeeHistory(member_id);
+          });
+          
+          async function loadEmployeeHistory(member_id) {
               const member_id = e.target.value;
               const view = document.getElementById('r-emp-history-view');
               if(!member_id) {
@@ -214,11 +256,19 @@ App.registerPage('reports', async (container) => {
                       `;
                   }
                   
+                  // Add Print/Download PDF Button
+                  html = `
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;" class="no-print">
+                      <div style="font-size:16px; font-weight:600;">Wage History Report</div>
+                      <button class="btn btn-primary" onclick="window.print()">🖨️ Print / Save as PDF</button>
+                    </div>
+                  ` + html;
+                  
                   view.innerHTML = html;
               } catch(err) {
                   view.innerHTML = `<div style="color:var(--red); padding:16px;">Error loading history: ${err.message}</div>`;
               }
-          });
+          }
       }
   });
 });
