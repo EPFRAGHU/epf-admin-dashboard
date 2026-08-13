@@ -119,7 +119,7 @@ App.registerPage('reports', async (container) => {
       </div>
     </div>
 
-    <div class="card" style="margin:0">
+    <div class="card" style="margin:0; overflow:visible;">
       <div class="card-head"><div class="card-title">4. Employee Wage History</div></div>
       <p style="color:var(--text2); font-size:13px; margin-bottom:12px">
         View the complete member profile and year-wise wage entries for a specific employee.
