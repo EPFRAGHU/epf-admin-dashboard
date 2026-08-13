@@ -13,7 +13,7 @@ App.registerPage('reports', async (container) => {
     return;
   }
   
-  container.innerHTML = `<div class="fade-in" style="max-width:1200px">
+  container.innerHTML = `<div class="fade-in" style="max-width:100%;">
     <div class="page-header">
       <div>
         <div class="section-title">Reports & Export</div>
@@ -23,8 +23,8 @@ App.registerPage('reports', async (container) => {
     
     <div style="display: flex; flex-wrap: wrap; gap: 24px;">
       
-      <!-- Left Column (Forms) -->
-      <div style="flex: 1; min-width: 400px; display: flex; flex-direction: column; gap: 24px;">
+      <!-- Left Column (Forms & ECR) -->
+      <div style="flex: 0 0 450px; display: flex; flex-direction: column; gap: 24px;">
         
         <div class="card" style="margin:0">
           <div class="card-head"><div class="card-title">1. Employee Master (Form 9)</div></div>
@@ -75,50 +75,50 @@ App.registerPage('reports', async (container) => {
           </div>
         </div>
       
-      </div>
-
-      <!-- Right Column (ECR & History) -->
-      <div style="flex: 1; min-width: 400px; display: flex; flex-direction: column; gap: 24px;">
-        
         <div class="card" style="margin:0">
-      <div class="card-head"><div class="card-title">3. ECR Text File Generator</div></div>
-      
-      <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:20px;">
-        <div class="form-group" style="flex:1; min-width:200px">
-          <label class="form-label">Select Financial Year</label>
-          <select class="form-select" id="ecr-year">
-            ${years.map(y => `<option value="${y.key}">${y.label}</option>`).reverse().join('')}
-          </select>
+          <div class="card-head"><div class="card-title">3. ECR Text File Generator</div></div>
+          
+          <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:20px;">
+            <div class="form-group" style="flex:1; min-width:150px">
+              <label class="form-label">Select Financial Year</label>
+              <select class="form-select" id="ecr-year">
+                ${years.map(y => `<option value="${y.key}">${y.label}</option>`).reverse().join('')}
+              </select>
+            </div>
+            <div class="form-group" style="flex:1; min-width:150px">
+              <label class="form-label">Select Month / Format</label>
+              <select class="form-select" id="ecr-month">
+                <option value="zip">All Year (ZIP of 12 Text Files)</option>
+                <option value="0">Mar Paid in Apr</option>
+                <option value="1">Apr Paid in May</option>
+                <option value="2">May Paid in Jun</option>
+                <option value="3">Jun Paid in Jul</option>
+                <option value="4">Jul Paid in Aug</option>
+                <option value="5">Aug Paid in Sep</option>
+                <option value="6">Sep Paid in Oct</option>
+                <option value="7">Oct Paid in Nov</option>
+                <option value="8">Nov Paid in Dec</option>
+                <option value="9">Dec Paid in Jan</option>
+                <option value="10">Jan Paid in Feb</option>
+                <option value="11">Feb Paid in Mar</option>
+              </select>
+            </div>
+          </div>
+          
+          <p style="color:var(--text2); font-size:13px; margin-bottom:12px">
+            Generate the #~# separated ECR format text file. You can download a single month as .txt, or the entire year as a .zip.
+          </p>
+    
+          <div style="display:flex; justify-content:flex-end;">
+            <button class="btn btn-primary" onclick="downloadECR()">📥 Download ECR File</button>
+          </div>
         </div>
-        <div class="form-group" style="flex:1; min-width:200px">
-          <label class="form-label">Select Month / Format</label>
-          <select class="form-select" id="ecr-month">
-            <option value="zip">All Year (ZIP of 12 Text Files)</option>
-            <option value="0">Mar Paid in Apr</option>
-            <option value="1">Apr Paid in May</option>
-            <option value="2">May Paid in Jun</option>
-            <option value="3">Jun Paid in Jul</option>
-            <option value="4">Jul Paid in Aug</option>
-            <option value="5">Aug Paid in Sep</option>
-            <option value="6">Sep Paid in Oct</option>
-            <option value="7">Oct Paid in Nov</option>
-            <option value="8">Nov Paid in Dec</option>
-            <option value="9">Dec Paid in Jan</option>
-            <option value="10">Jan Paid in Feb</option>
-            <option value="11">Feb Paid in Mar</option>
-          </select>
-        </div>
-      </div>
-      
-      <p style="color:var(--text2); font-size:13px; margin-bottom:12px">
-        Generate the #~# separated ECR format text file. You can download a single month as .txt, or the entire year as a .zip.
-      </p>
 
-      <div style="display:flex; justify-content:flex-end;">
-        <button class="btn btn-primary" onclick="downloadECR()">📥 Download ECR File</button>
       </div>
-    </div>
 
+      <!-- Right Column (History) -->
+      <div style="flex: 1; min-width: 600px; display: flex; flex-direction: column; gap: 24px;">
+        
     <div class="card" style="margin:0; overflow:visible;">
       <div class="card-head"><div class="card-title">4. Employee Wage History</div></div>
       <p style="color:var(--text2); font-size:13px; margin-bottom:12px">
