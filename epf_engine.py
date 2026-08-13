@@ -2293,9 +2293,10 @@ def _write_form9_sheet(ws, project: "Project"):
     """
     employees = project.master_list()
     num_cols = 13
-    # Adjusted column widths to sum up to ~130 for perfect A4 landscape fitting without extreme scaling
-    col_widths = {1: 6, 2: 12, 3: 13, 4: 18, 5: 18, 6: 11, 7: 7, 8: 11, 9: 10,
-                  10: 10, 11: 8, 12: 14, 13: 12}
+    # Significantly increased column widths so the natural width exceeds the A4 page. 
+    # This forces Excel's fitToWidth=1 to scale it down perfectly to touch the left and right margins.
+    col_widths = {1: 8, 2: 18, 3: 18, 4: 26, 5: 26, 6: 14, 7: 10, 8: 14, 9: 16,
+                  10: 14, 11: 12, 12: 20, 13: 20}
     for col, w in col_widths.items():
         ws.column_dimensions[get_column_letter(col)].width = w
 
@@ -2338,8 +2339,8 @@ def _write_form9_sheet(ws, project: "Project"):
         c.fill = HEADER_FILL
         c.border = BORDER
         c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    # Increase header row height to fit wrapped text nicely
-    ws.row_dimensions[header_row].height = 65
+    # Increase header row height significantly for more vertical expansion
+    ws.row_dimensions[header_row].height = 90
 
     row = header_row + 1
     for i, m in enumerate(employees, start=1):
@@ -2352,12 +2353,14 @@ def _write_form9_sheet(ws, project: "Project"):
             align_horiz = "center" if col_idx in (1, 6, 7, 8) else "left"
             c.alignment = Alignment(horizontal=align_horiz, vertical="center", wrap_text=True)
             
-        # Dynamically set row height based on text length (approximate)
+        # Dynamically set row height based on text length, with a taller minimum height
         max_chars = max(len(str(val)) for val in values)
-        if max_chars > 20:
-            ws.row_dimensions[row].height = 25
-        elif max_chars > 40:
+        if max_chars > 40:
+            ws.row_dimensions[row].height = 50
+        elif max_chars > 20:
             ws.row_dimensions[row].height = 35
+        else:
+            ws.row_dimensions[row].height = 25
         row += 1
     if not employees:
         for i in range(1, 11):  # blank numbered rows, like the printed template, if the Master is empty
@@ -2366,6 +2369,7 @@ def _write_form9_sheet(ws, project: "Project"):
             c.alignment = CENTER
             for col_idx in range(1, num_cols + 1):
                 ws.cell(row=row, column=col_idx).border = BORDER
+            ws.row_dimensions[row].height = 25
             row += 1
 
     row += 1
