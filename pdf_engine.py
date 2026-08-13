@@ -126,6 +126,12 @@ def generate_form_3a_pdf(project, year_key: str, filepath: str):
     
     est = project.build_establishment_for_year(year_key)
     employees = project.build_employees_for_year(year_key)
+    employees = [emp for emp in employees if sum(w or 0 for w in (emp.wages or [])) > 0]
+    
+    if not employees:
+        story.append(Paragraph("No employees with wages found for this currency period.", style_title))
+        doc.build(story)
+        return filepath
     
     MONTHS = ["Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]
     
@@ -274,6 +280,7 @@ def generate_form_6a_pdf(project, year_key: str, filepath: str):
     
     est = project.build_establishment_for_year(year_key)
     employees = project.build_employees_for_year(year_key)
+    employees = [emp for emp in employees if sum(w or 0 for w in (emp.wages or [])) > 0]
     
     story.append(Paragraph("FORM 6 A", style_title))
     story.append(Paragraph("THE EMPLOYEE'S PROVIDENT FUND, 1952 (PARAGRAPH 43)", style_subtitle))
@@ -516,9 +523,14 @@ def generate_form_5_pdf(project, filepath: str):
     from datetime import datetime
     MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
     
+    curr_yr = project.current_year() if (hasattr(project, 'current_year') and project.current_year()) else None
+    est_obj = getattr(project, 'est', None)
+    est_from = est_obj.year_from if est_obj else (curr_yr.year_from if curr_yr else 0)
+    est_to = est_obj.year_to if est_obj else (curr_yr.year_to if curr_yr else 0)
+
     forms_generated = 0
     for month_abbr in MONTHS:
-        cal_year = calendar_year_for_month(month_abbr, project.est.year_from if project.est else 0, project.est.year_to if project.est else 0)
+        cal_year = calendar_year_for_month(month_abbr, est_from, est_to)
         cal_month = get_month_num(month_abbr)
         if cal_year is None: continue
         
@@ -598,9 +610,14 @@ def generate_form_10_pdf(project, filepath: str):
     from datetime import datetime
     MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
     
+    curr_yr = project.current_year() if (hasattr(project, 'current_year') and project.current_year()) else None
+    est_obj = getattr(project, 'est', None)
+    est_from = est_obj.year_from if est_obj else (curr_yr.year_from if curr_yr else 0)
+    est_to = est_obj.year_to if est_obj else (curr_yr.year_to if curr_yr else 0)
+
     forms_generated = 0
     for month_abbr in MONTHS:
-        cal_year = calendar_year_for_month(month_abbr, project.est.year_from if project.est else 0, project.est.year_to if project.est else 0)
+        cal_year = calendar_year_for_month(month_abbr, est_from, est_to)
         cal_month = get_month_num(month_abbr)
         if cal_year is None: continue
         

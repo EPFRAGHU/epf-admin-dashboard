@@ -1228,7 +1228,7 @@ class ExcelGenerator:
         -- exactly the previous behaviour.
         """
         self.est = establishment
-        self.employees = [emp for emp in employees if sum(emp.wages) > 0]
+        self.employees = [emp for emp in employees if sum(w or 0 for w in (emp.wages or [])) > 0]
         self.project = project
         self.forms_to_generate = forms_to_generate or ['3A', '6A', '12A', '5', '10']
 

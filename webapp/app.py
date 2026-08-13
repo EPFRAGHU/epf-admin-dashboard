@@ -947,6 +947,10 @@ def generate_employee_report(key: str, member_id: str, format: str = 'pdf', form
     if not emp:
         raise HTTPException(404, "Employee not found in this year")
     
+    total_w = sum(w or 0 for w in (emp.wages or []))
+    if total_w <= 0:
+        raise HTTPException(400, "Form 3A cannot be generated for an employee with 0 total wages")
+    
     forms_list = [f.strip() for f in forms.split(',')] if forms else ['3A']
     gen = ExcelGenerator(est, [emp], project=project, forms_to_generate=forms_list)
     safe = (emp.name or "Employee").replace("/", "-").replace("\\", "-").strip() or "Employee"

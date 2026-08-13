@@ -674,14 +674,39 @@ window.showBulkImportModal = () => {
 };
 
 window.downloadYearPDF = (form) => {
+  if (form === '3A' || form === '6A') {
+    const hasWages = (currentWagesData.employees || []).some(emp => {
+      const totalW = (emp.wages || []).reduce((sum, w) => sum + (Number(w) || 0), 0) || (emp.months || []).reduce((sum, m) => sum + (Number(m.w) || 0), 0);
+      return totalW > 0;
+    });
+    if (!hasWages) {
+      return App.toast(`No employees with wages > 0 in this year to generate Form ${form}`, 'error');
+    }
+  }
   window.open(`/api/reports/${currentYearKey}?format=pdf&forms=${form}`, '_blank');
 };
 
 window.downloadYearExcel = (form) => {
+  if (form === '3A' || form === '6A') {
+    const hasWages = (currentWagesData.employees || []).some(emp => {
+      const totalW = (emp.wages || []).reduce((sum, w) => sum + (Number(w) || 0), 0) || (emp.months || []).reduce((sum, m) => sum + (Number(m.w) || 0), 0);
+      return totalW > 0;
+    });
+    if (!hasWages) {
+      return App.toast(`No employees with wages > 0 in this year to generate Form ${form}`, 'error');
+    }
+  }
   window.open(`/api/reports/${currentYearKey}?format=excel&forms=${form}`, '_blank');
 };
 
 window.downloadEmployeePDF = (memberId) => {
+  const emp = (currentWagesData.employees || []).find(e => e.member_id === memberId);
+  if (emp) {
+    const totalW = (emp.wages || []).reduce((sum, w) => sum + (Number(w) || 0), 0) || (emp.months || []).reduce((sum, m) => sum + (Number(m.w) || 0), 0);
+    if (totalW <= 0) {
+      return App.toast('Form 3A cannot be generated for an employee with 0 total wages', 'error');
+    }
+  }
   window.open(`/api/reports/${currentYearKey}/employee/${encodeURIComponent(memberId)}?format=pdf&forms=3A`, '_blank');
 };
 
@@ -841,112 +866,6 @@ window.runSingleImport = async () => {
       App.toast(msg);
     }
     App.navigate('wages');
-  } catch (e) {
-    App.toast(e.message, 'error');
-  }
-};
-
-// ── Multi-Sheet Bulk Import ──────────────────────────────────────────────
-
-window.showBulkImportModal = () => {
-  const body = `
-    <div style="margin-bottom:16px">
-      <p style="color:var(--text2); font-size:13px; line-height:1.5">
-        Upload a multi-sheet Excel file. The app will detect all sheets and allow you to select which ones to import.
-        Missing years will be auto-created automatically!
-      </p>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Excel File</label>
-      <input type="file" id="import-file" accept=".xlsx,.xls" class="form-input">
-    </div>
-  `;
-  const footer = `
-    <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
-    <button class="btn btn-primary" onclick="analyzeBulkImport()">Analyze File</button>
-  `;
-  App.openModal(`Bulk Import — Auto Create Missing Years`, body, footer);
-};
-
-window.downloadYearPDF = (form) => {
-  window.open(`/api/reports/${currentYearKey}?format=pdf&forms=${form}`, '_blank');
-};
-
-window.downloadYearExcel = (form) => {
-  window.open(`/api/reports/${currentYearKey}?format=excel&forms=${form}`, '_blank');
-};
-
-window.downloadEmployeePDF = (memberId) => {
-  window.open(`/api/reports/${currentYearKey}/employee/${encodeURIComponent(memberId)}?format=pdf&forms=3A`, '_blank');
-};
-
-window.analyzeBulkImport = async () => {
-  const fileInput = document.getElementById('import-file');
-  if (!fileInput.files.length) return App.toast('Please select a file', 'error');
-  
-  App.toast('Analyzing file...', 'info');
-  const formData = new FormData();
-  formData.append('file', fileInput.files[0]);
-  
-  try {
-    const res = await fetch('/api/wages/bulk_analyze', { method: 'POST', body: formData });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    
-    // Show step 2: sheet selection
-    let sheetCheckboxes = data.sheets.map(s => `
-      <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px; cursor:pointer;">
-        <input type="checkbox" class="sheet-checkbox" value="${App.esc(s)}" checked>
-        <span>${App.esc(s)}</span>
-      </label>
-    `).join('');
-    
-    const body = `
-      <div style="margin-bottom:16px">
-        <p style="color:var(--text2); font-size:13px; line-height:1.5">
-          Found <strong>${data.sheets.length}</strong> sheets. Select the sheets you want to import.
-        </p>
-      </div>
-      <div style="max-height: 200px; overflow-y: auto; background: var(--bg); padding: 12px; border-radius: 6px; border: 1px solid var(--border);">
-        ${sheetCheckboxes}
-      </div>
-    `;
-    const footer = `
-      <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="runBulkImport('${data.token}')">Import Selected</button>
-    `;
-    App.openModal(`Select Years to Import`, body, footer);
-  } catch (e) {
-    App.toast(e.message, 'error');
-  }
-};
-
-window.runBulkImport = async (token) => {
-  const selectedSheets = Array.from(document.querySelectorAll('.sheet-checkbox:checked')).map(cb => cb.value);
-  if (!selectedSheets.length) return App.toast('Please select at least one sheet', 'error');
-  
-  App.toast(`Importing ${selectedSheets.length} sheets... This may take a moment.`, 'info');
-  App.closeModal(); // close modal so user sees loading state if any
-  
-  try {
-    const res = await fetch('/api/wages/bulk_import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token, sheets: selectedSheets })
-    });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    
-    let msg = `Successfully imported ${data.imported} wage records across ${selectedSheets.length} sheets.`;
-    if (data.warnings && data.warnings.length) {
-      msg += `\n\nWarnings:\n- ${data.warnings.join('\n- ')}`;
-      App.toast('Imported with warnings', 'info');
-      alert(msg);
-    } else {
-      App.toast(msg);
-    }
-    
-    App.navigate('years'); // Refresh list of years so user sees newly auto-created ones
   } catch (e) {
     App.toast(e.message, 'error');
   }
