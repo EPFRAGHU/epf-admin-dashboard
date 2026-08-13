@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
 import json
 
-from database import SessionLocal, ProjectData, Setting, DATABASE_URL
+from .database import SessionLocal, ProjectData, Setting, DATABASE_URL
 
 # Import the existing engine from parent directory
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
