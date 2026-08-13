@@ -275,6 +275,18 @@ class BulkMonthWagesIn(BaseModel):
     month_idx: int
     employees: List[BulkMonthWageUpdate]
 
+class RemittanceIn(BaseModel):
+    month_label: str
+    trrn: str
+    crrn: str
+    members: int
+    acc_01: int
+    acc_02: int
+    acc_10: int
+    acc_21: int
+    acc_22: int
+    credit_date: str
+
 
 # ── Dashboard ─────────────────────────────────────────────────────────────
 @app.get("/api/dashboard")
@@ -599,6 +611,98 @@ async def del_year(key: str):
     project.remove_year(key)
     _save()
     return {"ok": True}
+
+# ── Remittances ───────────────────────────────────────────────────────────
+
+@app.get("/api/years/{key}/remittances")
+async def list_remittances(key: str):
+    if key not in project.years:
+        raise HTTPException(404, "Year not found")
+    yr = project.years[key]
+    remittances = []
+    for idx, r in enumerate(yr.remittances):
+        remittances.append({"id": idx, **r})
+    return {"remittances": remittances}
+
+@app.post("/api/years/{key}/remittances")
+async def add_remittance(key: str, d: RemittanceIn):
+    if key not in project.years:
+        raise HTTPException(404, "Year not found")
+    yr = project.years[key]
+    yr.remittances.append(d.dict())
+    _save()
+    return {"ok": True, "id": len(yr.remittances) - 1}
+
+@app.put("/api/years/{key}/remittances/{idx}")
+async def edit_remittance(key: str, idx: int, d: RemittanceIn):
+    if key not in project.years:
+        raise HTTPException(404, "Year not found")
+    yr = project.years[key]
+    if idx < 0 or idx >= len(yr.remittances):
+        raise HTTPException(404, "Remittance not found")
+    yr.remittances[idx] = d.dict()
+    _save()
+    return {"ok": True}
+
+@app.delete("/api/years/{key}/remittances/{idx}")
+async def del_remittance(key: str, idx: int):
+    if key not in project.years:
+        raise HTTPException(404, "Year not found")
+    yr = project.years[key]
+    if idx < 0 or idx >= len(yr.remittances):
+        raise HTTPException(404, "Remittance not found")
+    yr.remittances.pop(idx)
+    _save()
+    return {"ok": True}
+
+@app.get("/api/years/{key}/remittances/calculate")
+async def calculate_remittances(key: str, month: str):
+    from epf_engine import get_month_num, calendar_year_for_month, account2_rate_percent, account22_rate_percent, ACCOUNT_21_RATE, ACCOUNT_22_MIN
+    if key not in project.years:
+        raise HTTPException(404, "Year not found")
+    
+    yr = project.years[key]
+    est = project.build_establishment_for_year(key)
+    employees = project.build_employees_for_year(key)
+    employees = [emp for emp in employees if sum(emp.wages) > 0]
+    
+    month_idx = get_month_num(month) - 1
+    if month_idx < 0 or month_idx > 11:
+        raise HTTPException(400, "Invalid month")
+        
+    all_month_rows = [emp.month_rows(est.worker_epf_rate, est.worker_eps_rate,
+                                      est.employer_epf_rate, est.employer_eps_rate)
+                      for emp in employees]
+                      
+    wages_total = sum(rows[month_idx][0] for rows in all_month_rows)
+    ee_total = sum(rows[month_idx][1] for rows in all_month_rows)
+    er_total = sum(rows[month_idx][4] for rows in all_month_rows)
+    a10_total = sum(rows[month_idx][5] for rows in all_month_rows)
+    
+    cal_year = calendar_year_for_month(month, est.year_from, est.year_to)
+    a2_rate = account2_rate_percent(cal_year, get_month_num(month))
+    a22_rate = account22_rate_percent(cal_year, get_month_num(month))
+    
+    a2_amt = round(wages_total * a2_rate / 100)
+    a21_amt = round(wages_total * ACCOUNT_21_RATE / 100)
+    a22_amt = (max(round(wages_total * a22_rate / 100), ACCOUNT_22_MIN)
+              if (a22_rate > 0 and wages_total > 0) else 0)
+              
+    # For A/c 1, it's EE + ER
+    acc_01 = ee_total + er_total
+    
+    # Active members in this month
+    active_members = sum(1 for rows in all_month_rows if rows[month_idx][0] > 0)
+    
+    return {
+        "acc_01": acc_01,
+        "acc_02": a2_amt,
+        "acc_10": a10_total,
+        "acc_21": a21_amt,
+        "acc_22": a22_amt,
+        "members": active_members
+    }
+
 
 
 @app.post("/api/years/bulk")

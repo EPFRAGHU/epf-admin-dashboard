@@ -716,6 +716,7 @@ class YearRecord(ContributionSchemeMixin):
     er_epf_rate: float = 3.67    # POST-1997 only: employer's EPF portion %
     er_eps_rate: float = 8.33    # POST-1997 only: employer's Pension Fund portion %
     entries: List[YearEntry] = field(default_factory=list)
+    remittances: List[dict] = field(default_factory=list)
 
     @property
     def long_label(self) -> str:
@@ -742,7 +743,8 @@ class YearRecord(ContributionSchemeMixin):
                            emp_epf_rate=d.get("emp_epf_rate", 12.0),
                            er_epf_rate=d.get("er_epf_rate", 3.67),
                            er_eps_rate=d.get("er_eps_rate", 8.33),
-                           entries=entries)
+                           entries=entries,
+                           remittances=d.get("remittances", []))
 
 
 # --------------------------------------------------------------------------
@@ -1215,7 +1217,7 @@ class ExcelGenerator:
         -- exactly the previous behaviour.
         """
         self.est = establishment
-        self.employees = employees
+        self.employees = [emp for emp in employees if sum(emp.wages) > 0]
         self.project = project
         self.forms_to_generate = forms_to_generate or ['3A', '6A', '12A', '5', '10']
 
@@ -1664,74 +1666,125 @@ class ExcelGenerator:
         ws["A4"].font = Font(name="Arial", bold=True, italic=True, size=11)
         ws["A4"].alignment = Alignment(horizontal="center")
 
-        ws.merge_cells("A5:I5")
+        ws.merge_cells("A5:K5")
         ws["A5"] = f"Code No. of the Establishment :- {est.code}"
         ws["A5"].font = Font(name="Arial", bold=True, size=11)
         ws["A5"].alignment = Alignment(horizontal="center")
 
         header_row = 7
-        headers = ["Month", "Total Wages\nRs.", "A/c No.1\n(EE Share) Rs.", "A/c No.1\n(ER Share) Rs.",
-                   "A/c No.10\n(Pension Fund) Rs.", "A/c No.2\n(Admin Chgs.) Rs.", "A/c No.21\n(EDLI) Rs.",
-                   "A/c No.22\n(EDLI Admin) Rs.", "Total\nRs."]
+        headers = ["Wages Month", "TRRN", "CRRN", "Members", "A/c No.1\n(EE+ER) Rs.",
+                   "A/c No.2\n(Admin Chgs.) Rs.", "A/c No.10\n(Pension Fund) Rs.", "A/c No.21\n(EDLI) Rs.",
+                   "A/c No.22\n(EDLI Admin) Rs.", "Total\nRs.", "Credit Date"]
         for i, h in enumerate(headers, start=1):
             c = ws.cell(row=header_row, column=i, value=h)
             c.font = BOLD
             c.fill = HEADER_FILL
             c.border = BORDER
             c.alignment = CENTER
-        col_widths_12a = {1: 10, 2: 14, 3: 13, 4: 13, 5: 15, 6: 13, 7: 12, 8: 13, 9: 13}
+            
+        num_cols = len(headers)
+        col_widths_12a = {1: 12, 2: 18, 3: 18, 4: 10, 5: 14, 6: 14, 7: 15, 8: 12, 9: 14, 10: 13, 11: 13}
         ws.row_dimensions[header_row].height = _row_height_for_cells(
             [(h, col_widths_12a[i]) for i, h in enumerate(headers, start=1)])
 
         # Every employee's per-month figures, using this year's contribution scheme
         all_month_rows = [emp.month_rows(est.worker_epf_rate, est.worker_eps_rate,
                                           est.employer_epf_rate, est.employer_eps_rate)
-                          for emp in self.employees]
-
         row = header_row + 1
         first_data_row = row
         a2_rates_used, a22_rates_used = [], []
-        grand = [0] * 8  # wages, ee, er, a10, a2, a21, a22, total
-        for i, month_label in enumerate(MONTHS):
-            wages_total = sum(rows[i][0] for rows in all_month_rows)
-            ee_total = sum(rows[i][1] for rows in all_month_rows)     # A/c 1 (EE)
-            er_total = sum(rows[i][4] for rows in all_month_rows)     # A/c 1 (ER)
-            a10_total = sum(rows[i][5] for rows in all_month_rows)    # A/c 10 (Pension Fund)
+        grand = [0] * 7  # members, a1, a2, a10, a21, a22, total
+        
+        year_key = f"{est.year_from}-{est.year_to[-2:]}" if est.year_from and est.year_to else ""
+        yr_record = self.project.years.get(year_key) if self.project else None
+        all_remittances = yr_record.remittances if yr_record and hasattr(yr_record, 'remittances') else []
 
+        for i, month_label in enumerate(MONTHS):
             cal_year = calendar_year_for_month(month_label, est.year_from, est.year_to)
             a2_rate = account2_rate_percent(cal_year, get_month_num(month_label))
             a22_rate = account22_rate_percent(cal_year, get_month_num(month_label))
             a2_rates_used.append((month_label, a2_rate))
             a22_rates_used.append((month_label, a22_rate))
 
-            a2_amt = round(wages_total * a2_rate / 100)
-            a21_amt = round(wages_total * ACCOUNT_21_RATE / 100)
-            a22_amt = (max(round(wages_total * a22_rate / 100), ACCOUNT_22_MIN)
-                      if (a22_rate > 0 and wages_total > 0) else 0)
-            row_total = ee_total + er_total + a10_total + a2_amt + a21_amt + a22_amt
+            month_remittances = [r for r in all_remittances if r.get("month_label") == month_label]
+            
+            if not month_remittances:
+                # Fallback to calculated values if no manual remittances are entered for this month
+                wages_total = sum(rows[i][0] for rows in all_month_rows)
+                ee_total = sum(rows[i][1] for rows in all_month_rows)     # A/c 1 (EE)
+                er_total = sum(rows[i][4] for rows in all_month_rows)     # A/c 1 (ER)
+                a10_total = sum(rows[i][5] for rows in all_month_rows)    # A/c 10 (Pension Fund)
+                
+                a2_amt = round(wages_total * a2_rate / 100)
+                a21_amt = round(wages_total * ACCOUNT_21_RATE / 100)
+                a22_amt = (max(round(wages_total * a22_rate / 100), ACCOUNT_22_MIN)
+                          if (a22_rate > 0 and wages_total > 0) else 0)
+                
+                members = sum(1 for rows in all_month_rows if rows[i][0] > 0)
+                acc_01 = ee_total + er_total
+                
+                # We only show the fallback row if there's actually active wages/members,
+                # or if we want to show 0s for every month. The old system showed 0s.
+                r_data = {
+                    "trrn": "-",
+                    "crrn": "-",
+                    "members": members,
+                    "acc_01": acc_01,
+                    "acc_02": a2_amt,
+                    "acc_10": a10_total,
+                    "acc_21": a21_amt,
+                    "acc_22": a22_amt,
+                    "credit_date": "-"
+                }
+                month_remittances.append(r_data)
+                
+            for r in month_remittances:
+                trrn = r.get("trrn", "-")
+                crrn = r.get("crrn", "-")
+                members = int(r.get("members", 0))
+                a1 = int(r.get("acc_01", 0))
+                a2 = int(r.get("acc_02", 0))
+                a10 = int(r.get("acc_10", 0))
+                a21 = int(r.get("acc_21", 0))
+                a22 = int(r.get("acc_22", 0))
+                cdate = r.get("credit_date", "-")
+                row_total = a1 + a2 + a10 + a21 + a22
 
-            row_values = [wages_total, ee_total, er_total, a10_total, a2_amt, a21_amt, a22_amt, row_total]
-            values = [month_label] + row_values
-            for col_idx, val in enumerate(values, start=1):
-                c = ws.cell(row=row, column=col_idx, value=val)
-                c.font = NORMAL
-                c.border = BORDER
-                c.alignment = CENTER if col_idx == 1 else RIGHT
-            for i2, val in enumerate(row_values):
-                grand[i2] += val
-            row += 1
+                row_values = [month_label, trrn, crrn, members, a1, a2, a10, a21, a22, row_total, cdate]
+                for col_idx, val in enumerate(row_values, start=1):
+                    c = ws.cell(row=row, column=col_idx, value=val)
+                    c.font = NORMAL
+                    c.border = BORDER
+                    c.alignment = CENTER if col_idx <= 4 or col_idx == 11 else RIGHT
+                    
+                grand[0] += members
+                grand[1] += a1
+                grand[2] += a2
+                grand[3] += a10
+                grand[4] += a21
+                grand[5] += a22
+                grand[6] += row_total
+                row += 1
 
         last_data_row = row - 1
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
         ws.cell(row=row, column=1, value="GRAND TOTAL").font = BOLD
         ws.cell(row=row, column=1).border = BORDER
+        ws.cell(row=row, column=2).border = BORDER
+        ws.cell(row=row, column=3).border = BORDER
         ws.cell(row=row, column=1).alignment = CENTER
-        # Computed directly in Python (not a SUM() formula), so it always
-        # displays correctly regardless of the viewer's recalculation settings.
-        for col_idx, val in zip(range(2, num_cols + 1), grand):
-            c = ws.cell(row=row, column=col_idx, value=val)
+
+        for i_offset, val in enumerate(grand):
+            c = ws.cell(row=row, column=4 + i_offset, value=val)
             c.font = BOLD
             c.border = BORDER
-            c.alignment = RIGHT
+            c.alignment = CENTER if i_offset == 0 else RIGHT
+            
+        c = ws.cell(row=row, column=11, value="-")
+        c.font = BOLD
+        c.border = BORDER
+        c.alignment = CENTER
+        
         grand_total_row = row
         row += 2
 
@@ -1747,8 +1800,7 @@ class ExcelGenerator:
         ws.cell(row=row, column=1).font = Font(name="Arial", size=8, italic=True)
         row += 1
 
-        widths = {1: 10, 2: 14, 3: 13, 4: 13, 5: 15, 6: 13, 7: 12, 8: 13, 9: 13}
-        for col, w in widths.items():
+        for col, w in col_widths_12a.items():
             ws.column_dimensions[get_column_letter(col)].width = w
 
         row += 1
@@ -2421,16 +2473,20 @@ def _build_form5_form10_sheets(self, wb, forms_to_generate=None):
             continue
 
         if '5' in forms:
-            ws5 = wb.create_sheet(title=f"F5_{month_abbr}"[:31])
-            last_row5, _ = _write_form5_sheet(ws5, project, cal_year, cal_month)
-            self._apply_a4_page_setup(ws5, last_row=last_row5, num_cols=9, orientation="landscape",
-                                       margins=tight_margins, fit_one_page=True, center_on_page=True)
+            matches5 = employees_joined_in_month(project, cal_year, cal_month)
+            if matches5:
+                ws5 = wb.create_sheet(title=f"F5_{month_abbr}"[:31])
+                last_row5, _ = _write_form5_sheet(ws5, project, cal_year, cal_month)
+                self._apply_a4_page_setup(ws5, last_row=last_row5, num_cols=9, orientation="landscape",
+                                           margins=tight_margins, fit_one_page=True, center_on_page=True)
 
         if '10' in forms:
-            ws10 = wb.create_sheet(title=f"F10_{month_abbr}"[:31])
-            last_row10, _ = _write_form10_sheet(ws10, project, cal_year, cal_month)
-            self._apply_a4_page_setup(ws10, last_row=last_row10, num_cols=7, orientation="landscape",
-                                       margins=tight_margins, fit_one_page=True, center_on_page=True)
+            matches10 = employees_left_in_month(project, cal_year, cal_month)
+            if matches10:
+                ws10 = wb.create_sheet(title=f"F10_{month_abbr}"[:31])
+                last_row10, _ = _write_form10_sheet(ws10, project, cal_year, cal_month)
+                self._apply_a4_page_setup(ws10, last_row=last_row10, num_cols=7, orientation="landscape",
+                                           margins=tight_margins, fit_one_page=True, center_on_page=True)
 
 
 ExcelGenerator._build_form5_form10_sheets = _build_form5_form10_sheets
