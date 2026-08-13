@@ -1623,6 +1623,10 @@ class ExcelGenerator:
         row = self._write_signature_block(ws, row, num_cols=11)
 
         self._apply_a4_page_setup(ws, last_row=row, num_cols=11)
+        ws.print_title_rows = '8:10'
+        footer_text = f"{est.name} | Code: {est.code} | Form - 6A"
+        ws.oddFooter.center.text = footer_text
+        ws.evenFooter.center.text = footer_text
 
     # --------------------------------------------------------------- 12A ---
     def _build_12a_sheet(self, wb):
