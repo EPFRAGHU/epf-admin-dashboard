@@ -50,6 +50,8 @@ def _save_settings(filename):
         except Exception as e:
             print(f"DB Error save_settings: {e}")
     else:
+        if os.environ.get("RENDER"):
+            raise RuntimeError("Cannot save to JSON on Render. Supabase is required.")
         try:
             settings_path = Path(__file__).resolve().parent.parent / "settings.json"
             with open(settings_path, 'w', encoding='utf-8') as f:
@@ -67,6 +69,8 @@ def _load_settings():
         except Exception as e:
             print(f"DB Error load_settings: {e}")
     else:
+        if os.environ.get("RENDER"):
+            raise RuntimeError("Cannot read from JSON on Render. Supabase is required.")
         try:
             settings_path = Path(__file__).resolve().parent.parent / "settings.json"
             if settings_path.exists():
@@ -87,6 +91,8 @@ def _get_project_list():
             print(f"DB Error get_project_list: {e}")
             return []
     else:
+        if os.environ.get("RENDER"):
+            raise RuntimeError("Cannot read from JSON on Render. Supabase is required.")
         parent = Path(__file__).resolve().parent.parent
         return sorted([f.name for f in parent.iterdir() if f.name.lower().endswith(".epfproj.json")])
 
@@ -100,6 +106,8 @@ def _load_project_data(filename):
         except Exception as e:
             print(f"DB Error load_project_data: {e}")
     else:
+        if os.environ.get("RENDER"):
+            raise RuntimeError("Cannot read from JSON on Render. Supabase is required.")
         path = Path(__file__).resolve().parent.parent / filename
         if path.exists():
             with open(path, 'r', encoding='utf-8') as f:
@@ -120,6 +128,8 @@ def _save_project_data(filename, data_dict):
         except Exception as e:
             print(f"DB Error save_project_data: {e}")
     else:
+        if os.environ.get("RENDER"):
+            raise RuntimeError("Cannot save to JSON on Render. Supabase is required.")
         path = Path(__file__).resolve().parent.parent / filename
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data_dict, f, indent=2, ensure_ascii=False)

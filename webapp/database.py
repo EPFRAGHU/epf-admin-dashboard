@@ -32,8 +32,12 @@ if DATABASE_URL:
         Base.metadata.create_all(bind=engine)
     except Exception as e:
         print(f"Could not connect to database: {e}")
+        if os.environ.get("RENDER"):
+            raise RuntimeError("Running on Render but DB connection failed. Fallback disabled.") from e
         SessionLocal = None
         DATABASE_URL = None
+elif os.environ.get("RENDER"):
+    raise ValueError("Running on Render but DATABASE_URL is missing. Fallback disabled.")
 
 def get_db():
     if not SessionLocal:
