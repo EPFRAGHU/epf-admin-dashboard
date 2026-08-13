@@ -434,15 +434,15 @@ def generate_form_12a_pdf(project, year_key: str, filepath: str):
             })
             
         for idx, r in enumerate(month_remittances):
-            trrn = r.get("trrn", "-")
-            crrn = r.get("crrn", "-")
+            trrn = r.get("trrn") or "-"
+            crrn = r.get("crrn") or "-"
             members = int(r.get("members", 0))
             a1 = int(r.get("acc_01", 0))
             a2 = int(r.get("acc_02", 0))
             a10 = int(r.get("acc_10", 0))
             a21 = int(r.get("acc_21", 0))
             a22 = int(r.get("acc_22", 0))
-            cdate = r.get("credit_date", "-")
+            cdate = r.get("credit_date") or "-"
             
             tot = a1 + a2 + a10 + a21 + a22
             
@@ -456,7 +456,7 @@ def generate_form_12a_pdf(project, year_key: str, filepath: str):
                     paid_month = parts[1]
                     wage_yr = calendar_year_for_month(wage_month, est.year_from, est.year_to)
                     paid_yr = calendar_year_for_month(paid_month, est.year_from, est.year_to)
-                    display_month = f"{wage_month} {wage_yr}<br/>Paid in<br/>{paid_month} {paid_yr}"
+                    display_month = f"{wage_month} {wage_yr} Paid in {paid_month} {paid_yr}"
                 else:
                     display_month = month_label
             else:
