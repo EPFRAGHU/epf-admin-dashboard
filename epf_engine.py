@@ -1690,7 +1690,7 @@ class ExcelGenerator:
         # Every employee's per-month figures, using this year's contribution scheme
         all_month_rows = [emp.month_rows(est.worker_epf_rate, est.worker_eps_rate,
                                          est.employer_epf_rate, est.employer_eps_rate)
-                          for emp in employees]
+                          for emp in self.employees]
         row = header_row + 1
         first_data_row = row
         a2_rates_used, a22_rates_used = [], []
@@ -2392,53 +2392,7 @@ def _build_form5_form10_sheets(self, wb, forms_to_generate=None):
 
 ExcelGenerator._build_form5_form10_sheets = _build_form5_form10_sheets
 
-def convert_excel_to_pdf(excel_path: str, pdf_path: str):
-    import subprocess
-    import shutil
-    import os
-
-    soffice = shutil.which("soffice") or shutil.which("soffice.exe")
-    if not soffice:
-        # Fallbacks for Windows if it's not in PATH
-        possible_paths = [
-            r"C:\Program Files\LibreOffice\program\soffice.exe",
-            r"C:\Program Files (x86)\LibreOffice\program\soffice.exe"
-        ]
-        for p in possible_paths:
-            if os.path.exists(p):
-                soffice = p
-                break
-
-    if not soffice:
-        raise RuntimeError(
-            "LibreOffice not found — install it from libreoffice.org and ensure 'soffice' is on PATH. "
-            "It is required to generate PDFs across platforms without Microsoft Excel."
-        )
-
-    excel_path = os.path.abspath(excel_path)
-    outdir = os.path.dirname(os.path.abspath(pdf_path))
-    
-    # Run LibreOffice headless
-    result = subprocess.run(
-        [soffice, "--headless", "--convert-to", "pdf", "--outdir", outdir, excel_path],
-        capture_output=True, text=True
-    )
-    
-    if result.returncode != 0:
-        raise RuntimeError(f"LibreOffice PDF conversion failed: {result.stderr or result.stdout}")
-        
-    # LibreOffice saves the file with the same basename as the input file, but with .pdf
-    base_name = os.path.splitext(os.path.basename(excel_path))[0]
-    generated_pdf = os.path.join(outdir, f"{base_name}.pdf")
-    
-    # If the requested pdf_path is different from what LibreOffice generated, rename it
-    if os.path.abspath(generated_pdf) != os.path.abspath(pdf_path):
-        if os.path.exists(pdf_path):
-            try:
-                os.remove(pdf_path)
-            except OSError as e:
-                raise RuntimeError(f"Could not overwrite existing PDF (is it open in another program?): {pdf_path}") from e
-        os.rename(generated_pdf, pdf_path)
+# Removed legacy convert_excel_to_pdf as direct generation is now used.
 
 def generate_ecr_month(est, employees: List[Employee], year_record: YearRecord, month_idx: int) -> str:
     """

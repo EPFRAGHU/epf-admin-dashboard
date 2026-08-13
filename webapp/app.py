@@ -27,7 +27,7 @@ from epf_engine import (
     SCHEME_PRE_1997, SCHEME_POST_1997,
     REASONS_FOR_LEAVING, SUPERANNUATION_AGE, calc_age_years,
     import_wages_from_excel, generate_form9, import_master_from_excel,
-    natural_sort_key, convert_excel_to_pdf, get_wage_ceilings_for_year,
+    natural_sort_key, get_wage_ceilings_for_year,
 )
 
 # ── App setup ──────────────────────────────────────────────────────────────
@@ -937,10 +937,20 @@ def generate_report(key: str, format: str = 'excel', forms: str = ''):
         pdf_fname = fname.replace('.xlsx', '.pdf')
         pdf_path = os.path.join(tmp, pdf_fname)
         try:
-            convert_excel_to_pdf(path, pdf_path)
+            from pdf_engine import generate_form_9_pdf, generate_form_3a_pdf, generate_form_6a_pdf, generate_form_12a_pdf, generate_form_5_pdf, generate_form_10_pdf
+            
+            f = forms_list[0] if forms_list else '3A'
+            if f == '3A': generate_form_3a_pdf(project, key, pdf_path)
+            elif f == '6A': generate_form_6a_pdf(project, key, pdf_path)
+            elif f == '12A': generate_form_12a_pdf(project, key, pdf_path)
+            elif f == '5': generate_form_5_pdf(project, pdf_path)
+            elif f == '10': generate_form_10_pdf(project, pdf_path)
+            elif f == '9': generate_form_9_pdf(project, pdf_path)
+            else: raise ValueError(f"Unknown form for PDF generation: {f}")
+            
             return FileResponse(pdf_path, filename=pdf_fname, media_type="application/pdf")
         except Exception as e:
-            raise HTTPException(500, f"PDF conversion failed: {str(e)}")
+            raise HTTPException(500, f"PDF generation failed: {str(e)}")
             
     return FileResponse(path, filename=fname,
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -971,10 +981,19 @@ def generate_employee_report(key: str, member_id: str, format: str = 'pdf', form
         pdf_fname = fname.replace('.xlsx', '.pdf')
         pdf_path = os.path.join(tmp, pdf_fname)
         try:
-            convert_excel_to_pdf(path, pdf_path)
+            from pdf_engine import _build_pdf_doc, _default_table_style
+            import pdf_engine
+            # Temporarily replace project employees with just this one for 3A Generation
+            orig_build = project.build_employees_for_year
+            project.build_employees_for_year = lambda yk: [emp] if yk == key else orig_build(yk)
+            try:
+                pdf_engine.generate_form_3a_pdf(project, key, pdf_path)
+            finally:
+                project.build_employees_for_year = orig_build
+                
             return FileResponse(pdf_path, filename=pdf_fname, media_type="application/pdf")
         except Exception as e:
-            raise HTTPException(500, f"PDF conversion failed: {str(e)}")
+            raise HTTPException(500, f"PDF generation failed: {str(e)}")
             
     return FileResponse(path, filename=fname,
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -994,10 +1013,11 @@ def report_form9(format: str = 'excel'):
         pdf_fname = fname.replace('.xlsx', '.pdf')
         pdf_path = os.path.join(tmp, pdf_fname)
         try:
-            convert_excel_to_pdf(path, pdf_path)
+            from pdf_engine import generate_form_9_pdf
+            generate_form_9_pdf(project, pdf_path)
             return FileResponse(pdf_path, filename=pdf_fname, media_type="application/pdf")
         except Exception as e:
-            raise HTTPException(500, f"PDF conversion failed: {str(e)}")
+            raise HTTPException(500, f"PDF generation failed: {str(e)}")
             
     return FileResponse(path, filename=fname,
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
