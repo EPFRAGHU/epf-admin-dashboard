@@ -2380,8 +2380,9 @@ def generate_form9(project: "Project", filepath: str):
     ws = wb.active
     ws.title = "Form 9"
     last_row, employees = _write_form9_sheet(ws, project)
-    ExcelGenerator._apply_a4_page_setup(ws, last_row=last_row, num_cols=12, orientation="landscape",
-                                         fit_one_page=True, center_on_page=True)
+    tight_margins = PageMargins(left=0.15, right=0.15, top=0.25, bottom=0.25, header=0.15, footer=0.15)
+    ExcelGenerator._apply_a4_page_setup(ws, last_row=last_row, num_cols=13, orientation="landscape",
+                                         margins=tight_margins, fit_one_page=False, center_on_page=True)
     wb.save(filepath)
     return filepath, employees
 
@@ -2394,8 +2395,8 @@ def _build_form5_form10_sheets(self, wb, forms_to_generate=None):
     if '9' in forms:
         ws9 = wb.create_sheet(title="Form 9")
         last_row9, _ = _write_form9_sheet(ws9, project)
-        self._apply_a4_page_setup(ws9, last_row=last_row9, num_cols=12, orientation="landscape",
-                                   margins=tight_margins, fit_one_page=True, center_on_page=True)
+        self._apply_a4_page_setup(ws9, last_row=last_row9, num_cols=13, orientation="landscape",
+                                   margins=tight_margins, fit_one_page=False, center_on_page=True)
 
     for month_abbr in MONTHS:
         cal_year = calendar_year_for_month(month_abbr, est.year_from, est.year_to)
