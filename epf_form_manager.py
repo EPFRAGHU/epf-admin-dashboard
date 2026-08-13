@@ -171,6 +171,18 @@ class MasterEmployeeDialog(tk.Toplevel):
                                           width=22, font=FONT_ENTRY)
         self.reason_combo.pack(anchor="w", pady=(2, 6))
 
+        # ---- Higher EPF Checkboxes row ----
+        row4 = ttk.Frame(outer, style="Card.TFrame")
+        row4.pack(fill="x", pady=(8, 0))
+        
+        self.higher_ee_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(row4, text="Allow Higher EPF (EE) - Employee 12% on actual wages", 
+                        variable=self.higher_ee_var, style="Card.TCheckbutton").pack(side="left", padx=(0, 20))
+                        
+        self.higher_er_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(row4, text="Allow Higher EPF (ER) - Employer PF on actual wages", 
+                        variable=self.higher_er_var, style="Card.TCheckbutton").pack(side="left")
+
         # ---- age / superannuation warning ----
         self.age_var = tk.StringVar(value="")
         self.age_label = ttk.Label(outer, textvariable=self.age_var, font=("Segoe UI", 9, "bold"),
@@ -266,6 +278,8 @@ class MasterEmployeeDialog(tk.Toplevel):
             self.doe.set(m.doe)
             self.reason_var.set(m.reason_leaving)
             self._select_sex(m.sex)
+            self.higher_ee_var.set(getattr(m, 'higher_epf_ee', False))
+            self.higher_er_var.set(getattr(m, 'higher_epf_er', False))
             self.status_var.set("Existing employee. Type a different Member ID and press Tab "
                                  "or Enter to jump to that employee.")
         else:
@@ -280,6 +294,8 @@ class MasterEmployeeDialog(tk.Toplevel):
             self.doe.set("")
             self.reason_var.set("")
             self._select_sex("")
+            self.higher_ee_var.set(False)
+            self.higher_er_var.set(False)
             self.status_var.set("New employee record.")
         self._loaded_member_id = self.acc.get()  # tracks what was last loaded/searched
         self._original_member_id = self.acc.get() if 0 <= idx < len(records) else None
@@ -382,6 +398,8 @@ class MasterEmployeeDialog(tk.Toplevel):
         self.doe.set("")
         self.reason_var.set("")
         self._select_sex("")
+        self.higher_ee_var.set(False)
+        self.higher_er_var.set(False)
         self.status_var.set("New account number - enter the details and click Save.")
         self._loaded_member_id = acc
         self._update_nav_label()
@@ -446,7 +464,9 @@ class MasterEmployeeDialog(tk.Toplevel):
         self.project.upsert_master(acc, name, father_name=self.father.get(), uan=self.uan.get().strip(),
                                     dob=self.dob.get().strip(), sex=self.sex_var.get(),
                                     doj=self.doj.get().strip(), doe=self.doe.get().strip(),
-                                    reason_leaving=self.reason_var.get(), serial_no=sl_value)
+                                    reason_leaving=self.reason_var.get(), serial_no=sl_value,
+                                    higher_epf_ee=self.higher_ee_var.get(),
+                                    higher_epf_er=self.higher_er_var.get())
 
         # keep the main window's lists in sync live, without closing this form
         self.app._refresh_master_list()

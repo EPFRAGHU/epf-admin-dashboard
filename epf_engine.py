@@ -562,7 +562,8 @@ class Employee:
     wages: List[float] = field(default_factory=lambda: [0.0] * 12)  # APR..MAR
     gross_wages: List[float] = field(default_factory=lambda: [0.0] * 12)
     ncp_days: List[int] = field(default_factory=lambda: [0] * 12)
-    higher_epf: bool = False
+    higher_epf_ee: bool = False
+    higher_epf_er: bool = False
     age_crosses_58: bool = False
 
     def month_rows(self, worker_epf_rate: float, worker_eps_rate: float,
@@ -583,20 +584,17 @@ class Employee:
             
             # Post-1997 calculation restrictions:
             if worker_eps_rate == 0:
-                epf_wage = w if self.higher_epf else min(w, ceiling)
+                worker_wage_base = w if self.higher_epf_ee else min(w, ceiling)
+                er_total_wage_base = w if self.higher_epf_er else min(w, ceiling)
                 eps_wage = 0 if self.age_crosses_58 else min(w, ceiling)
                 
-                w_epf = round(epf_wage * worker_epf_rate / 100)
+                w_epf = round(worker_wage_base * worker_epf_rate / 100)
                 w_eps = round(w * worker_eps_rate / 100)  # Will be 0 anyway
                 
                 e_eps = round(eps_wage * employer_eps_rate / 100)
-                e_epf = max(0, round(epf_wage * worker_epf_rate / 100) - e_eps) 
-                
-                # If higher EPF is checked, the employer contributes on actual wages as well, 
-                # meaning Employer EPF = Worker EPF - EPS contribution.
-                if self.higher_epf:
-                    e_eps = round(eps_wage * employer_eps_rate / 100)
-                    e_epf = max(0, w_epf - e_eps)
+                total_er_contrib = round(er_total_wage_base * worker_epf_rate / 100)
+                e_epf = max(0, total_er_contrib - e_eps) 
+
             else:
                 w_epf = round(w * worker_epf_rate / 100)
                 w_eps = round(w * worker_eps_rate / 100)
@@ -654,6 +652,8 @@ class MasterEmployee:
     aadhaar: str = ""
     bank_account: str = ""
     ifsc: str = ""
+    higher_epf_ee: bool = False
+    higher_epf_er: bool = False
 
     def to_dict(self):
         return asdict(self)
@@ -670,7 +670,9 @@ class MasterEmployee:
                                relationship=d.get("relationship", ""), marital_status=d.get("marital_status", ""),
                                mobile=d.get("mobile", ""), email=d.get("email", ""),
                                aadhaar=d.get("aadhaar", ""), bank_account=d.get("bank_account", ""),
-                               ifsc=d.get("ifsc", ""))
+                               ifsc=d.get("ifsc", ""),
+                               higher_epf_ee=d.get("higher_epf_ee", False),
+                               higher_epf_er=d.get("higher_epf_er", False))
 
     @property
     def age_years(self):
@@ -689,7 +691,6 @@ class YearEntry:
     wages: List[float] = field(default_factory=lambda: [0.0] * 12)  # APR..MAR
     gross_wages: List[float] = field(default_factory=lambda: [0.0] * 12)
     ncp_days: List[int] = field(default_factory=lambda: [0] * 12)
-    higher_epf: bool = False
     age_crosses_58: bool = False
 
     def to_dict(self):
@@ -697,6 +698,7 @@ class YearEntry:
 
     @staticmethod
     def from_dict(d):
+        d.pop("higher_epf", None)  # Safe cleanup
         if "account_no" in d and "member_id" not in d:
             d["member_id"] = normalize_member_id(d.pop("account_no"))
         d["member_id"] = normalize_member_id(d.get("member_id", ""))
@@ -777,7 +779,8 @@ class Project:
 
     def upsert_master(self, member_id, name, father_name="", uan="", dob="", sex="", doj="",
                        doe="", reason_leaving="", serial_no=None, relationship="", marital_status="",
-                       mobile="", email="", aadhaar="", bank_account="", ifsc=""):
+                       mobile="", email="", aadhaar="", bank_account="", ifsc="",
+                       higher_epf_ee=False, higher_epf_er=False):
         member_id = normalize_member_id(member_id)
         if member_id in self.master:
             m = self.master[member_id]
@@ -797,6 +800,8 @@ class Project:
             if aadhaar: m.aadhaar = aadhaar
             if bank_account: m.bank_account = bank_account
             if ifsc: m.ifsc = ifsc
+            m.higher_epf_ee = higher_epf_ee
+            m.higher_epf_er = higher_epf_er
         else:
             if serial_no is None:
                 serial_no = self.next_serial_no()
@@ -805,7 +810,8 @@ class Project:
                                                        reason_leaving=reason_leaving, serial_no=serial_no,
                                                        relationship=relationship, marital_status=marital_status,
                                                        mobile=mobile, email=email, aadhaar=aadhaar,
-                                                       bank_account=bank_account, ifsc=ifsc)
+                                                       bank_account=bank_account, ifsc=ifsc,
+                                                       higher_epf_ee=higher_epf_ee, higher_epf_er=higher_epf_er)
 
     def next_serial_no(self):
         """Next SL No. suggestion for a brand-new employee (one more than the
@@ -892,20 +898,26 @@ class Project:
         return None
 
 
-    def upsert_entry(self, year_key, member_id, wages, gross_wages=None, ncp_days=None, higher_epf=False, age_crosses_58=False):
+    def upsert_entry(self, year_key, member_id, wages, gross_wages=None, ncp_days=None, age_crosses_58=False, higher_epf_ee=None, higher_epf_er=None):
         yr = self.years[year_key]
         member_id = normalize_member_id(member_id)
         if gross_wages is None: gross_wages = wages.copy()
         if ncp_days is None: ncp_days = [0] * 12
+        
+        m = self.get_master(member_id)
+        if m:
+            if higher_epf_ee is not None:
+                m.higher_epf_ee = higher_epf_ee
+            if higher_epf_er is not None:
+                m.higher_epf_er = higher_epf_er
         for e in yr.entries:
             if e.member_id == member_id:
                 e.wages = wages
                 e.gross_wages = gross_wages
                 e.ncp_days = ncp_days
-                e.higher_epf = higher_epf
                 e.age_crosses_58 = age_crosses_58
                 return
-        yr.entries.append(YearEntry(member_id=member_id, wages=wages, gross_wages=gross_wages, ncp_days=ncp_days, higher_epf=higher_epf, age_crosses_58=age_crosses_58))
+        yr.entries.append(YearEntry(member_id=member_id, wages=wages, gross_wages=gross_wages, ncp_days=ncp_days, age_crosses_58=age_crosses_58))
 
     def remove_entry(self, year_key, index):
         del self.years[year_key].entries[index]
@@ -932,7 +944,9 @@ class Project:
             uan = m.uan if m else ""
             result.append(Employee(member_id=e.member_id, name=name, father_name=father, uan=uan,
                                     wages=list(e.wages), gross_wages=list(e.gross_wages), ncp_days=list(getattr(e, 'ncp_days', [0]*12)),
-                                    higher_epf=e.higher_epf, age_crosses_58=e.age_crosses_58))
+                                    higher_epf_ee=m.higher_epf_ee if m else False,
+                                    higher_epf_er=m.higher_epf_er if m else False,
+                                    age_crosses_58=e.age_crosses_58))
         return result
 
     def build_establishment_for_year(self, year_key) -> Establishment:
@@ -966,6 +980,15 @@ class Project:
         self.master = {normalize_member_id(k): MasterEmployee.from_dict(v) for k, v in data.get("master", {}).items()}
         self.years = {normalize_member_id(k): YearRecord.from_dict(v) for k, v in data.get("years", {}).items()}
         self.current_year_key = data.get("current_year_key") or next(iter(self.years), None)
+        
+        # Migrate old 'higher_epf' from entries to MasterEmployee
+        for yr_data in data.get("years", {}).values():
+            for e_data in yr_data.get("entries", []):
+                if e_data.get("higher_epf"):
+                    mid = normalize_member_id(e_data.get("account_no") or e_data.get("member_id", ""))
+                    if mid in self.master:
+                        self.master[mid].higher_epf_ee = True
+                        self.master[mid].higher_epf_er = True
 
     def save(self, filepath: str):
         with open(filepath, "w", encoding="utf-8") as f:
@@ -2394,7 +2417,11 @@ def convert_excel_to_pdf(excel_path: str, pdf_path: str):
     pythoncom.CoInitialize()
     excel = None
     try:
-        excel = win32com.client.Dispatch("Excel.Application")
+        try:
+            excel = win32com.client.DispatchEx("Excel.Application")
+        except Exception as e:
+            raise RuntimeError(f"Could not start Microsoft Excel. Ensure Excel is installed on the server. ({str(e)})")
+            
         excel.Visible = False
         excel.DisplayAlerts = False
         wb = excel.Workbooks.Open(os.path.abspath(excel_path))
@@ -2403,7 +2430,10 @@ def convert_excel_to_pdf(excel_path: str, pdf_path: str):
         wb.Close(False)
     finally:
         if excel:
-            excel.Quit()
+            try:
+                excel.Quit()
+            except:
+                pass
         pythoncom.CoUninitialize()
 
 def generate_ecr_month(est, employees: List[Employee], year_record: YearRecord, month_idx: int) -> str:

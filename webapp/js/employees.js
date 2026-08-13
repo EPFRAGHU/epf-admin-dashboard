@@ -32,7 +32,7 @@ App.registerPage('employees', async (container) => {
           <thead>
             <tr>
               <th>SL</th><th>Member ID</th><th>UAN</th><th>Name</th>
-              <th>Father's Name</th><th>DOB</th><th>Age</th><th>Sex</th>
+              <th>Father's Name</th><th>DOB</th><th>Higher EPF</th><th>Sex</th>
               <th>DOJ</th><th>DOE</th><th>Reason</th><th>Actions</th>
             </tr>
           </thead>
@@ -92,8 +92,11 @@ function empRow(e) {
     <td>${App.esc(e.uan)}</td>
     <td>${App.esc(e.name)}</td>
     <td>${App.esc(e.father_name)}</td>
-    <td>${App.esc(e.dob)}</td>
-    <td>${e.age != null ? e.age : ''}${e.superannuation ? ' <span class="badge badge-red">58+</span>' : ''}</td>
+    <td>${App.esc(e.dob)}${e.superannuation ? '<br><span class="badge badge-red" style="margin-top:2px; display:inline-block">58+</span>' : ''}</td>
+    <td>
+      ${e.higher_epf_ee ? '<span class="badge badge-blue" style="margin-bottom:2px">H.EPF(EE)</span><br>' : ''}
+      ${e.higher_epf_er ? '<span class="badge badge-purple">H.EPF(ER)</span>' : ''}
+    </td>
     <td>${App.esc(e.sex)}</td>
     <td>${App.esc(e.doj)}</td>
     <td>${App.esc(e.doe)}</td>
@@ -202,6 +205,20 @@ function showEmpModal(emp = null) {
         <label class="form-label">Serial No.</label>
         <input class="form-input" id="m-sl" type="number" value="${e.serial_no || ''}">
       </div>
+      <div class="form-group">
+        <label class="form-label" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="m-higher-epf-ee" ${e.higher_epf_ee ? 'checked' : ''}>
+          Allow Higher EPF (EE)
+        </label>
+        <p style="font-size:10px;color:var(--text3);margin-top:2px;">Employee 12% on actual wages</p>
+      </div>
+      <div class="form-group">
+        <label class="form-label" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="m-higher-epf-er" ${e.higher_epf_er ? 'checked' : ''}>
+          Allow Higher EPF (ER)
+        </label>
+        <p style="font-size:10px;color:var(--text3);margin-top:2px;">Employer PF on actual wages</p>
+      </div>
     </div>`;
   const footer = `
     <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
@@ -228,6 +245,8 @@ async function saveEmp(origAcc) {
     aadhaar: document.getElementById('m-aadhaar').value.trim(),
     bank_account: document.getElementById('m-bank').value.trim(),
     ifsc: document.getElementById('m-ifsc').value.trim().toUpperCase(),
+    higher_epf_ee: document.getElementById('m-higher-epf-ee').checked,
+    higher_epf_er: document.getElementById('m-higher-epf-er').checked,
   };
   if (!d.member_id || !d.name) { App.toast('Member ID and Name are required', 'error'); return; }
   try {

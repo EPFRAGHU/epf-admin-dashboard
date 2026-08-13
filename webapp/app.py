@@ -229,6 +229,8 @@ class EmployeeIn(BaseModel):
     aadhaar: str = ""
     bank_account: str = ""
     ifsc: str = ""
+    higher_epf_ee: bool = False
+    higher_epf_er: bool = False
 
 
 class YearIn(BaseModel):
@@ -256,16 +258,18 @@ class WageIn(BaseModel):
     wages: List[float]
     gross_wages: List[float] = []
     ncp_days: List[int] = []
-    higher_epf: bool = False
     age_crosses_58: bool = False
+    higher_epf_ee: bool = False
+    higher_epf_er: bool = False
 
 class BulkMonthWageUpdate(BaseModel):
     member_id: str
     gross_wage: float
     epf_wage: float
     ncp_days: int
-    higher_epf: bool = False
     age_crosses_58: bool = False
+    higher_epf_ee: bool = False
+    higher_epf_er: bool = False
 
 class BulkMonthWagesIn(BaseModel):
     month_idx: int
@@ -455,6 +459,8 @@ async def list_employees():
             "reason_leaving": m.reason_leaving,
             "serial_no": m.serial_no, "age": age,
             "superannuation": age is not None and age >= SUPERANNUATION_AGE,
+            "higher_epf_ee": m.higher_epf_ee,
+            "higher_epf_er": m.higher_epf_er,
         })
     return {"employees": rows, "total": len(rows)}
 
@@ -466,7 +472,7 @@ async def add_employee(d: EmployeeIn):
     project.upsert_master(d.member_id, d.name, d.father_name, d.uan,
                           d.dob, d.sex, d.doj, d.doe, d.reason_leaving, d.serial_no,
                           d.relationship, d.marital_status, d.mobile, d.email, d.aadhaar,
-                          d.bank_account, d.ifsc)
+                          d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er)
     _save()
     return {"ok": True}
 
@@ -480,7 +486,7 @@ async def edit_employee(acc: str, d: EmployeeIn):
     project.upsert_master(d.member_id, d.name, d.father_name, d.uan,
                           d.dob, d.sex, d.doj, d.doe, d.reason_leaving, d.serial_no,
                           d.relationship, d.marital_status, d.mobile, d.email, d.aadhaar,
-                          d.bank_account, d.ifsc)
+                          d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er)
     _save()
     return {"ok": True}
 
@@ -642,7 +648,8 @@ async def get_wages(key: str):
             "wages": emp.wages,
             "gross_wages": emp.gross_wages,
             "ncp_days": getattr(emp, 'ncp_days', [0]*12),
-            "higher_epf": emp.higher_epf,
+            "higher_epf_ee": emp.higher_epf_ee,
+            "higher_epf_er": emp.higher_epf_er,
             "age_crosses_58": emp.age_crosses_58,
             "months": [{"m": MONTHS[i], "w": r[0],
                         "we": r[1], "ws": r[2], "wt": r[3],
@@ -682,7 +689,7 @@ async def put_wages(key: str, d: WageIn):
     gross_wages = d.gross_wages if d.gross_wages and len(d.gross_wages) == 12 else d.wages.copy()
     capped_wages = [min(w, g) for w, g in zip(d.wages, gross_wages)]
     ncp_days = d.ncp_days if d.ncp_days and len(d.ncp_days) == 12 else [0] * 12
-    project.upsert_entry(key, d.member_id, capped_wages, gross_wages=gross_wages, ncp_days=ncp_days, higher_epf=d.higher_epf, age_crosses_58=d.age_crosses_58)
+    project.upsert_entry(key, d.member_id, capped_wages, gross_wages=gross_wages, ncp_days=ncp_days, age_crosses_58=d.age_crosses_58, higher_epf_ee=d.higher_epf_ee, higher_epf_er=d.higher_epf_er)
     _save()
     return {"ok": True}
 
@@ -726,8 +733,9 @@ async def bulk_month_wages(key: str, d: BulkMonthWagesIn):
             wages_arr, 
             gross_wages=gross_wages_arr, 
             ncp_days=ncp_days_arr, 
-            higher_epf=emp_update.higher_epf, 
-            age_crosses_58=emp_update.age_crosses_58
+            age_crosses_58=emp_update.age_crosses_58,
+            higher_epf_ee=emp_update.higher_epf_ee,
+            higher_epf_er=emp_update.higher_epf_er
         )
         
     _save()
@@ -804,7 +812,7 @@ async def report_employee_wage_history(member_id: str):
     }
 
 @app.get("/api/reports/{key}")
-async def generate_report(key: str, format: str = 'excel', forms: str = ''):
+def generate_report(key: str, format: str = 'excel', forms: str = ''):
     if key not in project.years:
         raise HTTPException(404, "Year not found")
     yr = project.years[key]
@@ -835,7 +843,7 @@ async def generate_report(key: str, format: str = 'excel', forms: str = ''):
 
 
 @app.get("/api/reports/{key}/employee/{member_id:path}")
-async def generate_employee_report(key: str, member_id: str, format: str = 'pdf', forms: str = '3A'):
+def generate_employee_report(key: str, member_id: str, format: str = 'pdf', forms: str = '3A'):
     if key not in project.years:
         raise HTTPException(404, "Year not found")
     est = project.build_establishment_for_year(key)
@@ -869,7 +877,7 @@ async def generate_employee_report(key: str, member_id: str, format: str = 'pdf'
 
 
 @app.get("/api/reports/form9/download")
-async def report_form9(format: str = 'excel'):
+def report_form9(format: str = 'excel'):
     if not project.master:
         raise HTTPException(400, "No employees")
     tmp = tempfile.mkdtemp()

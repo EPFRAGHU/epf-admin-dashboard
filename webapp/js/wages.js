@@ -136,9 +136,10 @@ function renderWageCard(emp) {
             ${emp.doj ? `DOJ: <strong>${App.esc(emp.doj)}</strong>` : ''}
             ${emp.doe ? ` | DOE: <strong>${App.esc(emp.doe)}</strong>` : ''}
           </div>
-          ${emp.higher_epf || emp.age_crosses_58 ? `
+          ${emp.higher_epf_ee || emp.higher_epf_er || emp.age_crosses_58 ? `
           <div style="margin-top: 8px; display: flex; gap: 8px;">
-            ${emp.higher_epf ? `<span class="badge badge-blue" style="font-size: 10px;">✓ Higher EPF</span>` : ''}
+            ${emp.higher_epf_ee ? `<span class="badge badge-blue" style="font-size: 10px;">✓ H.EPF(EE)</span>` : ''}
+            ${emp.higher_epf_er ? `<span class="badge badge-purple" style="font-size: 10px;">✓ H.EPF(ER)</span>` : ''}
             ${emp.age_crosses_58 ? `<span class="badge badge-amber" style="font-size: 10px;">✓ Age > 58 (EPS=0)</span>` : ''}
           </div>
           ` : ''}
@@ -213,7 +214,6 @@ window.showWageModal = async (emp = null) => {
   const wagesArr = isEdit ? emp.wages : Array(12).fill(0);
   const grossWagesArr = isEdit && emp.gross_wages ? emp.gross_wages : Array(12).fill(0);
   const ncpDaysArr = isEdit && emp.ncp_days ? emp.ncp_days : Array(12).fill(0);
-  const higherEpfChecked = isEdit && emp.higher_epf ? 'checked' : '';
   const age58Checked = isEdit && emp.age_crosses_58 ? 'checked' : '';
   const r = currentWagesData.rates;
 
@@ -255,7 +255,10 @@ window.showWageModal = async (emp = null) => {
 
       <div style="display:flex; flex-direction:column; gap:8px;">
         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
-          <input type="checkbox" id="w-higher-epf" ${higherEpfChecked}> Allow Higher EPF
+          <input type="checkbox" id="w-higher-epf-ee"> Allow Higher EPF (EE) - 12% on Actual
+        </label>
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+          <input type="checkbox" id="w-higher-epf-er"> Allow Higher EPF (ER) - PF on Actual
         </label>
         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
           <input type="checkbox" id="w-age-58" ${age58Checked}> Age > 58 (EPS = 0)
@@ -308,6 +311,11 @@ window.showWageModal = async (emp = null) => {
   `;
 
   App.openModal(isEdit ? `Edit Wages: ${emp.name}` : `Add Wages for ${currentWagesData.label}`, body, footer, true);
+  
+  if (isEdit) {
+      document.getElementById('w-higher-epf-ee').checked = emp.higher_epf_ee || false;
+      document.getElementById('w-higher-epf-er').checked = emp.higher_epf_er || false;
+  }
 
   const calculateRow = (wage, rate) => {
       // EPF rules typically round to nearest rupee for contributions
@@ -316,7 +324,8 @@ window.showWageModal = async (emp = null) => {
 
   const updateCalculations = () => {
     let tGross = 0, tWage = 0, tWEpf = 0, tEEpf = 0, tEEps = 0;
-    const isHigherEpf = document.getElementById('w-higher-epf').checked;
+    const isHigherEpfEe = document.getElementById('w-higher-epf-ee').checked;
+    const isHigherEpfEr = document.getElementById('w-higher-epf-er').checked;
     const isAge58 = document.getElementById('w-age-58').checked;
     
     document.querySelectorAll('#wage-entry-body tr:not(.grand-total)').forEach((tr, i) => {
@@ -331,17 +340,14 @@ window.showWageModal = async (emp = null) => {
       let wEpf = 0, eEps = 0, eEpf = 0;
       
       if (r.e_eps > 0) {
-          const epfWage = isHigherEpf ? w : Math.min(w, ceiling);
+          const workerWageBase = isHigherEpfEe ? w : Math.min(w, ceiling);
+          const erTotalWageBase = isHigherEpfEr ? w : Math.min(w, ceiling);
           const epsWage = isAge58 ? 0 : Math.min(w, ceiling);
           
-          wEpf = calculateRow(epfWage, r.w_epf);
+          wEpf = calculateRow(workerWageBase, r.w_epf);
           eEps = calculateRow(epsWage, r.e_eps);
-          
-          if (isHigherEpf) {
-              eEpf = Math.max(0, wEpf - eEps);
-          } else {
-              eEpf = Math.max(0, calculateRow(epfWage, r.w_epf) - eEps);
-          }
+          const totalErContrib = calculateRow(erTotalWageBase, r.w_epf);
+          eEpf = Math.max(0, totalErContrib - eEps);
       } else {
           wEpf = calculateRow(w, r.w_epf);
           eEpf = calculateRow(w, r.e_epf); 
@@ -397,7 +403,8 @@ window.showWageModal = async (emp = null) => {
     inp.addEventListener('focus', handleFocus);
     inp.addEventListener('blur', handleBlur);
   });
-  document.getElementById('w-higher-epf').addEventListener('change', updateCalculations);
+  document.getElementById('w-higher-epf-ee').addEventListener('change', updateCalculations);
+  document.getElementById('w-higher-epf-er').addEventListener('change', updateCalculations);
   document.getElementById('w-age-58').addEventListener('change', updateCalculations);
   updateCalculations(); // Run once on load
   
@@ -478,17 +485,18 @@ window.showWageModal = async (emp = null) => {
                 `;
             }
             
+            document.getElementById('w-higher-epf-ee').checked = matchedMaster.higher_epf_ee || false;
+            document.getElementById('w-higher-epf-er').checked = matchedMaster.higher_epf_er || false;
+            
             const existingWageEmp = currentWagesData.employees.find(ew => ew.member_id === matchedMaster.member_id);
             if (existingWageEmp) {
                 document.querySelectorAll('.g-input').forEach((inp, i) => inp.value = existingWageEmp.gross_wages && existingWageEmp.gross_wages[i] != null ? existingWageEmp.gross_wages[i] : '');
                 document.querySelectorAll('.w-input').forEach((inp, i) => inp.value = existingWageEmp.wages[i] != null ? existingWageEmp.wages[i] : '');
                 document.querySelectorAll('.ncp-input').forEach((inp, i) => inp.value = existingWageEmp.ncp_days && existingWageEmp.ncp_days[i] != null ? existingWageEmp.ncp_days[i] : '');
-                document.getElementById('w-higher-epf').checked = existingWageEmp.higher_epf || false;
                 document.getElementById('w-age-58').checked = existingWageEmp.age_crosses_58 || false;
                 App.toast('Loaded previously entered wages for ' + App.esc(matchedMaster.name), 'info');
             } else {
                 document.querySelectorAll('.g-input, .w-input, .ncp-input').forEach(inp => inp.value = '');
-                document.getElementById('w-higher-epf').checked = false;
                 document.getElementById('w-age-58').checked = false;
             }
             updateCalculations();
@@ -516,11 +524,12 @@ window.saveWages = async () => {
   document.querySelectorAll('.g-input').forEach(i => gross_wages.push(parseFloat(i.value) || 0));
   document.querySelectorAll('.ncp-input').forEach(i => ncp_days.push(parseInt(i.value, 10) || 0));
   
-  const higher_epf = document.getElementById('w-higher-epf').checked;
+  const higher_epf_ee = document.getElementById('w-higher-epf-ee').checked;
+  const higher_epf_er = document.getElementById('w-higher-epf-er').checked;
   const age_crosses_58 = document.getElementById('w-age-58').checked;
   
   try {
-    await App.post(`/api/years/${currentYearKey}/wages`, { member_id: acc, wages, gross_wages, ncp_days, higher_epf, age_crosses_58 });
+    await App.post(`/api/years/${currentYearKey}/wages`, { member_id: acc, wages, gross_wages, ncp_days, higher_epf_ee, higher_epf_er, age_crosses_58 });
     App.toast('Wages saved successfully.');
     App.closeModal();
     App.navigate('wages');
