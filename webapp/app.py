@@ -314,7 +314,7 @@ async def dashboard():
                 else:
                     eps_wage = wages
                     
-                if wages > 0 or gross > 0 or (hasattr(emp, 'ncp_days') and emp.ncp_days and emp.ncp_days[i] < 31):
+                if wages > 0 or gross > 0:
                     m_emp_count += 1
                     
                 m_gross += gross
@@ -394,7 +394,7 @@ async def dashboard_month_employees(key: str, month_index: int):
         wages = emp.wages[month_index] if emp.wages and len(emp.wages) > month_index else 0
         gross = emp.gross_wages[month_index] if emp.gross_wages and len(emp.gross_wages) > month_index else 0
         
-        if wages > 0 or gross > 0 or (hasattr(emp, 'ncp_days') and emp.ncp_days and emp.ncp_days[month_index] < 31):
+        if wages > 0 or gross > 0:
             mrows = emp.month_rows(est.worker_epf_rate, est.worker_eps_rate,
                                  est.employer_epf_rate, est.employer_eps_rate,
                                  wage_ceilings=get_wage_ceilings_for_year(yr.year_from))
