@@ -1,10 +1,15 @@
 import os
+from datetime import datetime
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch, cm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, KeepTogether, PageBreak
+from reportlab.platypus import (
+    SimpleDocTemplate, BaseDocTemplate, PageTemplate, Frame,
+    Table, TableStyle, Paragraph, Spacer, KeepTogether, PageBreak
+)
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+from reportlab.pdfgen.canvas import Canvas
 
 styles = getSampleStyleSheet()
 style_normal = styles["Normal"]
@@ -18,6 +23,19 @@ style_cell_bold = ParagraphStyle(name='CellBold', parent=styles['Normal'], fontN
 style_small = ParagraphStyle(name='Small', parent=styles['Normal'], fontName='Helvetica', fontSize=7, alignment=TA_CENTER)
 style_amount = ParagraphStyle(name='Amount', parent=styles['Normal'], fontName='Helvetica', fontSize=10, alignment=TA_RIGHT)
 style_amount_bold = ParagraphStyle(name='AmountBold', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=10, alignment=TA_RIGHT)
+
+# Employee Wage History -- Wages/EE/ER/EPS/Total row hierarchy (same Helvetica family and
+# size scale as the styles above; grey text is the one genuinely new ingredient, needed to
+# mute the EE/ER/EPS rows relative to the dominant Wages row).
+style_wyh_label_wages = ParagraphStyle(name='WYHLabelWages', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=10, alignment=TA_LEFT)
+style_wyh_val_wages = ParagraphStyle(name='WYHValWages', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=10, alignment=TA_RIGHT)
+style_wyh_label_contrib = ParagraphStyle(name='WYHLabelContrib', parent=styles['Normal'], fontName='Helvetica', fontSize=8, textColor=colors.grey, alignment=TA_LEFT)
+style_wyh_val_contrib = ParagraphStyle(name='WYHValContrib', parent=styles['Normal'], fontName='Helvetica', fontSize=8, textColor=colors.grey, alignment=TA_RIGHT)
+style_wyh_label_total = ParagraphStyle(name='WYHLabelTotal', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=9, alignment=TA_LEFT)
+style_wyh_val_total = ParagraphStyle(name='WYHValTotal', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=9, alignment=TA_RIGHT)
+style_wyh_footnote = ParagraphStyle(name='WYHFootnote', parent=styles['Normal'], fontName='Helvetica-Oblique', fontSize=7, textColor=colors.grey, alignment=TA_LEFT)
+
+WYH_DIVIDER_COLOR = colors.HexColor('#CCCCCC')  # light gray -- matches the on-screen divider's intent, kept print-visible on white paper
 
 def _build_pdf_doc(filename, orientation="portrait"):
     pagesize = landscape(A4) if orientation == "landscape" else A4
@@ -684,6 +702,181 @@ def generate_form_10_pdf(project, filepath: str):
         
     if forms_generated == 0:
         story.append(Paragraph("No employees left in this period.", style_title))
-        
+
     doc.build(story)
+    return filepath
+
+# --------------------------------------------------------------------------
+# Employee Wage History -- server-side PDF
+#
+# Uses BaseDocTemplate + a custom PageTemplate.onPage callback instead of
+# SimpleDocTemplate, because the repeating header (establishment/employee
+# identity + the MAR..FEB/Total column bar) has to be drawn fresh on every
+# page at a fixed position -- Table.repeatRows only repeats header rows
+# within a single continuous Table, which would fight the per-year
+# KeepTogether blocks below (the actual fix for years splitting across a
+# page break). Page numbers use the standard two-pass NumberedCanvas
+# technique since ReportLab doesn't know the final page count until the
+# whole story has been laid out once.
+# --------------------------------------------------------------------------
+WYH_MONTHS = ["Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]
+WYH_HEADER_HEIGHT = 1.15 * inch  # reserved top-of-page space: title + est/emp lines + month header bar
+
+
+def _wyh_make_onpage(est_name, est_code, emp_name, uan, member_id, label_w, month_col_widths):
+    """Returns an onPage(canvas, doc) callback bound to this employee's header info.
+    Draws identically on every page, including page 1 -- there's no separate static
+    header competing for that space, so no special-casing is needed."""
+    def _on_page(canvas_obj, doc):
+        canvas_obj.saveState()
+        page_w, page_h = doc.pagesize
+        top_y = page_h - doc.topMargin
+
+        canvas_obj.setFont('Helvetica-Bold', 12)
+        canvas_obj.drawCentredString(page_w / 2, top_y - 12, "EMPLOYEE WAGE & CONTRIBUTION HISTORY")
+
+        canvas_obj.setFont('Helvetica-Bold', 9)
+        canvas_obj.drawString(doc.leftMargin, top_y - 30, f"Establishment: {est_name}   (Code: {est_code})")
+        canvas_obj.setFont('Helvetica', 9)
+        canvas_obj.drawString(doc.leftMargin, top_y - 44, f"Employee: {emp_name}    UAN: {uan or '-'}    Member ID: {member_id or '-'}")
+
+        # Fixed month-column header bar -- column widths match the per-year Tables
+        # below exactly, so it reads as one continuous table across the page break.
+        row_h = 16
+        bar_top = top_y - 60
+        bar_bottom = bar_top - row_h
+
+        canvas_obj.setFillColor(colors.lightgrey)
+        canvas_obj.rect(doc.leftMargin, bar_bottom, doc.width, row_h, stroke=0, fill=1)
+        canvas_obj.setFillColor(colors.black)
+        canvas_obj.setStrokeColor(colors.black)
+        canvas_obj.setLineWidth(0.5)
+        canvas_obj.rect(doc.leftMargin, bar_bottom, doc.width, row_h, stroke=1, fill=0)
+
+        canvas_obj.setFont('Helvetica-Bold', 8)
+        labels = WYH_MONTHS + ["Total"]
+        x = doc.leftMargin + label_w
+        canvas_obj.line(doc.leftMargin + label_w, bar_bottom, doc.leftMargin + label_w, bar_top)
+        for i, lbl in enumerate(labels):
+            cw = month_col_widths[i]
+            canvas_obj.drawCentredString(x + cw / 2, bar_bottom + 5, lbl)
+            x += cw
+            if i < len(labels) - 1:
+                canvas_obj.line(x, bar_bottom, x, bar_top)
+
+        canvas_obj.restoreState()
+    return _on_page
+
+
+def _wyh_make_numbered_canvas(footer_text):
+    """Standard two-pass NumberedCanvas: buffer each page's drawing instead of finalizing
+    it immediately, so by the time save() runs we know the true total page count and can
+    stamp 'Page X of Y' (bottom-right) and the generation timestamp (bottom-left) on every
+    page. Built as a closure/factory (not a module-level class) so footer_text is captured
+    without any shared mutable state -- safe for concurrent PDF generation requests."""
+    class _NumberedCanvas(Canvas):
+        def __init__(self, *args, **kwargs):
+            Canvas.__init__(self, *args, **kwargs)
+            self._saved_page_states = []
+
+        def showPage(self):
+            self._saved_page_states.append(dict(self.__dict__))
+            self._startPage()
+
+        def save(self):
+            total_pages = len(self._saved_page_states)
+            for state in self._saved_page_states:
+                self.__dict__.update(state)
+                self._wyh_draw_footer(total_pages)
+                Canvas.showPage(self)
+            Canvas.save(self)
+
+        def _wyh_draw_footer(self, total_pages):
+            self.saveState()
+            self.setFont('Helvetica', 8)
+            self.setFillColor(colors.grey)
+            self.drawString(0.35 * inch, 0.28 * inch, footer_text)
+            self.drawRightString(self._pagesize[0] - 0.35 * inch, 0.28 * inch, f"Page {self._pageNumber} of {total_pages}")
+            self.restoreState()
+
+    return _NumberedCanvas
+
+
+def generate_employee_wage_history_pdf(data: dict, filepath: str):
+    """Renders the Employee Wage History report (Wages/EE/ER/EPS/Total per year, grouped
+    into 5-row KeepTogether blocks) using the same figures the JSON endpoint / on-screen
+    HTML report already computed -- data is the dict returned by
+    _build_employee_wage_history_data() in webapp/app.py, not recomputed here."""
+    est = data.get("establishment") or {}
+    profile = data.get("profile") or {}
+    years = data.get("years") or []
+
+    doc = BaseDocTemplate(
+        filepath, pagesize=A4,
+        rightMargin=0.35 * inch, leftMargin=0.35 * inch,
+        topMargin=0.3 * inch, bottomMargin=0.45 * inch
+    )
+
+    label_w = 0.85 * inch
+    month_col_w = (doc.width - label_w) / 13.0
+    month_col_widths = [month_col_w] * 13
+
+    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height - WYH_HEADER_HEIGHT, id='wyh', showBoundary=0)
+    on_page = _wyh_make_onpage(
+        est.get("name") or "", est.get("code") or "",
+        profile.get("name") or "", profile.get("uan") or "", profile.get("member_id") or "",
+        label_w, month_col_widths
+    )
+    doc.addPageTemplates([PageTemplate(id='wyh_template', frames=[frame], onPage=on_page)])
+
+    story = []
+    if not years:
+        story.append(Paragraph("No wage records found.", style_title))
+
+    def _vals_row(label, monthly, year_total, label_style, val_style):
+        row = [Paragraph(label, label_style)]
+        for v in monthly:
+            row.append(Paragraph(str(int(round(v))) if v else "0", val_style))
+        row.append(Paragraph(str(int(round(year_total or 0))), val_style))
+        return row
+
+    for y in years:
+        block = [Paragraph(f"FY {y.get('year', '')}", style_subtitle), Spacer(1, 3)]
+
+        table_data = [
+            _vals_row("Wages", y.get("wages") or [0] * 12, y.get("total"), style_wyh_label_wages, style_wyh_val_wages),
+            _vals_row("EE", y.get("ee_epf") or [0] * 12, y.get("ee_epf_total"), style_wyh_label_contrib, style_wyh_val_contrib),
+            _vals_row("ER", y.get("er_epf") or [0] * 12, y.get("er_epf_total"), style_wyh_label_contrib, style_wyh_val_contrib),
+            _vals_row("EPS", y.get("er_eps") or [0] * 12, y.get("er_eps_total"), style_wyh_label_contrib, style_wyh_val_contrib),
+            _vals_row("Total", y.get("month_total") or [0] * 12, y.get("month_total_total"), style_wyh_label_total, style_wyh_val_total),
+        ]
+
+        t = Table(table_data, colWidths=[label_w] + month_col_widths)
+        tstyle = TableStyle([
+            ('BOX', (0, 0), (-1, -1), 0.75, colors.black),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('LEFTPADDING', (0, 0), (0, -1), 4),
+            ('LINEABOVE', (0, 1), (-1, 1), 0.5, WYH_DIVIDER_COLOR),  # divider: below Wages, above EE
+            ('LINEABOVE', (0, 4), (-1, 4), 0.5, WYH_DIVIDER_COLOR),  # divider: below EPS, above Total (identical weight/color to the one above)
+        ])
+        t.setStyle(tstyle)
+        block.append(t)
+
+        flags = []
+        if y.get('higher_epf_ee'):
+            flags.append('(Higher EPF - EE)')
+        if y.get('higher_epf_er'):
+            flags.append('(Higher EPF - ER)')
+        if y.get('age_crosses_58'):
+            flags.append('(Age 58+ applied)')
+        if flags:
+            block.append(Paragraph(' '.join(flags), style_wyh_footnote))
+
+        block.append(Spacer(1, 12))
+        story.append(KeepTogether(block))
+
+    footer_text = f"Generated: {datetime.now().strftime('%d %b %Y, %H:%M')}"
+    doc.build(story, canvasmaker=_wyh_make_numbered_canvas(footer_text))
     return filepath
