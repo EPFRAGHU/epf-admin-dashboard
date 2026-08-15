@@ -1179,7 +1179,7 @@ def _row_height_for_cells(cells, line_height=13, padding=6, min_height=15):
 # e.g. FY 2018-19 (Apr 2018-Mar 2019) changed mid-year in June 2018.
 # --------------------------------------------------------------------------
 ACCOUNT_21_RATE = 0.50   # % of monthly total wages -- EDLI contribution (A/c 21). Unchanged historically.
-ACCOUNT_22_MIN = 2       # minimum Rs. 2/month for A/c 22, when a charge applies
+ACCOUNT_22_MIN = 200     # minimum Rs. 200/month for A/c 22, when a charge applies
 
 _MONTH_NUM = {"APR": 4, "MAY": 5, "JUN": 6, "JUL": 7, "AUG": 8, "SEP": 9,
               "OCT": 10, "NOV": 11, "DEC": 12, "JAN": 1, "FEB": 2, "MAR": 3}
@@ -1224,7 +1224,7 @@ def account2_rate_percent(cal_year, cal_month):
 
 def account22_rate_percent(cal_year, cal_month):
     """EDLI Administrative charges (A/c No. 22) -- waived (0%) from 1 April
-    2017 onwards; 0.01% (subject to a Rs. 2/month minimum) before that."""
+    2017 onwards; 0.01% (subject to a Rs. 200/month minimum) before that."""
     if cal_year is None:
         return 0.01
     return 0.01 if (cal_year, cal_month) < (2017, 4) else 0.0

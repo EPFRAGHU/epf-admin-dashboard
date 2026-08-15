@@ -30,6 +30,7 @@ App.registerPage('challans', async (container) => {
                     </select>
                 </div>
             </div>
+            <div id="challans-sub-banner"></div>
             <div class="card">
                 <div class="card-head">
                     <div class="card-title">Remittance Entries</div>
@@ -43,6 +44,10 @@ App.registerPage('challans', async (container) => {
                                 <th style="min-width: 140px;">TRRN</th>
                                 <th style="min-width: 140px;">CRRN</th>
                                 <th class="num">Members</th>
+                                <th class="num">Gross Wages</th>
+                                <th class="num">EPF Wages</th>
+                                <th class="num">EPS Wages</th>
+                                <th class="num">EDLI Wages</th>
                                 <th class="num">A/c 1</th>
                                 <th class="num">A/c 2</th>
                                 <th class="num">A/c 10</th>
@@ -62,11 +67,12 @@ App.registerPage('challans', async (container) => {
     `;
     Challans.init();
     await Challans.load();
+    await Challans.loadSubscriptionBanner();
 });
 
 const Challans = {
     remittances: [],
-    
+
     init() {
         this.cacheDOM();
         this.bindEvents();
@@ -75,6 +81,7 @@ const Challans = {
     cacheDOM() {
         this.$tbody = document.querySelector('#challans-table tbody');
         this.$btnSave = document.getElementById('btn-save-challans');
+        this.$subBanner = document.getElementById('challans-sub-banner');
     },
 
     bindEvents() {
@@ -94,9 +101,30 @@ const Challans = {
         }
     },
 
+    async loadSubscriptionBanner() {
+        if (!this.$subBanner || !window.currentYearKey) return;
+        try {
+            const subStatus = await App.get('/api/establishment/subscription-status?year=' + encodeURIComponent(window.currentYearKey));
+            this.$subBanner.innerHTML = (subStatus && subStatus.has_overdue) ? `
+                <div style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); border-radius:var(--radius-sm); padding:14px 18px; margin-bottom:20px; display:flex; align-items:flex-start; gap:12px;">
+                    <span style="font-size:22px; line-height:1;">⚠️</span>
+                    <div style="flex:1;">
+                        <div style="font-weight:700; color:var(--danger); font-size:14px;">Software Subscription Fee Overdue (${subStatus.total_overdue} Month${subStatus.total_overdue > 1 ? 's' : ''})</div>
+                        <div style="font-size:12px; color:var(--text1); margin-top:2px; line-height:1.4;">
+                            The platform subscription fee is overdue for: <strong>${subStatus.unpaid_months.join(', ')}</strong>. Statutory Form and ECR downloads are locked until payment is recorded by your administrator.
+                        </div>
+                    </div>
+                </div>
+            ` : '';
+        } catch(e) {
+            this.$subBanner.innerHTML = '';
+        }
+    },
+
     switchYear(key) {
         window.currentYearKey = key;
         this.load();
+        this.loadSubscriptionBanner();
     },
 
     render() {
@@ -104,28 +132,36 @@ const Challans = {
         
         this.$tbody.innerHTML = '';
         if (this.remittances.length === 0) {
-            this.$tbody.innerHTML = '<tr><td colspan="11" style="text-align: center; color: var(--text3); padding: 24px;">No challans recorded for this year.</td></tr>';
+            this.$tbody.innerHTML = '<tr><td colspan="15" style="text-align: center; color: var(--text3); padding: 24px;">No challans recorded for this year.</td></tr>';
             return;
         }
-        
-        let grandMembers = 0, grandA1 = 0, grandA2 = 0, grandA10 = 0, grandA21 = 0, grandA22 = 0, grandTot = 0;
-        
+
+        let grandMembers = 0, grandGross = 0, grandEpf = 0, grandEps = 0, grandEdli = 0, grandA1 = 0, grandA2 = 0, grandA10 = 0, grandA21 = 0, grandA22 = 0, grandTot = 0;
+
         this.remittances.forEach((r, idx) => {
             const total = r.acc_01 + r.acc_02 + r.acc_10 + r.acc_21 + r.acc_22;
             grandMembers += r.members;
+            grandGross += r.gross_wages;
+            grandEpf += r.epf_wages;
+            grandEps += r.eps_wages;
+            grandEdli += r.edli_wages;
             grandA1 += r.acc_01;
             grandA2 += r.acc_02;
             grandA10 += r.acc_10;
             grandA21 += r.acc_21;
             grandA22 += r.acc_22;
             grandTot += total;
-            
+
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td><strong>${r.month_label}</strong></td>
                 <td><input type="text" class="form-input sm challan-trrn" data-idx="${idx}" value="${r.trrn || ''}" placeholder="TRRN" style="font-family: monospace; min-width: 120px;"></td>
                 <td><input type="text" class="form-input sm challan-crrn" data-idx="${idx}" value="${r.crrn || ''}" placeholder="CRRN" style="font-family: monospace; min-width: 120px;"></td>
                 <td class="num">${App.fmt(r.members)}</td>
+                <td class="num">${App.fmt(r.gross_wages)}</td>
+                <td class="num">${App.fmt(r.epf_wages)}</td>
+                <td class="num">${App.fmt(r.eps_wages)}</td>
+                <td class="num">${App.fmt(r.edli_wages)}</td>
                 <td class="num">${App.fmt(r.acc_01)}</td>
                 <td class="num">${App.fmt(r.acc_02)}</td>
                 <td class="num">${App.fmt(r.acc_10)}</td>
@@ -142,6 +178,10 @@ const Challans = {
         grandTr.innerHTML = `
             <td colspan="3" style="text-align: right; font-weight: 700; color: var(--text);">GRAND TOTAL</td>
             <td class="num" style="font-weight: 700;">${App.fmt(grandMembers)}</td>
+            <td class="num" style="font-weight: 700;">₹${App.fmt(grandGross)}</td>
+            <td class="num" style="font-weight: 700;">₹${App.fmt(grandEpf)}</td>
+            <td class="num" style="font-weight: 700;">₹${App.fmt(grandEps)}</td>
+            <td class="num" style="font-weight: 700;">₹${App.fmt(grandEdli)}</td>
             <td class="num" style="font-weight: 700;">₹${App.fmt(grandA1)}</td>
             <td class="num" style="font-weight: 700;">₹${App.fmt(grandA2)}</td>
             <td class="num" style="font-weight: 700;">₹${App.fmt(grandA10)}</td>
