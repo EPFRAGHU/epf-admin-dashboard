@@ -10,21 +10,24 @@ import sys
 import tempfile
 import json
 import uuid
+import calendar
+import requests
 from pathlib import Path
 from typing import Optional, List, Tuple
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Query, Header, Request, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 
 # Database and models
 from .database import (
     SessionLocal, engine, get_db, Base,
-    User, Establishment, Payment, ActivityLog, ProjectData, Setting, DATABASE_URL
+    User, Establishment, Payment, SubscriptionFee, AdvanceCreditLedger, ActivityLog, ProjectData, Setting, DATABASE_URL
 )
 
 # Auth helpers and dependencies
@@ -32,6 +35,8 @@ from .auth import (
     hash_password, verify_password, create_access_token, decode_access_token,
     get_current_user, get_superadmin, get_active_establishment, save_establishment_project
 )
+
+from . import cashfree_client
 
 def log_activity(
     db: Session,
@@ -75,6 +80,167 @@ from epf_engine import (
     normalize_member_id, get_excel_sheet_names, get_month_num
 )
 
+MONTH_SHORT_NAMES = ["Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]
+
+def count_ecr_employees_for_month(project: Project, year_key: str, month_idx: int) -> int:
+    """Returns exact count of employees who have wage > 0 in this month (matches ECR row count)."""
+    year_record = project.years.get(year_key)
+    if not year_record:
+        return 0
+    count = 0
+    for entry in year_record.entries:
+        if entry.wages and len(entry.wages) > month_idx:
+            w = entry.wages[month_idx]
+            if w is not None and float(w) > 0:
+                count += 1
+    return count
+
+def resolve_rate(db: Session, establishment: Establishment, user: Optional[User] = None) -> float:
+    """Resolve rate per employee: Establishment override > Consultant override > Global default (10.0)."""
+    if establishment.custom_rate_per_employee is not None and establishment.custom_rate_per_employee > 0:
+        return float(establishment.custom_rate_per_employee)
+    if user is None and establishment.user_id:
+        user = db.query(User).filter(User.id == establishment.user_id).first()
+    if user and user.custom_rate_per_employee is not None and user.custom_rate_per_employee > 0:
+        return float(user.custom_rate_per_employee)
+    setting = db.query(Setting).filter(Setting.key == "default_rate_per_employee").first()
+    if setting and setting.value:
+        try:
+            return float(setting.value)
+        except ValueError:
+            pass
+    return 10.0
+
+def apply_advance_credit_if_available(db: Session, est_obj: Establishment, fee_row: SubscriptionFee):
+    """If the establishment has enough prepaid advance credit to cover this newly-billed,
+    still-unpaid month, auto-mark it paid and deduct the credit. Never applies partially --
+    a month is either fully covered or left as a normal unpaid row."""
+    if fee_row.is_paid or fee_row.amount_due <= 0:
+        return
+    balance = est_obj.advance_credit_balance or 0.0
+    if balance < fee_row.amount_due:
+        return
+
+    fee_row.is_paid = True
+    fee_row.payment_reference = "Applied from advance credit"
+    est_obj.advance_credit_balance = round(balance - fee_row.amount_due, 2)
+    db.flush()  # ensure fee_row.id is assigned before we reference it as a FK below
+
+    db.add(AdvanceCreditLedger(
+        establishment_id=est_obj.id,
+        entry_type="applied",
+        amount=fee_row.amount_due,
+        applied_to_fee_id=fee_row.id,
+        status="confirmed",
+        notes=f"Auto-applied to {fee_row.month} {fee_row.financial_year}"
+    ))
+
+    log_activity(
+        db, None, est_obj.id, "advance_credit_applied",
+        f"Advance credit applied: ₹{fee_row.amount_due} for {fee_row.month} {fee_row.financial_year} — "
+        f"{est_obj.name} ({est_obj.code}). Remaining balance: ₹{est_obj.advance_credit_balance}",
+        {
+            "financial_year": fee_row.financial_year, "month": fee_row.month,
+            "amount_applied": fee_row.amount_due, "remaining_balance": est_obj.advance_credit_balance,
+            "code": est_obj.code
+        }
+    )
+
+
+def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project: Project, year_key: str):
+    """Sync or auto-generate 12-month subscription fee records for an establishment and financial year."""
+    rate = resolve_rate(db, est_obj)
+    year_record = project.years.get(year_key)
+    if not year_record:
+        return
+
+    for month_idx in range(12):
+        month_abbr = MONTH_SHORT_NAMES[month_idx]
+        emp_count = count_ecr_employees_for_month(project, year_key, month_idx)
+
+        fee_row = db.query(SubscriptionFee).filter(
+            SubscriptionFee.establishment_id == est_obj.id,
+            SubscriptionFee.financial_year == year_key,
+            SubscriptionFee.month == month_abbr
+        ).first()
+
+        if not fee_row:
+            fee_row = SubscriptionFee(
+                establishment_id=est_obj.id,
+                financial_year=year_key,
+                month=month_abbr,
+                employee_count=emp_count,
+                rate_applied=rate,
+                amount_due=round(emp_count * rate, 2),
+                is_paid=False
+            )
+            db.add(fee_row)
+            # Newly-billed row -- give prepaid advance credit a chance to cover it.
+            apply_advance_credit_if_available(db, est_obj, fee_row)
+        else:
+            if not fee_row.is_paid:
+                was_unbilled = fee_row.amount_due <= 0
+                fee_row.employee_count = emp_count
+                fee_row.rate_applied = rate
+                fee_row.amount_due = round(emp_count * rate, 2)
+                if was_unbilled and fee_row.amount_due > 0:
+                    # This row existed as a 0-due placeholder (no wage data yet) and has
+                    # just been billed for the first time -- same as a fresh row.
+                    apply_advance_credit_if_available(db, est_obj, fee_row)
+            else:
+                fee_row.employee_count = emp_count
+                fee_row.amount_due = round(emp_count * fee_row.rate_applied, 2)
+
+    db.commit()
+
+def is_month_overdue(year_key: str, month_idx: int) -> bool:
+    """A month is overdue if current date is strictly greater than 1 day past month end."""
+    year_parts = year_key.split("-")
+    try:
+        yf = int(year_parts[0])
+        yt = int(year_parts[1]) if len(year_parts) > 1 else yf + 1
+        if yt < 100: yt += 2000
+    except Exception:
+        yf = 2026
+        yt = 2027
+
+    month_abbr = MONTH_SHORT_NAMES[month_idx]
+    cal_m = get_month_num(month_abbr)
+    cal_y = calendar_year_for_month(month_abbr, str(yf), str(yt))
+    if not cal_y or not cal_m:
+        return True
+
+    last_day = calendar.monthrange(cal_y, cal_m)[1]
+    grace_cutoff = date(cal_y, cal_m, last_day) + timedelta(days=1)
+    return date.today() > grace_cutoff
+
+def get_unpaid_months_for_year(db: Session, establishment: Establishment, project: Project, year_key: str) -> List[str]:
+    """Returns list of formatted month names for which wages exist, fee is unpaid, and grace period has elapsed."""
+    sync_subscription_fees_for_year(db, establishment, project, year_key)
+    year_record = project.years.get(year_key)
+    if not year_record:
+        return []
+
+    unpaid_overdue = []
+    for month_idx in range(12):
+        month_abbr = MONTH_SHORT_NAMES[month_idx]
+        emp_count = count_ecr_employees_for_month(project, year_key, month_idx)
+        if emp_count == 0:
+            continue
+
+        fee_row = db.query(SubscriptionFee).filter(
+            SubscriptionFee.establishment_id == establishment.id,
+            SubscriptionFee.financial_year == year_key,
+            SubscriptionFee.month == month_abbr
+        ).first()
+
+        if fee_row and not fee_row.is_paid:
+            if is_month_overdue(year_key, month_idx):
+                cal_yr = calendar_year_for_month(month_abbr, year_record.year_from, year_record.year_to)
+                unpaid_overdue.append(f"{MONTH_FULL.get(month_abbr.upper(), month_abbr)} {cal_yr}")
+
+    return unpaid_overdue
+
 # ── App setup ──────────────────────────────────────────────────────────────
 app = FastAPI(title="EPF Admin Dashboard", version="2.0.0")
 
@@ -87,6 +253,55 @@ app.mount("/js", StaticFiles(directory=str(WEB / "js")), name="js")
 def _run_startup_migrations():
     if not SessionLocal:
         return
+    # 0. Ensure all tables and additive columns exist
+    if engine:
+        try:
+            Base.metadata.create_all(bind=engine)
+            with engine.connect() as conn:
+                try:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_rate_per_employee FLOAT;"))
+                    conn.commit()
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE establishments ADD COLUMN IF NOT EXISTS custom_rate_per_employee FLOAT;"))
+                    conn.commit()
+                except Exception:
+                    pass
+                try:
+                    conn.execute(text("ALTER TABLE establishments ADD COLUMN IF NOT EXISTS advance_credit_balance FLOAT DEFAULT 0;"))
+                    conn.commit()
+                except Exception:
+                    pass
+                try:
+                    # SQLite doesn't support "IF NOT EXISTS" on ADD COLUMN -- harmless no-op
+                    # (duplicate column error, swallowed) once the column already exists.
+                    conn.execute(text("ALTER TABLE establishments ADD COLUMN advance_credit_balance FLOAT DEFAULT 0;"))
+                    conn.commit()
+                except Exception:
+                    pass
+                for ddl in [
+                    "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS cashfree_order_id VARCHAR(120);",
+                    "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS cashfree_payment_link_url TEXT;",
+                ]:
+                    try:
+                        conn.execute(text(ddl))
+                        conn.commit()
+                    except Exception:
+                        pass
+                for ddl in [
+                    "ALTER TABLE subscription_fees ADD COLUMN cashfree_order_id VARCHAR(120);",
+                    "ALTER TABLE subscription_fees ADD COLUMN cashfree_payment_link_url TEXT;",
+                ]:
+                    try:
+                        # SQLite fallback -- same harmless no-op reasoning as above.
+                        conn.execute(text(ddl))
+                        conn.commit()
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"  [WARN] DDL check error: {e}")
+
     with SessionLocal() as db:
         # 1. Seed Primary Superadmin (Raghunatha Maharana)
         raghu_admin = db.query(User).filter(func.lower(User.email) == "raghunatha.maharana@gmail.com").first()
@@ -224,12 +439,14 @@ class UserCreateIn(BaseModel):
     mobile: Optional[str] = ""
     email: str
     password: str
+    custom_rate_per_employee: Optional[float] = None
 
 class UserUpdateIn(BaseModel):
     name: Optional[str] = None
     mobile: Optional[str] = None
     email: Optional[str] = None
     password: Optional[str] = None
+    custom_rate_per_employee: Optional[float] = None
     is_active: Optional[bool] = None
 
 class EstablishmentIn(BaseModel):
@@ -237,6 +454,30 @@ class EstablishmentIn(BaseModel):
     name: str
     address: str = ""
     coverage_date: str = ""
+    custom_rate_per_employee: Optional[float] = None
+
+class DefaultRateIn(BaseModel):
+    default_rate: float
+
+class SubscriptionFeeItemIn(BaseModel):
+    month: str
+    is_paid: bool = False
+    paid_date: Optional[str] = None
+    payment_reference: Optional[str] = None
+    notes: Optional[str] = None
+
+class SubscriptionFeesSaveIn(BaseModel):
+    financial_year: str
+    fees: List[SubscriptionFeeItemIn]
+
+class AdvancePaymentIn(BaseModel):
+    amount: float
+    payment_reference: str = ""
+    notes: str = ""
+
+class CreateFeeLinkIn(BaseModel):
+    financial_year: str
+    month: str
 
 class PaymentUpdateItem(BaseModel):
     month: str
@@ -436,6 +677,7 @@ async def admin_list_users(
             "name": u.name,
             "mobile": u.mobile or "—",
             "email": u.email,
+            "custom_rate_per_employee": u.custom_rate_per_employee,
             "establishment_count": est_count,
             "is_active": u.is_active,
             "created_at": u.created_at.strftime("%d-%m-%Y") if u.created_at else "—"
@@ -466,6 +708,7 @@ async def admin_create_user(
         email=email,
         password_hash=hash_password(d.password),
         role="consultant",
+        custom_rate_per_employee=d.custom_rate_per_employee,
         is_active=True
     )
     db.add(new_user)
@@ -475,7 +718,7 @@ async def admin_create_user(
     log_activity(
         db, admin.id, None, "consultant_created",
         f"Created new consultant account: {new_user.name} (S.No: {new_user.serial_no}, Email: {new_user.email})",
-        {"consultant_id": new_user.id, "serial_no": new_user.serial_no, "name": new_user.name, "email": new_user.email}
+        {"consultant_id": new_user.id, "serial_no": new_user.serial_no, "name": new_user.name, "email": new_user.email, "custom_rate": new_user.custom_rate_per_employee}
     )
 
     return {
@@ -486,6 +729,7 @@ async def admin_create_user(
             "name": new_user.name,
             "email": new_user.email,
             "mobile": new_user.mobile,
+            "custom_rate_per_employee": new_user.custom_rate_per_employee,
             "role": new_user.role
         }
     }
@@ -513,6 +757,16 @@ async def admin_update_user(
     if d.mobile is not None: user.mobile = d.mobile.strip()
     if d.password: user.password_hash = hash_password(d.password)
     if d.is_active is not None: user.is_active = d.is_active
+    
+    old_rate = user.custom_rate_per_employee
+    if d.custom_rate_per_employee is not None:
+        user.custom_rate_per_employee = d.custom_rate_per_employee if d.custom_rate_per_employee > 0 else None
+        if old_rate != user.custom_rate_per_employee:
+            log_activity(
+                db, admin.id, None, "rate_changed",
+                f"Updated consultant {user.name} rate override to ₹{user.custom_rate_per_employee if user.custom_rate_per_employee else 'Default'}/emp",
+                {"consultant_id": user.id, "old_rate": old_rate, "new_rate": user.custom_rate_per_employee, "scope": "consultant"}
+            )
 
     db.commit()
     return {"ok": True}
@@ -558,19 +812,571 @@ async def admin_user_establishments(
         except Exception:
             pass
 
+        # Check unpaid subscription fee months
+        p = Project()
+        if est.data:
+            try:
+                p.load_from_dict(json.loads(est.data))
+            except Exception:
+                pass
+        unpaid = get_unpaid_months_for_year(db, est, p, "2026-27")
+
         rows.append({
             "id": est.id,
             "code": est.code,
             "name": est.name,
             "address": est.address or "—",
             "coverage_date": est.coverage_date or "—",
+            "custom_rate_per_employee": est.custom_rate_per_employee,
             "employee_count": emp_count,
+            "unpaid_subscription_months": unpaid,
+            "has_overdue_subscription": len(unpaid) > 0,
             "created_at": est.created_at.strftime("%d-%m-%Y") if est.created_at else "—"
         })
 
-    return {"establishments": rows, "user": {"id": user.id, "name": user.name, "email": user.email}}
+    return {
+        "establishments": rows,
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "custom_rate_per_employee": user.custom_rate_per_employee
+        }
+    }
 
 
+# ── Global Default Rate Settings ──────────────────────────────────────────
+@app.get("/api/admin/settings/subscription-rate")
+async def admin_get_default_rate(
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    setting = db.query(Setting).filter(Setting.key == "default_rate_per_employee").first()
+    val = float(setting.value) if setting and setting.value else 10.0
+    return {"default_rate": val}
+
+
+@app.post("/api/admin/settings/subscription-rate")
+async def admin_set_default_rate(
+    d: DefaultRateIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    if d.default_rate < 0:
+        raise HTTPException(400, "Rate cannot be negative")
+    setting = db.query(Setting).filter(Setting.key == "default_rate_per_employee").first()
+    old_rate = float(setting.value) if setting and setting.value else 10.0
+    if not setting:
+        setting = Setting(key="default_rate_per_employee", value=str(d.default_rate))
+        db.add(setting)
+    else:
+        setting.value = str(d.default_rate)
+    db.commit()
+    
+    log_activity(
+        db, admin.id, None, "rate_changed",
+        f"Updated global default subscription rate from ₹{old_rate}/emp to ₹{d.default_rate}/emp",
+        {"old_rate": old_rate, "new_rate": d.default_rate, "scope": "global"}
+    )
+    return {"ok": True, "default_rate": d.default_rate}
+
+
+# ── Subscription Fee Management Endpoints ─────────────────────────────────
+@app.get("/api/admin/establishments/{est_id}/subscription-fees")
+async def admin_get_establishment_subscription_fees(
+    est_id: int,
+    year: str = Query("2026-27"),
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    est = db.query(Establishment).filter(Establishment.id == est_id).first()
+    if not est:
+        raise HTTPException(404, "Establishment not found")
+    consultant = db.query(User).filter(User.id == est.user_id).first()
+
+    p = Project()
+    if est.data:
+        try:
+            p.load_from_dict(json.loads(est.data))
+        except Exception:
+            pass
+
+    sync_subscription_fees_for_year(db, est, p, year)
+
+    default_setting = db.query(Setting).filter(Setting.key == "default_rate_per_employee").first()
+    default_rate = float(default_setting.value) if default_setting and default_setting.value else 10.0
+    effective_rate = resolve_rate(db, est, consultant)
+
+    fee_rows = db.query(SubscriptionFee).filter(
+        SubscriptionFee.establishment_id == est_id,
+        SubscriptionFee.financial_year == year
+    ).all()
+    fee_map = {f.month: f for f in fee_rows}
+
+    months_data = []
+    yf = year.split("-")[0]
+    yt = str(int(yf) + 1)  # financial years are always consecutive -- avoids passing a 2-digit "27" into calendar_year_for_month
+
+    for i, m_abbr in enumerate(MONTH_SHORT_NAMES):
+        f_obj = fee_map.get(m_abbr)
+        emp_count = count_ecr_employees_for_month(p, year, i)
+        cal_yr = calendar_year_for_month(m_abbr, yf, yt)
+        display_name = f"{MONTH_FULL.get(m_abbr.upper(), m_abbr)} {cal_yr}"
+        overdue = is_month_overdue(year, i) and emp_count > 0 and (not f_obj or not f_obj.is_paid)
+
+        months_data.append({
+            "month_idx": i,
+            "month": m_abbr,
+            "display_name": display_name,
+            "employee_count": f_obj.employee_count if f_obj else emp_count,
+            "rate_applied": f_obj.rate_applied if f_obj else effective_rate,
+            "amount_due": f_obj.amount_due if f_obj else round(emp_count * effective_rate, 2),
+            "is_paid": f_obj.is_paid if f_obj else False,
+            "paid_date": f_obj.paid_date or "" if f_obj else "",
+            "payment_reference": f_obj.payment_reference or "" if f_obj else "",
+            "notes": f_obj.notes or "" if f_obj else "",
+            "is_overdue": overdue,
+            "cashfree_order_id": (f_obj.cashfree_order_id or "") if f_obj else "",
+            "cashfree_payment_link_url": (f_obj.cashfree_payment_link_url or "") if f_obj else ""
+        })
+
+    return {
+        "establishment": {
+            "id": est.id,
+            "code": est.code,
+            "name": est.name,
+            "custom_rate": est.custom_rate_per_employee
+        },
+        "consultant": {
+            "id": consultant.id if consultant else None,
+            "name": consultant.name if consultant else "",
+            "email": consultant.email if consultant else "",
+            "custom_rate": consultant.custom_rate_per_employee if consultant else None
+        },
+        "rates": {
+            "global_default": default_rate,
+            "consultant_override": consultant.custom_rate_per_employee if consultant else None,
+            "establishment_override": est.custom_rate_per_employee,
+            "effective_rate": effective_rate
+        },
+        "financial_year": year,
+        "months": months_data
+    }
+
+
+@app.post("/api/admin/establishments/{est_id}/subscription-fees")
+async def admin_save_establishment_subscription_fees(
+    est_id: int,
+    d: SubscriptionFeesSaveIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    est = db.query(Establishment).filter(Establishment.id == est_id).first()
+    if not est:
+        raise HTTPException(404, "Establishment not found")
+
+    fy = d.financial_year.strip()
+    newly_paid = []
+    for item in d.fees:
+        f_obj = db.query(SubscriptionFee).filter(
+            SubscriptionFee.establishment_id == est_id,
+            SubscriptionFee.financial_year == fy,
+            SubscriptionFee.month == item.month
+        ).first()
+
+        if f_obj:
+            if not f_obj.is_paid and item.is_paid:
+                newly_paid.append(item.month)
+            f_obj.is_paid = item.is_paid
+            f_obj.paid_date = item.paid_date or ""
+            f_obj.payment_reference = item.payment_reference or ""
+            f_obj.notes = item.notes or ""
+        else:
+            f_obj = SubscriptionFee(
+                establishment_id=est_id,
+                financial_year=fy,
+                month=item.month,
+                is_paid=item.is_paid,
+                paid_date=item.paid_date or "",
+                payment_reference=item.payment_reference or "",
+                notes=item.notes or ""
+            )
+            db.add(f_obj)
+            if item.is_paid:
+                newly_paid.append(item.month)
+
+    db.commit()
+
+    if newly_paid:
+        log_activity(
+            db, admin.id, est.id, "subscription_paid",
+            f"Marked software subscription fee PAID for {est.name} ({est.code}) — {', '.join(newly_paid)} (FY {fy})",
+            {"financial_year": fy, "months_paid": newly_paid, "code": est.code}
+        )
+
+    return {"ok": True}
+
+
+def _confirm_subscription_fee_paid(db: Session, fee_row: SubscriptionFee, payment_ref: str, source: str = "cashfree"):
+    """Shared confirmation logic used by both the webhook and the manual refresh button.
+    Idempotent -- a no-op if the row is already paid."""
+    if fee_row.is_paid:
+        return
+    fee_row.is_paid = True
+    fee_row.payment_reference = payment_ref
+    fee_row.paid_date = date.today().strftime("%d-%m-%Y")
+    db.commit()
+
+    log_activity(
+        db, None, fee_row.establishment_id, "subscription_paid",
+        f"Software subscription fee PAID via Cashfree for {fee_row.month} (FY {fee_row.financial_year}) — Ref: {payment_ref}",
+        {
+            "financial_year": fee_row.financial_year, "month": fee_row.month,
+            "amount": fee_row.amount_due, "cashfree_order_id": fee_row.cashfree_order_id,
+            "source": source
+        }
+    )
+
+
+def _app_base_url(request: Request) -> str:
+    """Public base URL the browser should be sent back to after a Cashfree payment.
+    Prefers APP_BASE_URL (set this on Render, where the proxy can obscure the real
+    public scheme/host) and falls back to the incoming request's own host -- which is
+    correct as-is for local dev (http://localhost:8000)."""
+    override = os.environ.get("APP_BASE_URL", "").strip()
+    if override:
+        return override.rstrip("/")
+    return str(request.base_url).rstrip("/")
+
+
+def _create_fee_payment_link(db: Session, est: Establishment, fee_row: SubscriptionFee, return_url: str = None) -> dict:
+    """Shared by both the superadmin and consultant-facing create-link endpoints."""
+    if fee_row.is_paid:
+        raise HTTPException(400, "This month is already marked paid.")
+    if fee_row.amount_due <= 0:
+        raise HTTPException(400, "No fee due for this month.")
+
+    consultant = db.query(User).filter(User.id == est.user_id).first()
+    phone = (consultant.mobile or "").strip() if consultant else ""
+    if not phone:
+        raise HTTPException(400, "Consultant has no mobile number on file — required by Cashfree to generate a payment link.")
+
+    order_id = cashfree_client.new_order_id("sub", fee_row.id)
+    try:
+        link_resp = cashfree_client.create_payment_link(
+            link_id=order_id,
+            amount=fee_row.amount_due,
+            purpose=f"Software subscription fee — {fee_row.month} {fee_row.financial_year} — {est.name} ({est.code})",
+            customer_phone=phone,
+            customer_name=consultant.name if consultant else "",
+            customer_email=consultant.email if consultant else "",
+            return_url=return_url,
+        )
+    except cashfree_client.CashfreeConfigError as e:
+        raise HTTPException(500, str(e))
+    except requests.HTTPError as e:
+        raise HTTPException(502, f"Cashfree link creation failed: {e.response.text if e.response is not None else str(e)}")
+
+    fee_row.cashfree_order_id = order_id
+    fee_row.cashfree_payment_link_url = link_resp.get("link_url")
+    db.commit()
+
+    return {"ok": True, "link_url": link_resp.get("link_url"), "order_id": order_id}
+
+
+@app.post("/api/admin/establishments/{est_id}/subscription-fees/create-link")
+async def admin_create_subscription_fee_link(
+    est_id: int,
+    d: CreateFeeLinkIn,
+    request: Request,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Generates a Cashfree Payment Link for one month's already-billed SubscriptionFee row."""
+    est = db.query(Establishment).filter(Establishment.id == est_id).first()
+    if not est:
+        raise HTTPException(404, "Establishment not found")
+
+    fee_row = db.query(SubscriptionFee).filter(
+        SubscriptionFee.establishment_id == est_id,
+        SubscriptionFee.financial_year == d.financial_year,
+        SubscriptionFee.month == d.month
+    ).first()
+    if not fee_row:
+        raise HTTPException(404, "Subscription fee row not found for this month — load the Subscription Fees grid first.")
+
+    return_url = f"{_app_base_url(request)}/?cf_payment_return=1&type=sub&year={fee_row.financial_year}&month={fee_row.month}&est_id={est.id}"
+    return _create_fee_payment_link(db, est, fee_row, return_url=return_url)
+
+
+@app.post("/api/admin/establishments/{est_id}/subscription-fees/refresh-status")
+async def admin_refresh_subscription_fee_status(
+    est_id: int,
+    d: CreateFeeLinkIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Manually polls Cashfree for a pending per-month link's status, in case the webhook
+    is delayed."""
+    fee_row = db.query(SubscriptionFee).filter(
+        SubscriptionFee.establishment_id == est_id,
+        SubscriptionFee.financial_year == d.financial_year,
+        SubscriptionFee.month == d.month
+    ).first()
+    if not fee_row:
+        raise HTTPException(404, "Subscription fee row not found")
+    if fee_row.is_paid or not fee_row.cashfree_order_id:
+        return {"ok": True, "is_paid": fee_row.is_paid}
+
+    try:
+        status_resp = cashfree_client.get_payment_link_status(fee_row.cashfree_order_id)
+    except requests.HTTPError as e:
+        raise HTTPException(502, f"Cashfree status check failed: {e.response.text if e.response is not None else str(e)}")
+
+    if status_resp.get("link_status") == "PAID":
+        _confirm_subscription_fee_paid(db, fee_row, payment_ref=str(status_resp.get("cf_link_id") or fee_row.cashfree_order_id))
+
+    return {"ok": True, "is_paid": fee_row.is_paid}
+
+
+# ── Advance Subscription Credit Endpoints ──────────────────────────────────
+def _ledger_history_for_establishment(db: Session, est_id: int):
+    rows = db.query(AdvanceCreditLedger).filter(
+        AdvanceCreditLedger.establishment_id == est_id
+    ).order_by(AdvanceCreditLedger.created_at.desc(), AdvanceCreditLedger.id.desc()).all()
+
+    fee_ids = list({r.applied_to_fee_id for r in rows if r.applied_to_fee_id})
+    fees_map = {f.id: f for f in db.query(SubscriptionFee).filter(SubscriptionFee.id.in_(fee_ids)).all()} if fee_ids else {}
+
+    history = []
+    for r in rows:
+        fee = fees_map.get(r.applied_to_fee_id) if r.applied_to_fee_id else None
+        history.append({
+            "id": r.id,
+            "entry_type": r.entry_type,
+            "amount": r.amount,
+            "status": r.status,
+            "cashfree_order_id": r.cashfree_order_id,
+            "cashfree_payment_link_url": r.cashfree_payment_link_url,
+            "payment_reference": r.payment_reference,
+            "notes": r.notes,
+            "applied_month": f"{fee.month} {fee.financial_year}" if fee else None,
+            "time_formatted": r.created_at.strftime("%d-%m-%Y %I:%M %p") if r.created_at else "—"
+        })
+    return history
+
+
+@app.post("/api/admin/establishments/{est_id}/advance-payment")
+async def admin_add_advance_payment(
+    est_id: int,
+    d: AdvancePaymentIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Manual advance top-up (superadmin recorded it by hand -- UPI/cash/etc, no Cashfree)."""
+    est = db.query(Establishment).filter(Establishment.id == est_id).first()
+    if not est:
+        raise HTTPException(404, "Establishment not found")
+    if d.amount <= 0:
+        raise HTTPException(400, "Amount must be positive")
+
+    old_balance = est.advance_credit_balance or 0.0
+    est.advance_credit_balance = round(old_balance + d.amount, 2)
+
+    db.add(AdvanceCreditLedger(
+        establishment_id=est.id, entry_type="topup", amount=d.amount,
+        payment_reference=d.payment_reference or None, notes=d.notes or None,
+        status="manual"
+    ))
+    db.commit()
+
+    log_activity(
+        db, admin.id, est.id, "advance_payment_received",
+        f"Advance subscription payment of ₹{d.amount} received for {est.name} ({est.code})"
+        f"{' — Ref: ' + d.payment_reference if d.payment_reference else ''}. New balance: ₹{est.advance_credit_balance}",
+        {
+            "amount": d.amount, "payment_reference": d.payment_reference, "notes": d.notes,
+            "old_balance": old_balance, "new_balance": est.advance_credit_balance, "code": est.code, "source": "manual"
+        }
+    )
+    return {"ok": True, "advance_credit_balance": est.advance_credit_balance}
+
+
+@app.post("/api/admin/establishments/{est_id}/advance-payment/create-link")
+async def admin_create_advance_payment_link(
+    est_id: int,
+    d: AdvancePaymentIn,
+    request: Request,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Generates a Cashfree Payment Link for an advance top-up. The balance is NOT touched
+    here -- only the webhook (or a manual refresh) confirming actual payment updates it."""
+    est = db.query(Establishment).filter(Establishment.id == est_id).first()
+    if not est:
+        raise HTTPException(404, "Establishment not found")
+    if d.amount <= 0:
+        raise HTTPException(400, "Amount must be positive")
+
+    consultant = db.query(User).filter(User.id == est.user_id).first()
+    phone = (consultant.mobile or "").strip() if consultant else ""
+    if not phone:
+        raise HTTPException(400, "Consultant has no mobile number on file — required by Cashfree to generate a payment link.")
+
+    order_id = cashfree_client.new_order_id("adv", est.id)
+    return_url = f"{_app_base_url(request)}/?cf_payment_return=1&type=adv&est_id={est.id}&order_id={order_id}"
+    try:
+        link_resp = cashfree_client.create_payment_link(
+            link_id=order_id,
+            amount=d.amount,
+            purpose=f"Advance subscription credit — {est.name} ({est.code})",
+            customer_phone=phone,
+            customer_name=consultant.name if consultant else "",
+            customer_email=consultant.email if consultant else "",
+            return_url=return_url,
+        )
+    except cashfree_client.CashfreeConfigError as e:
+        raise HTTPException(500, str(e))
+    except requests.HTTPError as e:
+        raise HTTPException(502, f"Cashfree link creation failed: {e.response.text if e.response is not None else str(e)}")
+
+    ledger_row = AdvanceCreditLedger(
+        establishment_id=est.id, entry_type="topup", amount=d.amount,
+        cashfree_order_id=order_id, cashfree_payment_link_url=link_resp.get("link_url"),
+        notes=d.notes or None, status="pending"
+    )
+    db.add(ledger_row)
+    db.commit()
+
+    return {"ok": True, "link_url": link_resp.get("link_url"), "order_id": order_id}
+
+
+@app.post("/api/admin/establishments/{est_id}/advance-credit/{ledger_id}/refresh-status")
+async def admin_refresh_advance_credit_status(
+    est_id: int,
+    ledger_id: int,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Manually polls Cashfree for a pending advance-credit link's status, in case the
+    webhook is delayed. Applies the exact same confirmation logic as the webhook."""
+    ledger_row = db.query(AdvanceCreditLedger).filter(
+        AdvanceCreditLedger.id == ledger_id, AdvanceCreditLedger.establishment_id == est_id
+    ).first()
+    if not ledger_row:
+        raise HTTPException(404, "Ledger entry not found")
+    if ledger_row.status != "pending" or not ledger_row.cashfree_order_id:
+        return {"ok": True, "status": ledger_row.status, "advance_credit_balance": None}
+
+    try:
+        status_resp = cashfree_client.get_payment_link_status(ledger_row.cashfree_order_id)
+    except requests.HTTPError as e:
+        raise HTTPException(502, f"Cashfree status check failed: {e.response.text if e.response is not None else str(e)}")
+
+    if status_resp.get("link_status") == "PAID":
+        _confirm_advance_credit_ledger_row(db, ledger_row, payment_ref=str(status_resp.get("cf_link_id") or ledger_row.cashfree_order_id))
+
+    est = db.query(Establishment).filter(Establishment.id == est_id).first()
+    return {"ok": True, "status": ledger_row.status, "advance_credit_balance": est.advance_credit_balance if est else None}
+
+
+def _confirm_advance_credit_ledger_row(db: Session, ledger_row: AdvanceCreditLedger, payment_ref: str):
+    """Shared confirmation logic used by both the webhook and the manual refresh button.
+    Idempotent -- a no-op if the row is already confirmed."""
+    if ledger_row.status == "confirmed":
+        return
+    est = db.query(Establishment).filter(Establishment.id == ledger_row.establishment_id).first()
+    if not est:
+        return
+
+    ledger_row.status = "confirmed"
+    ledger_row.payment_reference = payment_ref
+    old_balance = est.advance_credit_balance or 0.0
+    est.advance_credit_balance = round(old_balance + ledger_row.amount, 2)
+    db.commit()
+
+    log_activity(
+        db, None, est.id, "advance_payment_received",
+        f"Advance subscription payment of ₹{ledger_row.amount} received via Cashfree for {est.name} ({est.code}) "
+        f"— Ref: {payment_ref}. New balance: ₹{est.advance_credit_balance}",
+        {
+            "amount": ledger_row.amount, "payment_reference": payment_ref,
+            "old_balance": old_balance, "new_balance": est.advance_credit_balance,
+            "code": est.code, "source": "cashfree", "cashfree_order_id": ledger_row.cashfree_order_id
+        }
+    )
+
+
+@app.get("/api/admin/establishments/{est_id}/advance-credit")
+async def admin_get_advance_credit(
+    est_id: int,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    est = db.query(Establishment).filter(Establishment.id == est_id).first()
+    if not est:
+        raise HTTPException(404, "Establishment not found")
+
+    return {
+        "establishment": {"id": est.id, "code": est.code, "name": est.name},
+        "advance_credit_balance": est.advance_credit_balance or 0.0,
+        "history": _ledger_history_for_establishment(db, est_id)
+    }
+
+
+# ── Cashfree Webhook ────────────────────────────────────────────────────────
+# Unauthenticated by design (Cashfree calls this directly) -- trust is established
+# purely via HMAC signature verification below, never via JWT/session.
+@app.post("/api/webhooks/cashfree")
+async def cashfree_webhook(request: Request, db: Session = Depends(get_db)):
+    raw_body = await request.body()
+    timestamp = request.headers.get("x-webhook-timestamp", "")
+    signature = request.headers.get("x-webhook-signature", "")
+
+    if not cashfree_client.verify_webhook_signature(timestamp, raw_body, signature):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    try:
+        payload = json.loads(raw_body)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    data = payload.get("data") or {}
+    link_id = data.get("link_id") or ""
+    link_status = data.get("link_status") or ""
+
+    if not link_id:
+        print("[CashfreeWebhook] Payload missing data.link_id -- ignoring.")
+        return {"ok": True}
+
+    if link_status != "PAID":
+        # Ignore ACTIVE/EXPIRED/PARTIALLY_PAID/etc -- we only act on a fully-paid link.
+        return {"ok": True}
+
+    order_info = data.get("order") or {}
+    payment_ref = str(order_info.get("transaction_id") or order_info.get("order_id") or data.get("cf_link_id") or link_id)
+
+    if link_id.startswith("sub_"):
+        fee_row = db.query(SubscriptionFee).filter(SubscriptionFee.cashfree_order_id == link_id).first()
+        if not fee_row:
+            print(f"[CashfreeWebhook] No SubscriptionFee found for order_id={link_id}")
+            return {"ok": True}
+        _confirm_subscription_fee_paid(db, fee_row, payment_ref=payment_ref, source="cashfree")
+
+    elif link_id.startswith("adv_"):
+        ledger_row = db.query(AdvanceCreditLedger).filter(AdvanceCreditLedger.cashfree_order_id == link_id).first()
+        if not ledger_row:
+            print(f"[CashfreeWebhook] No AdvanceCreditLedger row found for order_id={link_id}")
+            return {"ok": True}
+        _confirm_advance_credit_ledger_row(db, ledger_row, payment_ref=payment_ref)
+
+    else:
+        print(f"[CashfreeWebhook] Unrecognized order_id prefix, ignoring: {link_id}")
+
+    return {"ok": True}
+
+
+# ── EPF Monthly Payments (TRRN Remittance) Endpoints ──────────────────────
 @app.get("/api/admin/establishments/{est_id}/payments")
 async def admin_get_establishment_payments(
     est_id: int,
@@ -649,10 +1455,67 @@ async def admin_save_establishment_payments(
     paid_count = sum(1 for item in d.payments if item.is_paid)
     log_activity(
         db, admin.id, est.id, "payment_marked",
-        f"Marked payment compliance for {est.name} ({est.code}) — FY {fy} ({paid_count} months paid)",
+        f"Marked EPF payment compliance for {est.name} ({est.code}) — FY {fy} ({paid_count} months paid)",
         {"financial_year": fy, "paid_count": paid_count, "code": est.code}
     )
     return {"ok": True}
+
+
+@app.get("/api/admin/subscription-payments")
+async def admin_get_subscription_payments(
+    page: int = Query(1, ge=1),
+    limit: int = Query(25, ge=1, le=200),
+    consultant_id: Optional[int] = Query(None),
+    establishment_id: Optional[int] = Query(None),
+    financial_year: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Cross-establishment, cross-consultant paid-subscription ledger -- lets the
+    superadmin see, in one place, which consultant paid for which establishment, for
+    which month, for how many employees, without opening each establishment individually."""
+    query = db.query(SubscriptionFee).filter(SubscriptionFee.is_paid == True)
+
+    if establishment_id:
+        query = query.filter(SubscriptionFee.establishment_id == establishment_id)
+    if financial_year:
+        query = query.filter(SubscriptionFee.financial_year == financial_year)
+    if consultant_id:
+        est_ids = [e.id for e in db.query(Establishment.id).filter(Establishment.user_id == consultant_id).all()]
+        query = query.filter(SubscriptionFee.establishment_id.in_(est_ids or [-1]))
+    if search:
+        s = f"%{search.strip().lower()}%"
+        est_ids = [e.id for e in db.query(Establishment.id).filter(
+            func.lower(Establishment.name).like(s) | func.lower(Establishment.code).like(s)
+        ).all()]
+        query = query.filter(SubscriptionFee.establishment_id.in_(est_ids or [-1]))
+
+    total = query.count()
+    total_amount = query.with_entities(func.sum(SubscriptionFee.amount_due)).scalar() or 0.0
+
+    offset = (page - 1) * limit
+    rows = query.order_by(SubscriptionFee.financial_year.desc(), SubscriptionFee.id.desc()).offset(offset).limit(limit).all()
+
+    est_ids_needed = list({r.establishment_id for r in rows})
+    ests_map = {e.id: e for e in db.query(Establishment).filter(Establishment.id.in_(est_ids_needed)).all()} if est_ids_needed else {}
+    consultant_ids_needed = list({e.user_id for e in ests_map.values()})
+    consultants_map = {u.id: u for u in db.query(User).filter(User.id.in_(consultant_ids_needed)).all()} if consultant_ids_needed else {}
+
+    payments = []
+    for r in rows:
+        est = ests_map.get(r.establishment_id)
+        if not est:
+            continue
+        payments.append(_subscription_payment_dict(r, est, consultants_map.get(est.user_id)))
+
+    return {
+        "payments": payments,
+        "total": total,
+        "total_amount": round(total_amount, 2),
+        "page": page,
+        "limit": limit
+    }
 
 
 @app.get("/api/admin/activity-log")
@@ -792,6 +1655,7 @@ async def create_establishment(
         name=name,
         address=d.address.strip(),
         coverage_date=d.coverage_date.strip(),
+        custom_rate_per_employee=d.custom_rate_per_employee,
         data=json.dumps(p.to_dict(), ensure_ascii=False)
     )
     db.add(new_est)
@@ -801,7 +1665,7 @@ async def create_establishment(
     log_activity(
         db, current_user.id, new_est.id, "establishment_created",
         f"Added establishment {new_est.code} — {new_est.name}",
-        {"code": new_est.code, "name": new_est.name, "coverage_date": new_est.coverage_date}
+        {"code": new_est.code, "name": new_est.name, "coverage_date": new_est.coverage_date, "custom_rate": new_est.custom_rate_per_employee}
     )
 
     return {
@@ -811,7 +1675,8 @@ async def create_establishment(
             "code": new_est.code,
             "name": new_est.name,
             "address": new_est.address,
-            "coverage_date": new_est.coverage_date
+            "coverage_date": new_est.coverage_date,
+            "custom_rate_per_employee": new_est.custom_rate_per_employee
         }
     }
 
@@ -871,7 +1736,8 @@ def compute_remittance_row(yr, est, month_idx, wages_total, ee_total, er_total, 
     acc_01 = ee_total + (er_total - a10_total)
     a2_amt = round(wages_total * a2_rate / 100) if wages_total > 0 else 0
     a21_amt = round(wages_total * ACCOUNT_21_RATE / 100) if wages_total > 0 else 0
-    a22_amt = max(round(wages_total * a22_rate / 100), ACCOUNT_22_MIN) if wages_total > 0 else 0
+    a22_amt = (max(round(wages_total * a22_rate / 100), ACCOUNT_22_MIN)
+               if (a22_rate > 0 and wages_total > 0) else 0)
     
     return {
         "month_label": MONTHS[month_idx],
@@ -1094,7 +1960,8 @@ async def get_est(active: Tuple[Establishment, Project] = Depends(get_active_est
         "code": project.code,
         "name": project.name,
         "address": project.address,
-        "coverage_date": project.coverage_date
+        "coverage_date": project.coverage_date,
+        "custom_rate_per_employee": est_obj.custom_rate_per_employee
     }
 
 
@@ -1102,12 +1969,294 @@ async def get_est(active: Tuple[Establishment, Project] = Depends(get_active_est
 async def put_est(
     d: EstablishmentIn,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     est_obj, project = active
     project.set_establishment(d.code, d.name, d.address, d.coverage_date)
+    
+    old_rate = est_obj.custom_rate_per_employee
+    if d.custom_rate_per_employee is not None:
+        est_obj.custom_rate_per_employee = d.custom_rate_per_employee if d.custom_rate_per_employee > 0 else None
+        if old_rate != est_obj.custom_rate_per_employee:
+            log_activity(
+                db, current_user.id, est_obj.id, "rate_changed",
+                f"Updated establishment {project.name} rate override to ₹{est_obj.custom_rate_per_employee if est_obj.custom_rate_per_employee else 'Default'}/emp",
+                {"establishment_id": est_obj.id, "old_rate": old_rate, "new_rate": est_obj.custom_rate_per_employee, "scope": "establishment"}
+            )
+
     save_establishment_project(db, est_obj, project)
     return {"ok": True}
+
+
+@app.get("/api/establishment/subscription-status")
+async def get_establishment_subscription_status(
+    year: str = Query("2026-27"),
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
+    unpaid = get_unpaid_months_for_year(db, est_obj, project, year)
+    return {
+        "financial_year": year,
+        "has_overdue": len(unpaid) > 0,
+        "unpaid_months": unpaid,
+        "total_overdue": len(unpaid)
+    }
+
+
+def _subscription_payment_dict(f: SubscriptionFee, est: Establishment, consultant: Optional[User] = None) -> dict:
+    """Shared row shape for both the consultant's own Subscription History page and the
+    superadmin's cross-establishment Subscription Payments tab."""
+    if f.payment_reference == "Applied from advance credit":
+        source = "advance_credit"
+    elif f.cashfree_order_id:
+        source = "cashfree"
+    else:
+        source = "manual"
+
+    yf = f.financial_year.split("-")[0]
+    yt = str(int(yf) + 1)
+    cal_yr = calendar_year_for_month(f.month, yf, yt)
+    display_name = f"{MONTH_FULL.get(f.month.upper(), f.month)} {cal_yr}"
+
+    return {
+        "id": f.id,
+        "establishment_id": est.id,
+        "establishment_code": est.code,
+        "establishment_name": est.name,
+        "consultant_name": consultant.name if consultant else "",
+        "consultant_email": consultant.email if consultant else "",
+        "financial_year": f.financial_year,
+        "month": f.month,
+        "display_name": display_name,
+        "employee_count": f.employee_count,
+        "rate_applied": f.rate_applied,
+        "amount_due": f.amount_due,
+        "paid_date": f.paid_date or "",
+        "payment_reference": f.payment_reference or "",
+        "cashfree_order_id": f.cashfree_order_id or "",
+        "notes": f.notes or "",
+        "source": source,
+    }
+
+
+@app.get("/api/establishment/subscription-payments")
+async def get_establishment_subscription_payments(
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    """Paid subscription-fee history for the caller's own active establishment, across
+    every financial year -- powers the consultant-facing Subscription History page."""
+    est_obj, project = active
+    consultant = db.query(User).filter(User.id == est_obj.user_id).first()
+
+    rows = db.query(SubscriptionFee).filter(
+        SubscriptionFee.establishment_id == est_obj.id,
+        SubscriptionFee.is_paid == True
+    ).order_by(SubscriptionFee.financial_year.desc(), SubscriptionFee.id.desc()).all()
+
+    payments = [_subscription_payment_dict(f, est_obj, consultant) for f in rows]
+    total_paid = round(sum(p["amount_due"] for p in payments), 2)
+
+    # Advance-credit top-ups are a distinct kind of "payment towards subscription" --
+    # money paid in before any month existed to bill against -- shown as their own
+    # section so it's clear which rupees came in as a lump sum vs. a specific month's fee.
+    topup_rows = db.query(AdvanceCreditLedger).filter(
+        AdvanceCreditLedger.establishment_id == est_obj.id,
+        AdvanceCreditLedger.entry_type == "topup",
+        AdvanceCreditLedger.status.in_(["confirmed", "manual"])
+    ).order_by(AdvanceCreditLedger.created_at.desc(), AdvanceCreditLedger.id.desc()).all()
+
+    advance_topups = [{
+        "id": t.id,
+        "amount": t.amount,
+        "date": t.created_at.strftime("%d-%m-%Y") if t.created_at else "",
+        "time_formatted": t.created_at.strftime("%d-%m-%Y %I:%M %p") if t.created_at else "",
+        "payment_reference": t.payment_reference or "",
+        "cashfree_order_id": t.cashfree_order_id or "",
+        "notes": t.notes or "",
+        "source": "cashfree" if t.status == "confirmed" else "manual",
+    } for t in topup_rows]
+    total_topped_up = round(sum(t["amount"] for t in advance_topups), 2)
+
+    return {
+        "establishment": {"id": est_obj.id, "code": est_obj.code, "name": est_obj.name},
+        "payments": payments,
+        "total_paid": total_paid,
+        "count": len(payments),
+        "advance_topups": advance_topups,
+        "total_topped_up": total_topped_up,
+        "advance_credit_balance": est_obj.advance_credit_balance or 0.0
+    }
+
+
+@app.get("/api/establishment/subscription-fees/month-detail")
+async def get_establishment_fee_month_detail(
+    year: str = Query(...),
+    month: str = Query(...),
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    """Per-month fee detail (members, rate, amount due) for the caller's own active
+    establishment -- powers the download-blocked screen's 'here's what's owed' view."""
+    est_obj, project = active
+    sync_subscription_fees_for_year(db, est_obj, project, year)
+
+    fee_row = db.query(SubscriptionFee).filter(
+        SubscriptionFee.establishment_id == est_obj.id,
+        SubscriptionFee.financial_year == year,
+        SubscriptionFee.month == month
+    ).first()
+    if not fee_row:
+        raise HTTPException(404, "No fee record for this month")
+
+    month_idx = MONTH_SHORT_NAMES.index(month) if month in MONTH_SHORT_NAMES else -1
+    overdue = is_month_overdue(year, month_idx) if month_idx >= 0 else False
+    year_record = project.years.get(year)
+    cal_yr = calendar_year_for_month(month, year_record.year_from, year_record.year_to) if year_record else ""
+    display_name = f"{MONTH_FULL.get(month.upper(), month)} {cal_yr}".strip()
+
+    return {
+        "month": fee_row.month,
+        "financial_year": fee_row.financial_year,
+        "display_name": display_name,
+        "employee_count": fee_row.employee_count,
+        "rate_applied": fee_row.rate_applied,
+        "amount_due": fee_row.amount_due,
+        "is_paid": fee_row.is_paid,
+        "is_overdue": overdue and not fee_row.is_paid,
+    }
+
+
+@app.post("/api/establishment/subscription-fees/create-link")
+async def establishment_create_fee_link(
+    d: CreateFeeLinkIn,
+    request: Request,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    """Consultant self-serve version of the superadmin per-month payment-link endpoint,
+    scoped to the caller's own active establishment."""
+    est_obj, project = active
+    fee_row = db.query(SubscriptionFee).filter(
+        SubscriptionFee.establishment_id == est_obj.id,
+        SubscriptionFee.financial_year == d.financial_year,
+        SubscriptionFee.month == d.month
+    ).first()
+    if not fee_row:
+        raise HTTPException(404, "Subscription fee row not found for this month.")
+
+    return_url = f"{_app_base_url(request)}/?cf_payment_return=1&type=sub&year={fee_row.financial_year}&month={fee_row.month}&est_id={est_obj.id}"
+    return _create_fee_payment_link(db, est_obj, fee_row, return_url=return_url)
+
+
+@app.post("/api/establishment/subscription-fees/refresh-status")
+async def establishment_refresh_fee_status(
+    d: CreateFeeLinkIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    """Consultant self-serve version of the superadmin per-month status-refresh endpoint."""
+    est_obj, project = active
+    fee_row = db.query(SubscriptionFee).filter(
+        SubscriptionFee.establishment_id == est_obj.id,
+        SubscriptionFee.financial_year == d.financial_year,
+        SubscriptionFee.month == d.month
+    ).first()
+    if not fee_row:
+        raise HTTPException(404, "Subscription fee row not found")
+    if fee_row.is_paid or not fee_row.cashfree_order_id:
+        return {"ok": True, "is_paid": fee_row.is_paid}
+
+    try:
+        status_resp = cashfree_client.get_payment_link_status(fee_row.cashfree_order_id)
+    except requests.HTTPError as e:
+        raise HTTPException(502, f"Cashfree status check failed: {e.response.text if e.response is not None else str(e)}")
+
+    if status_resp.get("link_status") == "PAID":
+        _confirm_subscription_fee_paid(db, fee_row, payment_ref=str(status_resp.get("cf_link_id") or fee_row.cashfree_order_id))
+
+    return {"ok": True, "is_paid": fee_row.is_paid}
+
+
+@app.post("/api/establishment/advance-payment/create-link")
+async def consultant_create_advance_payment_link(
+    d: AdvancePaymentIn,
+    request: Request,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Self-serve advance-credit top-up -- lets a consultant generate their own Cashfree
+    link for their active establishment, without waiting on the superadmin."""
+    est_obj, project = active
+    if d.amount <= 0:
+        raise HTTPException(400, "Amount must be positive")
+
+    phone = (current_user.mobile or "").strip()
+    if not phone:
+        raise HTTPException(400, "Add a mobile number to your account to generate a Cashfree payment link.")
+
+    order_id = cashfree_client.new_order_id("adv", est_obj.id)
+    return_url = f"{_app_base_url(request)}/?cf_payment_return=1&type=adv&est_id={est_obj.id}&order_id={order_id}"
+    try:
+        link_resp = cashfree_client.create_payment_link(
+            link_id=order_id,
+            amount=d.amount,
+            purpose=f"Advance subscription credit — {est_obj.name} ({est_obj.code})",
+            customer_phone=phone,
+            customer_name=current_user.name,
+            customer_email=current_user.email,
+            return_url=return_url,
+        )
+    except cashfree_client.CashfreeConfigError as e:
+        raise HTTPException(500, str(e))
+    except requests.HTTPError as e:
+        raise HTTPException(502, f"Cashfree link creation failed: {e.response.text if e.response is not None else str(e)}")
+
+    db.add(AdvanceCreditLedger(
+        establishment_id=est_obj.id, entry_type="topup", amount=d.amount,
+        cashfree_order_id=order_id, cashfree_payment_link_url=link_resp.get("link_url"),
+        notes=d.notes or None, status="pending"
+    ))
+    db.commit()
+
+    return {"ok": True, "link_url": link_resp.get("link_url"), "order_id": order_id}
+
+
+class AdvanceCreditRefreshIn(BaseModel):
+    order_id: str
+
+
+@app.post("/api/establishment/advance-credit/refresh-status")
+async def establishment_refresh_advance_credit_status(
+    d: AdvanceCreditRefreshIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    """Consultant self-serve version of the superadmin advance-credit status-refresh
+    endpoint -- looked up by order_id (known from the Cashfree return_url) rather than
+    ledger_id, since the browser has no in-memory state after the redirect back."""
+    est_obj, project = active
+    ledger_row = db.query(AdvanceCreditLedger).filter(
+        AdvanceCreditLedger.cashfree_order_id == d.order_id,
+        AdvanceCreditLedger.establishment_id == est_obj.id
+    ).first()
+    if not ledger_row:
+        raise HTTPException(404, "Advance credit payment not found")
+    if ledger_row.status != "pending":
+        return {"ok": True, "status": ledger_row.status, "amount": ledger_row.amount, "advance_credit_balance": est_obj.advance_credit_balance}
+
+    try:
+        status_resp = cashfree_client.get_payment_link_status(ledger_row.cashfree_order_id)
+    except requests.HTTPError as e:
+        raise HTTPException(502, f"Cashfree status check failed: {e.response.text if e.response is not None else str(e)}")
+
+    if status_resp.get("link_status") == "PAID":
+        _confirm_advance_credit_ledger_row(db, ledger_row, payment_ref=str(status_resp.get("cf_link_id") or ledger_row.cashfree_order_id))
+
+    return {"ok": True, "status": ledger_row.status, "amount": ledger_row.amount, "advance_credit_balance": est_obj.advance_credit_balance}
 
 
 # ── Org Structure Endpoints ───────────────────────────────────────────────
@@ -1404,16 +2553,40 @@ async def get_remittances(
     employees = [emp for emp in employees if sum(emp.wages) > 0]
     
     all_month_rows = [emp.month_rows(est.worker_epf_rate, est.worker_eps_rate, est.employer_epf_rate, est.employer_eps_rate) for emp in employees]
+    wage_ceilings = get_wage_ceilings_for_year(yr.year_from)
     results = []
-    
+
     for i, month_label in enumerate(MONTHS):
         wages_total = sum(rows[i][0] for rows in all_month_rows)
         ee_total = sum(rows[i][1] for rows in all_month_rows)
-        er_total = sum(rows[i][4] for rows in all_month_rows)
+        er_total = sum(rows[i][6] for rows in all_month_rows)
         a10_total = sum(rows[i][5] for rows in all_month_rows)
         members = sum(1 for rows in all_month_rows if rows[i][0] > 0)
-        
+
+        # Gross/EPF/EPS wages -- mirrors dashboard()'s per-employee aggregation
+        # exactly so the two pages can never drift apart on these figures.
+        ceiling = wage_ceilings[i]
+        gross_wages_total = 0
+        eps_wages_total = 0
+        edli_wages_total = 0
+        for emp in employees:
+            wages = emp.wages[i] if emp.wages and len(emp.wages) > i else 0
+            gross = emp.gross_wages[i] if emp.gross_wages and len(emp.gross_wages) > i else 0
+            gross_wages_total += gross
+            if est.worker_eps_rate == 0:
+                eps_wages_total += 0 if emp.age_crosses_58 else min(wages, ceiling)
+            else:
+                eps_wages_total += wages
+            # EDLI wages: same ceiling-capped basis as generate_ecr_month() --
+            # capped even when Higher EPF lets EPF wages exceed the ceiling,
+            # and (unlike EPS) not zeroed out past age 58.
+            edli_wages_total += min(wages, ceiling)
+
         row_data = compute_remittance_row(yr, est, i, wages_total, ee_total, er_total, a10_total, members)
+        row_data["gross_wages"] = gross_wages_total
+        row_data["epf_wages"] = wages_total
+        row_data["eps_wages"] = eps_wages_total
+        row_data["edli_wages"] = edli_wages_total
         results.append(row_data)
         
     return {"remittances": results}
@@ -1522,6 +2695,7 @@ async def put_wages(
     ncp_days = d.ncp_days if d.ncp_days and len(d.ncp_days) == 12 else [0] * 12
     project.upsert_entry(key, d.member_id, capped_wages, gross_wages=gross_wages, ncp_days=ncp_days, age_crosses_58=d.age_crosses_58, higher_epf_ee=d.higher_epf_ee, higher_epf_er=d.higher_epf_er)
     save_establishment_project(db, est_obj, project)
+    sync_subscription_fees_for_year(db, est_obj, project, key)
     
     emp_name = project.get_master(d.member_id).name if project.get_master(d.member_id) else d.member_id
     log_activity(
@@ -1580,6 +2754,7 @@ async def bulk_month_wages(
         )
         
     save_establishment_project(db, est_obj, project)
+    sync_subscription_fees_for_year(db, est_obj, project, key)
     month_name = MONTHS[d.month_idx] if 0 <= d.month_idx < len(MONTHS) else f"Month {d.month_idx}"
     log_activity(
         db, est_obj.user_id, est_obj.id, "wages_saved",
@@ -1623,29 +2798,59 @@ async def del_all_wages(
 
 
 # ── Reports & Form Exports ─────────────────────────────────────────────────
-@app.get("/api/reports/employee_wage_history/{member_id:path}")
-async def report_employee_wage_history(
-    member_id: str,
-    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
-):
-    est_obj, project = active
+def _build_employee_wage_history_data(project: Project, member_id: str) -> Optional[dict]:
+    """Shared data-builder for the Employee Wage History report -- used by both the JSON
+    endpoint (on-screen HTML) and the PDF endpoint, so the two can never compute this
+    a second, possibly-inconsistent way. Returns None if the employee isn't found."""
     master = project.get_master(member_id)
     if not master:
-        raise HTTPException(404, "Employee not found")
+        return None
 
     years_data = []
     for yk in project.year_keys_sorted():
         yr = project.years[yk]
         emps = project.build_employees_for_year(yk)
         emp = next((e for e in emps if e.member_id == member_id), None)
-        
+
         wages = emp.wages if (emp and emp.wages) else [0] * 12
         total_wages = sum((int(w) if w else 0) for w in wages)
-        
+
+        if emp:
+            # Reuse the exact same per-month contribution calc used by the Dashboard and
+            # Challans pages (Employee.month_rows), so these figures can never drift from
+            # what those pages show for the same employee/month.
+            est = project.build_establishment_for_year(yk)
+            wage_ceilings = get_wage_ceilings_for_year(yr.year_from)
+            mrows = emp.month_rows(est.worker_epf_rate, est.worker_eps_rate,
+                                    est.employer_epf_rate, est.employer_eps_rate,
+                                    wage_ceilings=wage_ceilings)
+            ee_epf = [int(round(r[1])) for r in mrows]   # w_epf -- employee's own EPF deduction
+            er_epf = [int(round(r[4])) for r in mrows]   # e_epf -- employer's EPF-only share
+            er_eps = [int(round(r[5])) for r in mrows]   # e_eps -- employer's EPS/pension share
+            higher_epf_ee = bool(emp.higher_epf_ee)
+            higher_epf_er = bool(emp.higher_epf_er)
+            age_crosses_58 = bool(emp.age_crosses_58)
+        else:
+            ee_epf = er_epf = er_eps = [0] * 12
+            higher_epf_ee = higher_epf_er = age_crosses_58 = False
+
+        month_total = [ee_epf[i] + er_epf[i] + er_eps[i] for i in range(12)]
+
         years_data.append({
             "year": f"{yr.year_from}-{yr.year_to}",
             "wages": wages,
-            "total": total_wages
+            "total": total_wages,
+            "ee_epf": ee_epf,
+            "ee_epf_total": sum(ee_epf),
+            "er_epf": er_epf,
+            "er_epf_total": sum(er_epf),
+            "er_eps": er_eps,
+            "er_eps_total": sum(er_eps),
+            "month_total": month_total,
+            "month_total_total": sum(month_total),
+            "higher_epf_ee": higher_epf_ee,
+            "higher_epf_er": higher_epf_er,
+            "age_crosses_58": age_crosses_58
         })
 
     return {
@@ -1667,14 +2872,61 @@ async def report_employee_wage_history(
     }
 
 
+@app.get("/api/reports/employee_wage_history/{member_id:path}/pdf")
+async def report_employee_wage_history_pdf(
+    member_id: str,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+):
+    est_obj, project = active
+    data = _build_employee_wage_history_data(project, member_id)
+    if data is None:
+        raise HTTPException(404, "Employee not found")
+
+    from pdf_engine import generate_employee_wage_history_pdf
+    tmp = tempfile.mkdtemp()
+    safe_name = (data["profile"]["name"] or "Employee").replace("/", "-").replace("\\", "-").strip() or "Employee"
+    safe_uan = (data["profile"]["uan"] or "NO_UAN").strip() or "NO_UAN"
+    fname = f"{safe_name}_{safe_uan}_WageHistory.pdf"
+    path = os.path.join(tmp, fname)
+    try:
+        generate_employee_wage_history_pdf(data, path)
+    except Exception as e:
+        raise HTTPException(500, f"PDF generation failed: {str(e)}")
+
+    return FileResponse(path, filename=fname, media_type="application/pdf")
+
+
+@app.get("/api/reports/employee_wage_history/{member_id:path}")
+async def report_employee_wage_history(
+    member_id: str,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+):
+    est_obj, project = active
+    data = _build_employee_wage_history_data(project, member_id)
+    if data is None:
+        raise HTTPException(404, "Employee not found")
+    return data
+
+
 @app.get("/api/reports/{key}")
 def generate_report(
     key: str,
     format: str = 'excel',
     forms: str = '',
-    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
     est_obj, project = active
+    if current_user.role != "superadmin":
+        unpaid = get_unpaid_months_for_year(db, est_obj, project, key)
+        if unpaid:
+            months_str = ", ".join(unpaid)
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"Download blocked — software subscription fee for {months_str} is unpaid. Contact your administrator to settle platform fees."
+            )
+
     if key not in project.years:
         raise HTTPException(404, "Year not found")
     yr = project.years[key]
@@ -1719,9 +2971,20 @@ def generate_employee_report(
     member_id: str,
     format: str = 'pdf',
     forms: str = '3A',
-    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
     est_obj, project = active
+    if current_user.role != "superadmin":
+        unpaid = get_unpaid_months_for_year(db, est_obj, project, key)
+        if unpaid:
+            months_str = ", ".join(unpaid)
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"Download blocked — software subscription fee for {months_str} is unpaid. Contact your administrator to settle platform fees."
+            )
+
     if key not in project.years:
         raise HTTPException(404, "Year not found")
     est = project.build_establishment_for_year(key)
@@ -1766,9 +3029,22 @@ def generate_employee_report(
 @app.get("/api/reports/form9/download")
 def report_form9(
     format: str = 'excel',
-    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
     est_obj, project = active
+    if current_user.role != "superadmin":
+        all_unpaid = []
+        for yk in project.years.keys():
+            all_unpaid.extend(get_unpaid_months_for_year(db, est_obj, project, yk))
+        if all_unpaid:
+            months_str = ", ".join(sorted(list(set(all_unpaid))))
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"Download blocked — software subscription fee for {months_str} is unpaid. Contact your administrator to settle platform fees."
+            )
+
     if not project.master:
         raise HTTPException(400, "No employees")
     tmp = tempfile.mkdtemp()
@@ -1800,9 +3076,32 @@ async def generate_ecr_txt(
     branch: Optional[str] = None,
     division: Optional[str] = None,
     unit: Optional[str] = None,
-    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
     est_obj, project = active
+    if current_user.role != "superadmin":
+        if not (0 <= month_idx < 12):
+            raise HTTPException(400, "Invalid month index")
+        emp_count = count_ecr_employees_for_month(project, year_key, month_idx)
+        if emp_count > 0:
+            sync_subscription_fees_for_year(db, est_obj, project, year_key)
+            m_abbr = MONTH_SHORT_NAMES[month_idx]
+            fee_row = db.query(SubscriptionFee).filter(
+                SubscriptionFee.establishment_id == est_obj.id,
+                SubscriptionFee.financial_year == year_key,
+                SubscriptionFee.month == m_abbr
+            ).first()
+            if fee_row and not fee_row.is_paid and is_month_overdue(year_key, month_idx):
+                year_record = project.years.get(year_key)
+                cal_yr = calendar_year_for_month(m_abbr, year_record.year_from, year_record.year_to) if year_record else ""
+                display_m = f"{MONTH_FULL.get(m_abbr.upper(), m_abbr)} {cal_yr}".strip()
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail=f"Download blocked — software subscription fee for {display_m} is unpaid. Contact your administrator to settle platform fees."
+                )
+
     year_record = project.years.get(year_key)
     if not year_record:
         raise HTTPException(404, "Year not found")
@@ -1883,9 +3182,32 @@ async def get_ecr_by_branch_stats(
 async def generate_ecr_zip_by_branch(
     year_key: str,
     month_idx: int,
-    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
     est_obj, project = active
+    if current_user.role != "superadmin":
+        if not (0 <= month_idx < 12):
+            raise HTTPException(400, "Invalid month index")
+        emp_count = count_ecr_employees_for_month(project, year_key, month_idx)
+        if emp_count > 0:
+            sync_subscription_fees_for_year(db, est_obj, project, year_key)
+            m_abbr = MONTH_SHORT_NAMES[month_idx]
+            fee_row = db.query(SubscriptionFee).filter(
+                SubscriptionFee.establishment_id == est_obj.id,
+                SubscriptionFee.financial_year == year_key,
+                SubscriptionFee.month == m_abbr
+            ).first()
+            if fee_row and not fee_row.is_paid and is_month_overdue(year_key, month_idx):
+                year_record = project.years.get(year_key)
+                cal_yr = calendar_year_for_month(m_abbr, year_record.year_from, year_record.year_to) if year_record else ""
+                display_m = f"{MONTH_FULL.get(m_abbr.upper(), m_abbr)} {cal_yr}".strip()
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail=f"Download blocked — software subscription fee for {display_m} is unpaid. Contact your administrator to settle platform fees."
+                )
+
     year_record = project.years.get(year_key)
     if not year_record:
         raise HTTPException(404, "Year not found")
@@ -1940,9 +3262,20 @@ async def generate_ecr_zip(
     branch: Optional[str] = None,
     division: Optional[str] = None,
     unit: Optional[str] = None,
-    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
     est_obj, project = active
+    if current_user.role != "superadmin":
+        unpaid = get_unpaid_months_for_year(db, est_obj, project, year_key)
+        if unpaid:
+            months_str = ", ".join(unpaid)
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"Download blocked — software subscription fee for {months_str} is unpaid. Contact your administrator to settle platform fees."
+            )
+
     year_record = project.years.get(year_key)
     if not year_record:
         raise HTTPException(404, "Year not found")

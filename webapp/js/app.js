@@ -91,6 +91,331 @@ const App = (() => {
     }
   }
 
+  async function downloadFile(url, defaultFilename = 'download', monthCtx = null) {
+    try {
+      const headers = {};
+      const token = getToken();
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const activeEstId = getCurrentEstablishmentId();
+      if (activeEstId) headers['X-Establishment-Id'] = String(activeEstId);
+
+      const res = await fetch(url, { headers });
+
+      if (res.status === 401) {
+        localStorage.removeItem('epf_jwt_token');
+        showLogin();
+        toast('Session expired. Please log in.', 'error');
+        return;
+      }
+
+      if (res.status === 402) {
+        // Month-scoped downloads (e.g. a single ECR text file) get the rich, interactive
+        // fee-payment modal -- members/amount owed + a Cashfree "Pay Now" flow that
+        // unlocks and retries the download in place once payment is confirmed.
+        if (monthCtx) {
+          showFeePaymentModal(monthCtx, () => downloadFile(url, defaultFilename, monthCtx));
+          return;
+        }
+        const err = await res.json().catch(() => ({ detail: 'Payment Required' }));
+        openModal(
+          '💳 Software Subscription Fee Required',
+          `
+            <div style="text-align:center; padding:16px 8px;">
+              <span style="font-size:44px; display:block; margin-bottom:12px;">🔒</span>
+              <h4 style="margin:0 0 10px 0; font-size:16px; font-weight:700; color:var(--danger);">Download Locked</h4>
+              <p style="font-size:13px; color:var(--text1); line-height:1.5; margin-bottom:16px;">
+                ${esc(err.detail || err.message || 'Software subscription fee is overdue for this establishment.')}
+              </p>
+              <div style="background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; font-size:12px; color:var(--text2); text-align:left;">
+                💡 <strong>How to unlock:</strong> Contact your Superadmin or PF Advisor to clear the overdue platform subscription fee. Once recorded, all report and ECR downloads will unlock immediately.
+              </div>
+            </div>
+          `,
+          '<button class="btn btn-primary" onclick="App.closeModal()">Understood</button>'
+        );
+        return;
+      }
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        toast(err.detail || err.message || 'Download failed', 'error');
+        return;
+      }
+
+      let filename = defaultFilename;
+      const disp = res.headers.get('content-disposition');
+      if (disp && disp.includes('filename=')) {
+        const match = disp.match(/filename="?([^";]+)"?/);
+        if (match && match[1]) filename = match[1].trim();
+      }
+
+      const blob = await res.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(blobUrl);
+      toast('Download complete!');
+    } catch (e) {
+      toast('Download failed: ' + e.message, 'error');
+    }
+  }
+
+  /* ── Interactive per-month fee-payment modal (blocked download → pay → unlock) ── */
+  let _feeModalRetry = null;
+  let _feePollTimer = null;
+
+  async function showFeePaymentModal(monthCtx, retryFn) {
+    _feeModalRetry = retryFn;
+    const { year, month } = monthCtx;
+
+    openModal(
+      '💳 Subscription Fee Required',
+      `<div style="text-align:center; padding:16px 8px;"><div class="spinner" style="margin:0 auto;"></div><p style="margin-top:12px; color:var(--text2); font-size:13px;">Loading fee details…</p></div>`,
+      '<button class="btn btn-ghost" onclick="App.closeModal()">Close</button>',
+      false
+    );
+
+    let detail;
+    try {
+      detail = await get(`/api/establishment/subscription-fees/month-detail?year=${encodeURIComponent(year)}&month=${encodeURIComponent(month)}`);
+    } catch (e) {
+      closeModal();
+      return;
+    }
+
+    const modalBody = document.querySelector('#modal .modal-body');
+    if (!modalBody) return;
+    modalBody.innerHTML = `
+      <div style="text-align:center; padding:8px;">
+        <span style="font-size:40px; display:block; margin-bottom:10px;">🔒</span>
+        <h4 style="margin:0 0 6px 0; font-size:16px; font-weight:700; color:var(--danger);">Download Locked — ${esc(detail.display_name)}</h4>
+        <p style="font-size:13px; color:var(--text2); margin-bottom:16px;">This month's software subscription fee is unpaid and overdue. Settle it below to unlock the download immediately.</p>
+        <div style="display:flex; justify-content:center; gap:20px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:14px; margin-bottom:16px;">
+          <div>
+            <div style="font-size:10px; color:var(--text3); text-transform:uppercase; font-weight:600;">Members</div>
+            <div style="font-size:20px; font-weight:800; color:var(--text1);">${detail.employee_count}</div>
+          </div>
+          <div style="border-left:1px solid var(--border);"></div>
+          <div>
+            <div style="font-size:10px; color:var(--text3); text-transform:uppercase; font-weight:600;">Rate</div>
+            <div style="font-size:20px; font-weight:800; color:var(--text1);">₹${detail.rate_applied}</div>
+          </div>
+          <div style="border-left:1px solid var(--border);"></div>
+          <div>
+            <div style="font-size:10px; color:var(--text3); text-transform:uppercase; font-weight:600;">Amount Due</div>
+            <div style="font-size:20px; font-weight:800; color:var(--danger);">₹${fmt(detail.amount_due)}</div>
+          </div>
+        </div>
+        <div id="fee-payment-action">
+          <button class="btn btn-primary" style="width:100%;" onclick="App.startFeePayment('${year}','${month}', ${detail.amount_due})">💳 Pay ₹${fmt(detail.amount_due)} via Cashfree</button>
+        </div>
+        <div id="fee-payment-status" style="margin-top:12px; font-size:12px; color:var(--text2); min-height:16px;"></div>
+      </div>
+    `;
+    const modalFooter = document.querySelector('#modal .modal-footer');
+    if (modalFooter) modalFooter.innerHTML = '<button class="btn btn-ghost" onclick="App.closeModal()">Close</button>';
+  }
+
+  async function startFeePayment(year, month, amount) {
+    const actionEl = document.getElementById('fee-payment-action');
+    const statusEl = document.getElementById('fee-payment-status');
+    if (actionEl) actionEl.innerHTML = `<button class="btn btn-primary" style="width:100%;" disabled>Generating payment link…</button>`;
+
+    try {
+      const res = await post('/api/establishment/subscription-fees/create-link', { financial_year: year, month });
+      if (actionEl) {
+        actionEl.innerHTML = `<a href="${res.link_url}" target="_blank" rel="noopener" class="btn btn-primary" style="width:100%; display:block; box-sizing:border-box;">🔗 Open Cashfree Payment Page</a>`;
+      }
+      window.open(res.link_url, '_blank');
+      if (statusEl) statusEl.innerHTML = '⏳ Waiting for payment confirmation…';
+      _pollFeePaymentStatus(year, month, 0);
+    } catch (e) {
+      if (actionEl) actionEl.innerHTML = `<button class="btn btn-primary" style="width:100%;" onclick="App.startFeePayment('${year}','${month}', ${amount})">💳 Pay ₹${fmt(amount)} via Cashfree</button>`;
+    }
+  }
+
+  function _pollFeePaymentStatus(year, month, attempt) {
+    clearTimeout(_feePollTimer);
+    if (attempt > 40) { // ~2 minutes at 3s intervals
+      const statusEl = document.getElementById('fee-payment-status');
+      if (statusEl) {
+        statusEl.innerHTML = `Still waiting for confirmation. <button class="btn btn-ghost btn-sm" onclick="App.checkFeePaymentNow('${year}','${month}')">🔄 Refresh Status</button>`;
+      }
+      return;
+    }
+    _feePollTimer = setTimeout(async () => {
+      const paid = await checkFeePaymentNow(year, month, true);
+      if (!paid) _pollFeePaymentStatus(year, month, attempt + 1);
+    }, 3000);
+  }
+
+  async function checkFeePaymentNow(year, month, silent = false) {
+    try {
+      const res = await post('/api/establishment/subscription-fees/refresh-status', { financial_year: year, month });
+      if (res.is_paid) {
+        clearTimeout(_feePollTimer);
+        const statusEl = document.getElementById('fee-payment-status');
+        const actionEl = document.getElementById('fee-payment-action');
+        if (statusEl) statusEl.innerHTML = '✅ Payment confirmed!';
+        if (actionEl) actionEl.innerHTML = `<button class="btn btn-success" style="width:100%;" onclick="App.completeFeePaymentDownload()">⬇️ Download Now</button>`;
+        toast('Payment confirmed — download unlocked!');
+        try { if (window.Challans && Challans.loadSubscriptionBanner) Challans.loadSubscriptionBanner(); } catch (e) {}
+        return true;
+      }
+      if (!silent) toast('Still awaiting payment.', 'info');
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function completeFeePaymentDownload() {
+    closeModal();
+    const fn = _feeModalRetry;
+    _feeModalRetry = null;
+    if (fn) fn();
+    // Refresh the current page's own subscription-status banner/badges now that the
+    // modal is closing, so "Fees Due" indicators clear without needing a manual reload.
+    const pageAtCloseTime = currentPage;
+    setTimeout(() => {
+      if (pageAtCloseTime === 'reports' && currentPage === 'reports') {
+        try { navigate('reports'); } catch (e) {}
+      }
+    }, 400);
+  }
+
+  /* ── Cashfree "return_url" landing -- browser comes back here after the hosted
+     checkout page, since Cashfree's servers can't reach a webhook on localhost but
+     the browser itself can always be redirected back. ── */
+  const CF_RETURN_MONTHS = ['Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb'];
+
+  async function _handleCashfreeReturn() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('cf_payment_return') !== '1') return false;
+
+    const type = params.get('type');
+    const year = params.get('year');
+    const month = params.get('month');
+    const estId = params.get('est_id');
+    const orderId = params.get('order_id');
+
+    // Clean the URL immediately so a refresh doesn't re-trigger this.
+    history.replaceState(null, '', window.location.pathname);
+
+    if (estId && Number(getCurrentEstablishmentId()) !== Number(estId)) {
+      setActiveEstablishment(estId);
+    }
+
+    if (type === 'sub' && year && month) {
+      navigate('reports');
+      setTimeout(() => checkCashfreeReturnStatus(year, month), 350);
+      return true;
+    }
+    if (type === 'adv') {
+      if (isSuperadmin()) {
+        navigate('admin');
+        toast('Returned from Cashfree — your advance credit balance will update automatically once confirmed.', 'info');
+      } else {
+        navigate('subscription-history');
+        if (orderId) {
+          setTimeout(() => checkAdvanceCreditReturnStatus(orderId), 350);
+        } else {
+          toast('Returned from Cashfree — your advance credit balance will update automatically once confirmed.', 'info');
+        }
+      }
+      return true;
+    }
+    return false;
+  }
+
+  async function checkCashfreeReturnStatus(year, month) {
+    let paid = false;
+    try {
+      const res = await post('/api/establishment/subscription-fees/refresh-status', { financial_year: year, month });
+      paid = !!res.is_paid;
+    } catch (e) { /* fall through to the "still processing" view */ }
+
+    const monthIdx = CF_RETURN_MONTHS.indexOf(month);
+
+    if (paid) {
+      openModal(
+        '✅ Payment Successful',
+        `
+          <div style="text-align:center; padding:16px 8px;">
+            <span style="font-size:48px; display:block; margin-bottom:10px;">🎉</span>
+            <h4 style="margin:0 0 8px 0; font-size:17px; font-weight:700; color:var(--primary);">Payment Successful!</h4>
+            <p style="font-size:13px; color:var(--text2); line-height:1.5;">Your subscription fee for this month has been confirmed. You can download the file now.</p>
+          </div>
+        `,
+        `<button class="btn btn-ghost" onclick="App.closeModal()">Close</button>
+         ${monthIdx >= 0 ? `<button class="btn btn-primary" onclick="App.closeModal(); App.downloadFile('/api/reports/${year}/ecr/${monthIdx}', 'ECR_Month_${monthIdx}.txt')">⬇️ Download ECR File Now</button>` : ''}`
+      );
+      toast('Payment successful — download unlocked!');
+      try { if (window.Challans && Challans.loadSubscriptionBanner) Challans.loadSubscriptionBanner(); } catch (e) {}
+    } else {
+      openModal(
+        '⏳ Payment Processing',
+        `
+          <div style="text-align:center; padding:16px 8px;">
+            <span style="font-size:48px; display:block; margin-bottom:10px;">⏳</span>
+            <h4 style="margin:0 0 8px 0; font-size:16px; font-weight:700; color:var(--text1);">Almost there…</h4>
+            <p style="font-size:13px; color:var(--text2); line-height:1.5;">Still waiting for Cashfree to confirm this payment — that's usually instant. Try checking again in a moment.</p>
+          </div>
+        `,
+        `<button class="btn btn-ghost" onclick="App.closeModal()">Close</button>
+         <button class="btn btn-primary" onclick="App.checkCashfreeReturnStatus('${year}','${month}')">🔄 Check Again</button>`
+      );
+    }
+  }
+
+  async function checkAdvanceCreditReturnStatus(orderId) {
+    let confirmed = false;
+    let amount = null;
+    let balance = null;
+    try {
+      const res = await post('/api/establishment/advance-credit/refresh-status', { order_id: orderId });
+      confirmed = res.status === 'confirmed';
+      amount = res.amount;
+      balance = res.advance_credit_balance;
+    } catch (e) { /* fall through to the "still processing" view */ }
+
+    if (confirmed) {
+      openModal(
+        '✅ Advance Credit Added',
+        `
+          <div style="text-align:center; padding:16px 8px;">
+            <span style="font-size:48px; display:block; margin-bottom:10px;">🎉</span>
+            <h4 style="margin:0 0 8px 0; font-size:17px; font-weight:700; color:var(--primary);">Payment Successful!</h4>
+            <p style="font-size:13px; color:var(--text2); line-height:1.5;">
+              ₹${fmt(amount)} has been added to your advance credit balance${balance != null ? ` — new balance: <strong>₹${fmt(balance)}</strong>` : ''}.
+              It'll automatically apply to future months' subscription fees as their wage data is entered.
+            </p>
+          </div>
+        `,
+        `<button class="btn btn-primary" onclick="App.closeModal()">Got it</button>`
+      );
+      toast('Advance credit confirmed!');
+      try { if (window.SubscriptionHistory && SubscriptionHistory.reload) SubscriptionHistory.reload(); } catch (e) {}
+    } else {
+      openModal(
+        '⏳ Payment Processing',
+        `
+          <div style="text-align:center; padding:16px 8px;">
+            <span style="font-size:48px; display:block; margin-bottom:10px;">⏳</span>
+            <h4 style="margin:0 0 8px 0; font-size:16px; font-weight:700; color:var(--text1);">Almost there…</h4>
+            <p style="font-size:13px; color:var(--text2); line-height:1.5;">Still waiting for Cashfree to confirm this payment — that's usually instant. Try checking again in a moment.</p>
+          </div>
+        `,
+        `<button class="btn btn-ghost" onclick="App.closeModal()">Close</button>
+         <button class="btn btn-primary" onclick="App.checkAdvanceCreditReturnStatus('${orderId}')">🔄 Check Again</button>`
+      );
+    }
+  }
+
   const get    = (u) => api(u);
   const post   = (u, b) => api(u, { method: 'POST', body: b instanceof FormData ? b : JSON.stringify(b) });
   const put    = (u, b) => api(u, { method: 'PUT', body: b instanceof FormData ? b : JSON.stringify(b) });
@@ -171,6 +496,7 @@ const App = (() => {
       wages: 'Wage Entry',
       challans: 'Form 12A Challans',
       reports: 'Statutory Reports & Export',
+      'subscription-history': '📜 Subscription History',
     };
 
     const titleEl = document.getElementById('topbar-title');
@@ -275,25 +601,29 @@ const App = (() => {
 
     renderSidebarNav();
 
-    // Default landing page
-    if (isSuperadmin()) {
-      navigate(currentPage === 'admin' ? 'admin' : currentPage || 'admin');
-    } else {
-      // For consultants: if no active establishment set, find one
-      if (!getCurrentEstablishmentId()) {
-        try {
-          const ests = await get('/api/establishments');
-          if (ests.establishments && ests.establishments.length > 0) {
-            setActiveEstablishment(ests.establishments[0].id, ests.establishments[0]);
-            navigate('dashboard');
-          } else {
+    const handledCashfreeReturn = await _handleCashfreeReturn();
+
+    if (!handledCashfreeReturn) {
+      // Default landing page
+      if (isSuperadmin()) {
+        navigate(currentPage === 'admin' ? 'admin' : currentPage || 'admin');
+      } else {
+        // For consultants: if no active establishment set, find one
+        if (!getCurrentEstablishmentId()) {
+          try {
+            const ests = await get('/api/establishments');
+            if (ests.establishments && ests.establishments.length > 0) {
+              setActiveEstablishment(ests.establishments[0].id, ests.establishments[0]);
+              navigate('dashboard');
+            } else {
+              navigate('my-establishments');
+            }
+          } catch (_) {
             navigate('my-establishments');
           }
-        } catch (_) {
-          navigate('my-establishments');
+        } else {
+          navigate(currentPage === 'my-establishments' ? 'my-establishments' : 'dashboard');
         }
-      } else {
-        navigate(currentPage === 'my-establishments' ? 'my-establishments' : 'dashboard');
       }
     }
 
@@ -642,7 +972,9 @@ const App = (() => {
     toast, openModal, closeModal, confirm,
     toggleSidebar, toggleTheme, save, fmt, fmtD, esc, fmtId, renderPagination,
     showProjectManager, selectAndSwitchEst, logout, showLogin, doLogin, refreshTopbar,
-    showVersionHistory,
+    showVersionHistory, downloadFile,
+    showFeePaymentModal, startFeePayment, checkFeePaymentNow, completeFeePaymentDownload,
+    checkCashfreeReturnStatus, checkAdvanceCreditReturnStatus,
     getToken, getCurrentUser, isSuperadmin, getCurrentEstablishmentId, setActiveEstablishment,
     get currentPage() { return currentPage; },
   };

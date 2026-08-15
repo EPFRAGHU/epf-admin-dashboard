@@ -3,9 +3,10 @@
    ================================================================ */
 
 App.registerPage('reports', async (container) => {
-  const [{ years }, orgData] = await Promise.all([
+  const [{ years }, orgData, subStatus] = await Promise.all([
     App.get('/api/years'),
-    App.get('/api/org-structure')
+    App.get('/api/org-structure'),
+    App.get('/api/establishment/subscription-status').catch(() => null)
   ]);
   const branches = orgData?.branches || [];
   
@@ -17,6 +18,18 @@ App.registerPage('reports', async (container) => {
     return;
   }
   
+  const subBanner = subStatus && subStatus.has_overdue ? `
+    <div style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); border-radius:var(--radius-sm); padding:14px 18px; margin-bottom:20px; display:flex; align-items:flex-start; gap:12px;">
+      <span style="font-size:22px; line-height:1;">⚠️</span>
+      <div style="flex:1;">
+        <div style="font-weight:700; color:var(--danger); font-size:14px;">Software Subscription Fee Overdue (${subStatus.total_overdue} Month${subStatus.total_overdue > 1 ? 's' : ''})</div>
+        <div style="font-size:12px; color:var(--text1); margin-top:2px; line-height:1.4;">
+          The platform subscription fee is overdue for: <strong>${subStatus.unpaid_months.join(', ')}</strong>. Statutory Form and ECR downloads are locked until payment is recorded by your administrator.
+        </div>
+      </div>
+    </div>
+  ` : '';
+  
   container.innerHTML = `<div class="fade-in" style="max-width:100%;">
     <div class="page-header">
       <div>
@@ -24,6 +37,8 @@ App.registerPage('reports', async (container) => {
         <div class="page-desc">Generate official statutory forms in Excel and PDF format.</div>
       </div>
     </div>
+
+    ${subBanner}
     
     <div style="display: flex; flex-wrap: wrap; gap: 24px;">
       
@@ -273,27 +288,64 @@ App.registerPage('reports', async (container) => {
                   if(data.years.length === 0) {
                       html += `<div style="text-align:center; padding:24px; color:var(--text3);">No wage records found.</div>`;
                   } else {
-                      let trs = '';
-                      data.years.forEach(y => {
+                      // Row helper: one row = one label in col 1 + 12 month values + a year-total.
+                      // valueStyle carries the per-row font weight/size/color (Wages dominant,
+                      // EE/ER/EPS muted, Total set apart); dividerStyle (if any) is layered on
+                      // top so it applies uniformly across every column in that row.
+                      const wyhRow = (label, monthVals, totalVal, valueStyle, dividerStyle) => {
+                          const cellStyle = `text-align:right; ${valueStyle}${dividerStyle || ''}`;
                           let tds = '';
-                          for(let i=0; i<12; i++) {
-                              tds += `<td style="text-align:right;">${y.wages[i] != null ? Math.round(y.wages[i]) : 0}</td>`;
+                          for (let i = 0; i < 12; i++) {
+                              tds += `<td style="${cellStyle}">${monthVals[i] != null ? Math.round(monthVals[i]) : 0}</td>`;
                           }
-                          trs += `
+                          return `
                             <tr>
-                              <td style="font-weight:500; white-space:nowrap;">${y.year}</td>
+                              <td style="white-space:nowrap; ${valueStyle}${dividerStyle || ''}">${label}</td>
                               ${tds}
-                              <td style="text-align:right; font-weight:600; color:var(--primary);">${Math.round(y.total || 0)}</td>
+                              <td style="${cellStyle}">${Math.round(totalVal || 0)}</td>
                             </tr>
                           `;
+                      };
+
+                      const WAGES_STYLE = 'font-weight:700; font-size:13px; color:var(--text1);';
+                      const CONTRIB_STYLE = 'font-weight:500; font-size:11px; color:var(--text3);';
+                      const TOTAL_STYLE = 'font-weight:700; font-size:12px; color:var(--primary);';
+                      // Both internal dividers share the exact same weight/color; the
+                      // year-to-year boundary (below) is visibly stronger by comparison.
+                      const DIVIDER = 'border-top:1px solid var(--card-border);';
+
+                      let trs = '';
+                      data.years.forEach(y => {
+                          trs += `
+                            <tr>
+                              <td colspan="14" style="background:var(--bg2); font-weight:700; font-size:13px; color:var(--text1); padding:10px 8px; border-top:2px solid var(--card-border); -webkit-print-color-adjust:exact; print-color-adjust:exact;">FY ${App.esc(y.year)}</td>
+                            </tr>
+                          `;
+                          trs += wyhRow('Wages', y.wages, y.total, WAGES_STYLE, '');
+                          trs += wyhRow('EE', y.ee_epf || Array(12).fill(0), y.ee_epf_total, CONTRIB_STYLE, DIVIDER);
+                          trs += wyhRow('ER', y.er_epf || Array(12).fill(0), y.er_epf_total, CONTRIB_STYLE, '');
+                          trs += wyhRow('EPS', y.er_eps || Array(12).fill(0), y.er_eps_total, CONTRIB_STYLE, '');
+                          trs += wyhRow('Total', y.month_total || Array(12).fill(0), y.month_total_total, TOTAL_STYLE, DIVIDER);
+
+                          const flags = [];
+                          if (y.higher_epf_ee) flags.push('(Higher EPF - EE)');
+                          if (y.higher_epf_er) flags.push('(Higher EPF - ER)');
+                          if (y.age_crosses_58) flags.push('(Age 58+ applied)');
+                          if (flags.length > 0) {
+                              trs += `
+                                <tr>
+                                  <td colspan="14" style="font-style:italic; font-size:10px; color:var(--text3); border:none !important; padding:3px 8px 12px 8px;">${flags.join(' ')}</td>
+                                </tr>
+                              `;
+                          }
                       });
-                      
+
                       html += `
                         <div style="overflow-x:auto;">
-                          <table class="data-table" style="width:100%; font-size:12px;">
+                          <table class="data-table" style="width:100%; font-size:12px; border-collapse:collapse;">
                             <thead>
                               <tr>
-                                <th>Year</th>
+                                <th></th>
                                 <th style="text-align:right">Mar</th><th style="text-align:right">Apr</th><th style="text-align:right">May</th><th style="text-align:right">Jun</th>
                                 <th style="text-align:right">Jul</th><th style="text-align:right">Aug</th><th style="text-align:right">Sep</th><th style="text-align:right">Oct</th>
                                 <th style="text-align:right">Nov</th><th style="text-align:right">Dec</th><th style="text-align:right">Jan</th><th style="text-align:right">Feb</th>
@@ -332,18 +384,21 @@ window.printEmployeeReport = (empName, uan) => {
   document.title = originalTitle;
 };
 
+const ECR_MONTH_SHORT_NAMES = ['Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb'];
+
 window.downloadECR = () => {
   const y = document.getElementById('ecr-year').value;
   const m = document.getElementById('ecr-month').value;
   const b = document.getElementById('ecr-branch')?.value || '';
   const branchParam = b ? `?branch=${encodeURIComponent(b)}` : '';
-  
+
   if (m === 'zip') {
     App.toast(`Generating Yearly ECR ZIP for ${y}...`, 'info');
-    window.open(`/api/reports/${y}/ecr${branchParam}`, '_blank');
+    App.downloadFile(`/api/reports/${y}/ecr${branchParam}`, `ECR_${y}.zip`);
   } else {
     App.toast(`Generating Monthly ECR TXT...`, 'info');
-    window.open(`/api/reports/${y}/ecr/${m}${branchParam}`, '_blank');
+    const monthCtx = { year: y, month: ECR_MONTH_SHORT_NAMES[parseInt(m, 10)] };
+    App.downloadFile(`/api/reports/${y}/ecr/${m}${branchParam}`, `ECR_Month_${m}.txt`, monthCtx);
   }
 };
 
@@ -355,12 +410,12 @@ window.downloadECRBranchZip = () => {
     return;
   }
   App.toast(`Generating Branch-wise ECR ZIP for month...`, 'info');
-  window.open(`/api/reports/${y}/ecr/${m}/zip-by-branch`, '_blank');
+  App.downloadFile(`/api/reports/${y}/ecr/${m}/zip-by-branch`, `ECR_Branches_Month_${m}.zip`);
 };
 
 window.downloadForm9 = (format) => {
   App.toast(`Generating Form 9 (${format.toUpperCase()})...`, 'info');
-  window.open(`/api/reports/form9/download?format=${format}`, '_blank');
+  App.downloadFile(`/api/reports/form9/download?format=${format}`, `Form9.${format === 'pdf' ? 'pdf' : 'xlsx'}`);
 };
 
 window.downloadAnnualReturn = (format) => {
@@ -383,5 +438,5 @@ window.downloadAnnualReturn = (format) => {
 
   const formsParam = selectedForms.join(',');
   App.toast(`Generating selected returns for ${y} (${format.toUpperCase()})...`, 'info');
-  window.open(`/api/reports/${y}?format=${format}&forms=${formsParam}`, '_blank');
+  App.downloadFile(`/api/reports/${y}?format=${format}&forms=${formsParam}`, `AnnualReturns_${y}.${format === 'pdf' ? 'pdf' : 'xlsx'}`);
 };
