@@ -562,6 +562,9 @@ const App = (() => {
       <a class="nav-item ${currentPage === 'reports' ? 'active' : ''}" data-page="reports">
         <span class="nav-icon">📋</span><span>Reports</span>
       </a>
+      <a class="nav-item" href="/docs/EPF_Dashboard_User_Manual.pdf" target="_blank" rel="noopener">
+        <span class="nav-icon">📖</span><span>Help / User Guide</span>
+      </a>
     `);
 
     nav.innerHTML = items.join('');
@@ -569,9 +572,10 @@ const App = (() => {
     // Bind click events
     nav.querySelectorAll('.nav-item').forEach(el => {
       el.addEventListener('click', (e) => {
-        e.preventDefault();
         const page = el.dataset.page;
-        if (page) navigate(page);
+        if (!page) return; // plain links (e.g. Help / User Guide) keep native browser behavior
+        e.preventDefault();
+        navigate(page);
       });
     });
   }

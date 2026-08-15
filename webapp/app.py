@@ -255,6 +255,7 @@ app = FastAPI(title="EPF Admin Dashboard", version="2.1.0")
 WEB = Path(__file__).resolve().parent
 app.mount("/css", StaticFiles(directory=str(WEB / "css")), name="css")
 app.mount("/js", StaticFiles(directory=str(WEB / "js")), name="js")
+app.mount("/docs", StaticFiles(directory=str(WEB / "static_docs")), name="docs")
 
 
 # ── Startup Data Migration & Seed ──────────────────────────────────────────
