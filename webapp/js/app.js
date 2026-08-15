@@ -362,7 +362,7 @@ const App = (() => {
           <form onsubmit="event.preventDefault(); App.doLogin();">
             <div class="form-group" style="margin-bottom:16px;">
               <label class="form-label" style="font-weight:600;">Email Address / Username</label>
-              <input type="email" id="login-user" class="form-input" placeholder="e.g. admin@epfdashboard.com" required autofocus>
+              <input type="email" id="login-user" class="form-input" placeholder="Enter your registered email" required autofocus>
             </div>
             <div class="form-group" style="margin-bottom:20px;">
               <label class="form-label" style="font-weight:600;">Password</label>
@@ -372,12 +372,6 @@ const App = (() => {
               <span>Sign In</span>
             </button>
           </form>
-
-          <div style="margin-top:24px; padding-top:16px; border-top:1px solid var(--border); font-size:11px; color:var(--text3); text-align:center; line-height:1.5;">
-            <div><strong>Default Accounts:</strong></div>
-            <div>Superadmin: <code style="color:var(--primary);">admin@epfdashboard.com</code> / <code style="color:var(--primary);">Admin@12345</code></div>
-            <div>Consultant: <code style="color:var(--primary);">consultant@epfdashboard.com</code> / <code style="color:var(--primary);">Consultant@123</code></div>
-          </div>
         </div>
       </div>
     `;
