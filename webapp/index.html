@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EPF Admin Dashboard</title>
+    <meta name="description" content="EPF Form 3A/6A Admin Dashboard — Employee Provident Fund Management System">
+    <script>
+      (function() {
+        const saved = localStorage.getItem('epf_theme');
+        const theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+      })();
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="/css/style.css">
+    <link rel="stylesheet" href="/css/epfo-app-theme.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-brand">
+                <span class="brand-icon">🏛️</span>
+                <div>
+                    <h1 class="brand-title">EPF Dashboard</h1>
+                    <p class="brand-sub">Admin Panel</p>
+                </div>
+            </div>
+            <nav class="sidebar-nav" id="sidebar-nav">
+                <a class="nav-item active" data-page="dashboard">
+                    <span class="nav-icon">📊</span><span>Dashboard</span>
+                </a>
+                <a class="nav-item" data-page="establishment">
+                    <span class="nav-icon">🏢</span><span>Establishment</span>
+                </a>
+                <a class="nav-item" data-page="org-structure">
+                    <span class="nav-icon">🏛️</span><span>Org Structure</span>
+                </a>
+                <a class="nav-item" data-page="employees">
+                    <span class="nav-icon">👥</span><span>Employees</span>
+                </a>
+                <a class="nav-item" data-page="years">
+                    <span class="nav-icon">📅</span><span>Financial Years</span>
+                </a>
+                <a class="nav-item" data-page="wages">
+                    <span class="nav-icon">💰</span><span>Wage Entry</span>
+                </a>
+                <a class="nav-item" data-page="challans">
+                    <span class="nav-icon">🏦</span><span>Challans</span>
+                </a>
+                <a class="nav-item" data-page="reports">
+                    <span class="nav-icon">📋</span><span>Reports</span>
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <button class="btn btn-primary btn-sm" style="width:100%; margin-bottom:8px" onclick="App.showProjectManager()">📂 Switch Establishment</button>
+                <button class="btn btn-danger btn-sm" style="width:100%; margin-bottom:8px" onclick="App.logout()">🚪 Logout</button>
+                <div class="version-badge-container" onclick="App.showVersionHistory()" title="Click to view full Version History & Changelog (v1.0.0 to v1.6.0)" style="cursor: pointer; margin-top: 8px; padding: 8px 10px; border-radius: var(--radius-sm); transition: all var(--transition); border: 1px dashed var(--border); background: var(--bg2); text-align: left;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px;">
+                        <span style="font-size: 12px; font-weight: 800; color: var(--primary); letter-spacing: 0.3px;">v1.6.0</span>
+                        <span class="badge high" style="font-size: 9px; padding: 1px 6px; font-weight: 700;">Present</span>
+                    </div>
+                    <div style="font-size: 10px; color: var(--text3); display: flex; align-items: center; gap: 4px; margin-bottom: 4px;">
+                        <span>⏱️ 11-08-2026 → 14-08-2026</span>
+                    </div>
+                    <div style="font-size: 10px; color: var(--primary); font-weight: 600; display: flex; align-items: center; justify-content: space-between; padding-top: 4px; border-top: 1px solid var(--card-border);">
+                        <span>📜 Version History</span>
+                        <span style="font-size: 9px; color: var(--text3); background: var(--card); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--card-border);">7 Releases</span>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main -->
+        <main class="main">
+            <header class="topbar">
+                <button class="hamburger" onclick="App.toggleSidebar()">☰</button>
+                <h2 class="topbar-title" id="topbar-title">Dashboard</h2>
+                <button class="theme-toggle-btn" id="theme-toggle-btn" onclick="App.toggleTheme()" title="Toggle dark mode">
+                    <span id="theme-toggle-icon">🌙</span>
+                </button>
+                <div class="topbar-right" id="topbar-right"></div>
+            </header>
+            <div class="content" id="content">
+                <div class="page-loading"><div class="spinner"></div><p>Loading…</p></div>
+                
+
+            </div>
+        </main>
+    </div>
+
+    <!-- Modal -->
+    <div class="modal-overlay" id="modal-overlay" onclick="App.closeModal()"></div>
+    <div class="modal" id="modal"></div>
+
+    <!-- Toast -->
+    <div class="toast-box" id="toast-box"></div>
+
+    <script src="/js/app.js"></script>
+    <script src="/js/admin.js"></script>
+    <script src="/js/my-establishments.js"></script>
+    <script src="/js/dashboard.js"></script>
+    <script src="/js/establishment.js"></script>
+    <script src="/js/org-structure.js"></script>
+    <script src="/js/employees.js"></script>
+    <script src="/js/years.js"></script>
+    <script src="/js/wages.js"></script>
+    <script src="/js/challans.js"></script>
+    <script src="/js/reports.js"></script>
+    <script>document.addEventListener('DOMContentLoaded', () => App.init());</script>
+</body>
+</html>
