@@ -88,8 +88,28 @@ def _run_startup_migrations():
     if not SessionLocal:
         return
     with SessionLocal() as db:
-        # 1. Seed Superadmin
-        superadmin = db.query(User).filter(User.role == "superadmin").first()
+        # 1. Seed Primary Superadmin (Raghunatha Maharana)
+        raghu_admin = db.query(User).filter(func.lower(User.email) == "raghunatha.maharana@gmail.com").first()
+        if not raghu_admin:
+            raghu_admin = User(
+                serial_no=None,
+                name="Raghunatha Maharana",
+                mobile="9876543210",
+                email="raghunatha.maharana@gmail.com",
+                password_hash=hash_password("Raghu@1234"),
+                role="superadmin",
+                is_active=True
+            )
+            db.add(raghu_admin)
+            db.commit()
+            print("  [OK] Seeded superadmin: raghunatha.maharana@gmail.com")
+        else:
+            raghu_admin.role = "superadmin"
+            raghu_admin.is_active = True
+            db.commit()
+
+        # 2. Seed Generic Superadmin (admin@epfdashboard.com)
+        superadmin = db.query(User).filter(func.lower(User.email) == "admin@epfdashboard.com").first()
         if not superadmin:
             s_email = os.environ.get("SUPERADMIN_EMAIL", "admin@epfdashboard.com").strip().lower()
             s_pass = os.environ.get("SUPERADMIN_PASSWORD", "Admin@12345")
@@ -104,10 +124,9 @@ def _run_startup_migrations():
             )
             db.add(superadmin)
             db.commit()
-            db.refresh(superadmin)
             print(f"  [OK] Seeded superadmin: {s_email}")
 
-        # 2. Seed Default Consultant
+        # 3. Seed Default Consultant
         consultant = db.query(User).filter(User.role == "consultant").first()
         if not consultant:
             consultant = User(
