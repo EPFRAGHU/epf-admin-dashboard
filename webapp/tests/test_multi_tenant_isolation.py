@@ -1,6 +1,6 @@
 import pytest
 from webapp.auth import verify_password
-from webapp.database import User, Establishment
+from webapp.database import User, Establishment, SubscriptionFee
 
 
 def test_tenant_isolation_establishments(consultant_a, consultant_b):
@@ -297,3 +297,69 @@ def test_passwords_are_hashed(superadmin_session, test_db):
     # (c) Verifies correctly with verify_password
     assert verify_password(plaintext_pass, user.password_hash) is True
     assert verify_password("WrongPassword123", user.password_hash) is False
+
+
+def test_superadmin_bypasses_download_gate_via_role_not_payment_status(superadmin_session, consultant_a, test_db):
+    """
+    Verify the superadmin download bypass is a genuine role-based short-circuit, not
+    something that happens to work because a fee row got marked paid some other way.
+
+    Unlike test_download_gating_402_and_superadmin_bypass (which lets the lazy-sync
+    mechanism create the SubscriptionFee row from wage entry), this test constructs the
+    unpaid, past-grace-period SubscriptionFee row DIRECTLY via the DB session -- so the
+    only thing that can possibly explain the superadmin succeeding is
+    `current_user.role == "superadmin"` in the endpoint itself, exactly as read in
+    webapp/app.py (generate_ecr_txt, generate_report, etc: the entire
+    get_unpaid_months_for_year/SubscriptionFee check sits inside
+    `if current_user.role != "superadmin":`, so it never runs at all for a superadmin).
+    """
+    res = consultant_a.post("/api/establishments", json={"code": "DELTACO001", "name": "Delta Bypass Co"})
+    assert res.status_code == 200
+    est_id = res.json()["establishment"]["id"]
+    consultant_a.set_establishment(est_id)
+
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "DELTACO001001", "name": "Priya Sharma", "uan": "700000000001"})
+    res = consultant_a.post("/api/years/2026-27/wages", json={"member_id": "DELTACO001001", "wages": [15000.0] + [0.0] * 11})
+    assert res.status_code == 200
+
+    # Directly construct the unpaid, overdue SubscriptionFee row -- bypassing the lazy
+    # sync path entirely so this test doesn't depend on it.
+    fee_row = SubscriptionFee(
+        establishment_id=est_id, financial_year="2026-27", month="Mar",
+        employee_count=1, rate_applied=10.0, amount_due=10.0,
+        is_paid=False, paid_date="", payment_reference="", notes=""
+    )
+    test_db.add(fee_row)
+    test_db.commit()
+
+    # Confirm the row is genuinely unpaid and past grace period (grace cutoff for March
+    # is 1 day after March 31 -- comfortably in the past relative to any real test run).
+    check = test_db.query(SubscriptionFee).filter(
+        SubscriptionFee.establishment_id == est_id, SubscriptionFee.month == "Mar"
+    ).first()
+    assert check is not None and check.is_paid is False
+
+    # Consultant session: blocked with 402, as expected.
+    res = consultant_a.get("/api/reports/2026-27/ecr/0")
+    assert res.status_code == 402
+    assert "subscription fee" in res.json()["detail"].lower()
+
+    # Superadmin session, same establishment, same unpaid/overdue row untouched: succeeds.
+    superadmin_session.set_establishment(est_id)
+    res = superadmin_session.get("/api/reports/2026-27/ecr/0")
+    assert res.status_code == 200
+    assert "Priya Sharma" in res.text
+
+    # The fee row is still unpaid -- the superadmin's success was NOT because the row
+    # got marked paid as a side effect; it's a pure role-based bypass.
+    still_unpaid = test_db.query(SubscriptionFee).filter(
+        SubscriptionFee.establishment_id == est_id, SubscriptionFee.month == "Mar"
+    ).first()
+    assert still_unpaid.is_paid is False
+
+    # Whole-year Form 3A/6A bundle and full-year ECR zip: same bypass.
+    res = superadmin_session.get("/api/reports/2026-27")
+    assert res.status_code == 200
+    res = superadmin_session.get("/api/reports/2026-27/ecr")
+    assert res.status_code == 200

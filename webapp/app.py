@@ -257,48 +257,40 @@ def _run_startup_migrations():
     if engine:
         try:
             Base.metadata.create_all(bind=engine)
+
+            def _try_ddl(conn, ddl):
+                """Run one additive-column DDL statement, tolerating 'already exists'
+                errors. Critically, rolls back on failure -- on Postgres, a failed
+                statement leaves the connection's transaction ABORTED, and every
+                subsequent statement on that same connection would silently fail too
+                (caught by the caller's own try/except) until it's rolled back. This
+                bit us for real: the SQLite-only fallback ALTER for
+                advance_credit_balance (no IF NOT EXISTS) failed on Postgres because
+                the column already existed, which silently poisoned the connection and
+                prevented the cashfree_order_id/cashfree_payment_link_url columns from
+                ever being added in production."""
+                try:
+                    conn.execute(text(ddl))
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+
             with engine.connect() as conn:
-                try:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_rate_per_employee FLOAT;"))
-                    conn.commit()
-                except Exception:
-                    pass
-                try:
-                    conn.execute(text("ALTER TABLE establishments ADD COLUMN IF NOT EXISTS custom_rate_per_employee FLOAT;"))
-                    conn.commit()
-                except Exception:
-                    pass
-                try:
-                    conn.execute(text("ALTER TABLE establishments ADD COLUMN IF NOT EXISTS advance_credit_balance FLOAT DEFAULT 0;"))
-                    conn.commit()
-                except Exception:
-                    pass
-                try:
-                    # SQLite doesn't support "IF NOT EXISTS" on ADD COLUMN -- harmless no-op
-                    # (duplicate column error, swallowed) once the column already exists.
-                    conn.execute(text("ALTER TABLE establishments ADD COLUMN advance_credit_balance FLOAT DEFAULT 0;"))
-                    conn.commit()
-                except Exception:
-                    pass
-                for ddl in [
-                    "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS cashfree_order_id VARCHAR(120);",
-                    "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS cashfree_payment_link_url TEXT;",
-                ]:
-                    try:
-                        conn.execute(text(ddl))
-                        conn.commit()
-                    except Exception:
-                        pass
-                for ddl in [
-                    "ALTER TABLE subscription_fees ADD COLUMN cashfree_order_id VARCHAR(120);",
-                    "ALTER TABLE subscription_fees ADD COLUMN cashfree_payment_link_url TEXT;",
-                ]:
-                    try:
-                        # SQLite fallback -- same harmless no-op reasoning as above.
-                        conn.execute(text(ddl))
-                        conn.commit()
-                    except Exception:
-                        pass
+                _try_ddl(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_rate_per_employee FLOAT;")
+                _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN IF NOT EXISTS custom_rate_per_employee FLOAT;")
+                _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN IF NOT EXISTS advance_credit_balance FLOAT DEFAULT 0;")
+                # SQLite doesn't support "IF NOT EXISTS" on ADD COLUMN -- this is a
+                # harmless no-op there once the column exists, and on Postgres it's a
+                # no-op too now that _try_ddl rolls back instead of poisoning the
+                # connection for the statements that follow.
+                _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN advance_credit_balance FLOAT DEFAULT 0;")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS cashfree_order_id VARCHAR(120);")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS cashfree_payment_link_url TEXT;")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN cashfree_order_id VARCHAR(120);")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN cashfree_payment_link_url TEXT;")
         except Exception as e:
             print(f"  [WARN] DDL check error: {e}")
 
