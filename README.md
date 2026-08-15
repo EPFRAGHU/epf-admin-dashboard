@@ -177,18 +177,19 @@ cd epf-admin-dashboard
 # 2. Install dependencies
 pip install -r requirements.txt
 
-# 3. Launch the FastAPI server
-python -m uvicorn webapp.app:app --reload --port 8000
-```
-Open browser at: `http://localhost:8000`
+### Running Automated Test Suite
+The project includes a comprehensive multi-tenant isolation, role separation, and authentication test suite:
+```bash
+# Install development / test dependencies
+pip install -r requirements-dev.txt
 
-### Cloud Deployment (Render.com)
-1. Link GitHub repository to Render Web Service.
-2. Build Command: `pip install -r requirements.txt`
-3. Start Command: `uvicorn webapp.app:app --host 0.0.0.0 --port $PORT`
-4. Set Environment Variables: `DATABASE_URL` (Supabase Postgres URI).
+# Run full automated test suite with verbose output
+pytest webapp/tests/ -v
+```
+Tests run against an isolated disposable SQLite test database (`test_epf.db`) and never touch production or cloud database instances.
 
 ---
 
 ## 📜 Git Auto-Sync Protocol
 All updates, database syncs, and releases are automatically versioned, committed, and pushed to `main`.
+
