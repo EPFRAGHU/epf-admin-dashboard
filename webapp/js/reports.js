@@ -72,19 +72,19 @@ App.registerPage('reports', async (container) => {
     
           <div style="display:flex; flex-wrap:wrap; gap:16px; margin-bottom:24px; padding:12px; background:rgba(0,0,0,0.05); border-radius:8px;">
             <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-              <input type="checkbox" class="form-checkbox" id="chk-3a" value="3A" checked> <span>Form 3A</span>
+              <input type="checkbox" class="form-checkbox" id="chk-3a" value="3A"> <span>Form 3A</span>
             </label>
             <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-              <input type="checkbox" class="form-checkbox" id="chk-6a" value="6A" checked> <span>Form 6A</span>
+              <input type="checkbox" class="form-checkbox" id="chk-6a" value="6A"> <span>Form 6A</span>
             </label>
             <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-              <input type="checkbox" class="form-checkbox" id="chk-12a" value="12A" checked> <span>Form 12A</span>
+              <input type="checkbox" class="form-checkbox" id="chk-12a" value="12A"> <span>Form 12A</span>
             </label>
             <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-              <input type="checkbox" class="form-checkbox" id="chk-5" value="5" checked> <span>Form 5</span>
+              <input type="checkbox" class="form-checkbox" id="chk-5" value="5"> <span>Form 5</span>
             </label>
             <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
-              <input type="checkbox" class="form-checkbox" id="chk-10" value="10" checked> <span>Form 10</span>
+              <input type="checkbox" class="form-checkbox" id="chk-10" value="10"> <span>Form 10</span>
             </label>
           </div>
           
