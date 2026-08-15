@@ -24,6 +24,7 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     role = Column(String(50), nullable=False, default="consultant")  # 'superadmin' or 'consultant'
+    custom_rate_per_employee = Column(Float, nullable=True)  # Nullable rate override (₹/emp)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -39,11 +40,14 @@ class Establishment(Base):
     name = Column(String(255), nullable=False)
     address = Column(Text, nullable=True)
     coverage_date = Column(String(50), nullable=True)
+    custom_rate_per_employee = Column(Float, nullable=True)  # Nullable rate override (₹/emp)
+    advance_credit_balance = Column(Float, nullable=False, default=0.0)  # Prepaid subscription credit (₹), auto-applied to future months
     data = Column(Text, nullable=False, default="{}")  # Serialized Project JSON
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="establishments")
     payments = relationship("Payment", back_populates="establishment", cascade="all, delete-orphan")
+    subscription_fees = relationship("SubscriptionFee", back_populates="establishment", cascade="all, delete-orphan")
 
 
 class Payment(Base):
@@ -61,6 +65,47 @@ class Payment(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     establishment = relationship("Establishment", back_populates="payments")
+
+
+class SubscriptionFee(Base):
+    __tablename__ = "subscription_fees"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    establishment_id = Column(Integer, ForeignKey("establishments.id", ondelete="CASCADE"), nullable=False, index=True)
+    financial_year = Column(String(50), nullable=False, index=True)  # e.g. "2026-27"
+    month = Column(String(20), nullable=False)  # "Mar", "Apr", ... "Feb"
+    employee_count = Column(Integer, default=0, nullable=False)
+    rate_applied = Column(Float, default=10.0, nullable=False)
+    amount_due = Column(Float, default=0.0, nullable=False)
+    is_paid = Column(Boolean, default=False, nullable=False)
+    paid_date = Column(String(50), nullable=True)
+    payment_reference = Column(String(255), nullable=True)  # UPI / Bank reference / Cashfree payment id
+    notes = Column(Text, nullable=True)
+    cashfree_order_id = Column(String(120), nullable=True, index=True)  # Cashfree Payment Link's link_id ("sub_..."), while a link is outstanding
+    cashfree_payment_link_url = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    establishment = relationship("Establishment", back_populates="subscription_fees")
+
+
+class AdvanceCreditLedger(Base):
+    __tablename__ = "advance_credit_ledger"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    establishment_id = Column(Integer, ForeignKey("establishments.id", ondelete="CASCADE"), nullable=False, index=True)
+    entry_type = Column(String(20), nullable=False)  # 'topup' | 'applied'
+    amount = Column(Float, nullable=False)
+    cashfree_order_id = Column(String(120), nullable=True, index=True)  # link_id ("adv_..."), only for Cashfree-initiated topups
+    cashfree_payment_link_url = Column(Text, nullable=True)
+    payment_reference = Column(String(255), nullable=True)  # manual UPI ref, or Cashfree payment id once confirmed
+    notes = Column(Text, nullable=True)
+    applied_to_fee_id = Column(Integer, ForeignKey("subscription_fees.id", ondelete="SET NULL"), nullable=True)  # only on 'applied' entries
+    status = Column(String(20), nullable=False, default="manual")  # 'pending' | 'confirmed' | 'manual'
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    establishment = relationship("Establishment")
+    applied_to_fee = relationship("SubscriptionFee")
 
 
 class ActivityLog(Base):

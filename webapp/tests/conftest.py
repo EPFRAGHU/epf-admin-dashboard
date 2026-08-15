@@ -26,6 +26,10 @@ class AuthClient:
         self.headers = {"Authorization": f"Bearer {token}"}
         self.active_establishment_id = None
 
+    @property
+    def user_id(self) -> int:
+        return self.user.get("id")
+
     def set_establishment(self, est_id: int):
         self.active_establishment_id = est_id
         self.headers["X-Establishment-Id"] = str(est_id)
