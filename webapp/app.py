@@ -242,7 +242,7 @@ def get_unpaid_months_for_year(db: Session, establishment: Establishment, projec
     return unpaid_overdue
 
 # ── App setup ──────────────────────────────────────────────────────────────
-app = FastAPI(title="EPF Admin Dashboard", version="2.0.0")
+app = FastAPI(title="EPF Admin Dashboard", version="2.1.0")
 
 WEB = Path(__file__).resolve().parent
 app.mount("/css", StaticFiles(directory=str(WEB / "css")), name="css")

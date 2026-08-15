@@ -878,11 +878,26 @@ const App = (() => {
   /* ── Version History & Changelog ─────────────────────────────── */
   const versionHistory = [
     {
+      version: 'v2.1.0',
+      dateTime: '15-08-2026 23:55 IST',
+      badge: 'Major Milestone',
+      badgeClass: 'high',
+      isLatest: true,
+      title: 'Subscription Billing, Cashfree Payments & Wage History PDF Export',
+      changes: [
+        'Fixed A/C 1 and A/C 22 statutory remittance miscalculations on the Challans page (EPS double-subtraction, post-2017 EDLI admin minimum applied incorrectly); added Gross/EPF/EPS/EDLI wage breakdown columns.',
+        'New Software Subscription Fee tracker (separate from EPF statutory payments) with 3-tier rate resolution, download-gating on unpaid/overdue months, and a superadmin cross-consultant Subscription Payments ledger.',
+        'Advance Credit system: consultants can prepay a lump sum that auto-applies to future months as wage data arrives, with a per-establishment Subscription History page.',
+        'Real Cashfree Payment Links integration for subscription fees and advance-credit top-ups, with webhook-verified payment confirmation and an in-app return flow.',
+        'Employee Wage History report redesigned with a full EE/ER/EPS contribution breakdown per year, plus a new server-side ReportLab PDF export with repeating headers, page numbers, and pagination that never splits a year across pages.'
+      ]
+    },
+    {
       version: 'v2.0.0',
       dateTime: '15-08-2026 08:30 IST',
       badge: 'Major Milestone',
       badgeClass: 'high',
-      isLatest: true,
+      isLatest: false,
       title: 'Multi-Tenant Architecture, Server Auth & Superadmin Payment Compliance',
       changes: [
         'Complete multi-tenant isolation with secure JWT server-side authentication and per-request tenant data scoping.',
@@ -929,7 +944,7 @@ const App = (() => {
           <div>
             <div style="font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px;">Project Progression Timeline</div>
             <div style="font-size: 14px; font-weight: 700; color: var(--text1); margin-top: 2px;">
-              <span style="color: var(--primary);">v1.0.0</span> (11-08-2026) <span style="color: var(--text3); margin: 0 4px;">➔</span> <span style="color: var(--green);">v2.0.0 Enterprise Multi-Tenant</span> (15-08-2026)
+              <span style="color: var(--primary);">v1.0.0</span> (11-08-2026) <span style="color: var(--text3); margin: 0 4px;">➔</span> <span style="color: var(--green);">v2.1.0 Subscription Billing & Cashfree</span> (15-08-2026)
             </div>
           </div>
           <div style="display: flex; gap: 8px;">
@@ -939,7 +954,7 @@ const App = (() => {
             </div>
             <div style="background: var(--card); border: 1px solid var(--card-border); padding: 6px 12px; border-radius: var(--radius-sm); text-align: center;">
               <div style="font-size: 10px; color: var(--text3); font-weight: 500;">Current State</div>
-              <div style="font-size: 13px; font-weight: 700; color: var(--green);">v2.0.0 Active</div>
+              <div style="font-size: 13px; font-weight: 700; color: var(--green);">v2.1.0 Active</div>
             </div>
           </div>
         </div>
