@@ -148,21 +148,30 @@ def apply_advance_credit_if_available(db: Session, est_obj: Establishment, fee_r
 
 
 def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project: Project, year_key: str):
-    """Sync or auto-generate 12-month subscription fee records for an establishment and financial year."""
+    """Sync or auto-generate 12-month subscription fee records for an establishment and financial year.
+
+    Fetches all 12 months' existing rows in a single query up front (instead of one
+    query per month) -- this endpoint is on the hot path for page loads (Reports,
+    Challans, the subscription-status banner), and 12 sequential round-trips to a
+    remote DB (Neon Postgres in production) measurably added seconds to page load,
+    especially noticeable right after the DB's connection has been idle."""
     rate = resolve_rate(db, est_obj)
     year_record = project.years.get(year_key)
     if not year_record:
         return
 
+    existing_rows = {
+        f.month: f for f in db.query(SubscriptionFee).filter(
+            SubscriptionFee.establishment_id == est_obj.id,
+            SubscriptionFee.financial_year == year_key
+        ).all()
+    }
+
     for month_idx in range(12):
         month_abbr = MONTH_SHORT_NAMES[month_idx]
         emp_count = count_ecr_employees_for_month(project, year_key, month_idx)
 
-        fee_row = db.query(SubscriptionFee).filter(
-            SubscriptionFee.establishment_id == est_obj.id,
-            SubscriptionFee.financial_year == year_key,
-            SubscriptionFee.month == month_abbr
-        ).first()
+        fee_row = existing_rows.get(month_abbr)
 
         if not fee_row:
             fee_row = SubscriptionFee(
@@ -191,7 +200,10 @@ def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project
                 fee_row.employee_count = emp_count
                 fee_row.amount_due = round(emp_count * fee_row.rate_applied, 2)
 
+        existing_rows[month_abbr] = fee_row
+
     db.commit()
+    return existing_rows
 
 def is_month_overdue(year_key: str, month_idx: int) -> bool:
     """A month is overdue if current date is strictly greater than 1 day past month end."""
@@ -216,7 +228,7 @@ def is_month_overdue(year_key: str, month_idx: int) -> bool:
 
 def get_unpaid_months_for_year(db: Session, establishment: Establishment, project: Project, year_key: str) -> List[str]:
     """Returns list of formatted month names for which wages exist, fee is unpaid, and grace period has elapsed."""
-    sync_subscription_fees_for_year(db, establishment, project, year_key)
+    fee_rows = sync_subscription_fees_for_year(db, establishment, project, year_key)
     year_record = project.years.get(year_key)
     if not year_record:
         return []
@@ -228,11 +240,7 @@ def get_unpaid_months_for_year(db: Session, establishment: Establishment, projec
         if emp_count == 0:
             continue
 
-        fee_row = db.query(SubscriptionFee).filter(
-            SubscriptionFee.establishment_id == establishment.id,
-            SubscriptionFee.financial_year == year_key,
-            SubscriptionFee.month == month_abbr
-        ).first()
+        fee_row = (fee_rows or {}).get(month_abbr)
 
         if fee_row and not fee_row.is_paid:
             if is_month_overdue(year_key, month_idx):
