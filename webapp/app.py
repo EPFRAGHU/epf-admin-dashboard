@@ -24,7 +24,7 @@ from sqlalchemy.sql import func
 # Database and models
 from .database import (
     SessionLocal, engine, get_db, Base,
-    User, Establishment, Payment, ProjectData, Setting, DATABASE_URL
+    User, Establishment, Payment, ActivityLog, ProjectData, Setting, DATABASE_URL
 )
 
 # Auth helpers and dependencies
@@ -32,6 +32,34 @@ from .auth import (
     hash_password, verify_password, create_access_token, decode_access_token,
     get_current_user, get_superadmin, get_active_establishment, save_establishment_project
 )
+
+def log_activity(
+    db: Session,
+    user_id: Optional[int],
+    establishment_id: Optional[int],
+    action_type: str,
+    description: str,
+    metadata: Optional[dict] = None
+):
+    """Additive, resilient activity logger that never crashes parent endpoints."""
+    if not db:
+        return
+    try:
+        log_entry = ActivityLog(
+            user_id=user_id,
+            establishment_id=establishment_id,
+            action_type=action_type,
+            description=description,
+            extra_data=json.dumps(metadata or {}, ensure_ascii=False)
+        )
+        db.add(log_entry)
+        db.commit()
+    except Exception as e:
+        print(f"[ActivityLog] Warning: failed to record activity: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 # Engine
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -296,6 +324,12 @@ async def login(d: LoginIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=403, detail="Your account has been deactivated. Please contact support.")
 
     token = create_access_token(user.id, user.email, user.role)
+    log_activity(
+        db, user.id, None,
+        "consultant_login" if user.role == "consultant" else "superadmin_login",
+        f"User logged in: {user.name} ({user.email})",
+        {"role": user.role, "email": user.email}
+    )
     return {
         "ok": True,
         "token": token,
@@ -418,6 +452,12 @@ async def admin_create_user(
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+
+    log_activity(
+        db, admin.id, None, "consultant_created",
+        f"Created new consultant account: {new_user.name} (S.No: {new_user.serial_no}, Email: {new_user.email})",
+        {"consultant_id": new_user.id, "serial_no": new_user.serial_no, "name": new_user.name, "email": new_user.email}
+    )
 
     return {
         "ok": True,
@@ -587,7 +627,93 @@ async def admin_save_establishment_payments(
             payment.notes = item.notes or ""
 
     db.commit()
+    paid_count = sum(1 for item in d.payments if item.is_paid)
+    log_activity(
+        db, admin.id, est.id, "payment_marked",
+        f"Marked payment compliance for {est.name} ({est.code}) — FY {fy} ({paid_count} months paid)",
+        {"financial_year": fy, "paid_count": paid_count, "code": est.code}
+    )
     return {"ok": True}
+
+
+@app.get("/api/admin/activity-log")
+async def admin_get_activity_log(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    user_id: Optional[int] = Query(None),
+    establishment_id: Optional[int] = Query(None),
+    action_type: Optional[str] = Query(None),
+    since: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    query = db.query(ActivityLog)
+
+    if user_id:
+        query = query.filter(ActivityLog.user_id == user_id)
+    if establishment_id:
+        query = query.filter(ActivityLog.establishment_id == establishment_id)
+    if action_type and action_type.lower() != "all":
+        query = query.filter(ActivityLog.action_type == action_type)
+    if since:
+        try:
+            if "-" in since and len(since.split("-")[0]) == 2:
+                dt_since = datetime.strptime(since, "%d-%m-%Y")
+            else:
+                dt_since = datetime.fromisoformat(since)
+            query = query.filter(ActivityLog.timestamp >= dt_since)
+        except Exception:
+            pass
+    if search:
+        s = f"%{search.strip().lower()}%"
+        query = query.filter(func.lower(ActivityLog.description).like(s))
+
+    total = query.count()
+    offset = (page - 1) * limit
+    logs = query.order_by(ActivityLog.timestamp.desc(), ActivityLog.id.desc()).offset(offset).limit(limit).all()
+
+    # Preload users and establishments
+    user_ids = list({l.user_id for l in logs if l.user_id})
+    est_ids = list({l.establishment_id for l in logs if l.establishment_id})
+    
+    users_map = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()} if user_ids else {}
+    ests_map = {e.id: e for e in db.query(Establishment).filter(Establishment.id.in_(est_ids)).all()} if est_ids else {}
+
+    rows = []
+    for l in logs:
+        u = users_map.get(l.user_id)
+        e = ests_map.get(l.establishment_id)
+        
+        meta = {}
+        if l.extra_data:
+            try:
+                meta = json.loads(l.extra_data)
+            except Exception:
+                meta = {}
+
+        rows.append({
+            "id": l.id,
+            "timestamp": l.timestamp.isoformat() if l.timestamp else "",
+            "time_formatted": l.timestamp.strftime("%d-%m-%Y %I:%M %p") if l.timestamp else "—",
+            "user_id": l.user_id,
+            "user_name": u.name if u else ("System" if not l.user_id else "Unknown User"),
+            "user_email": u.email if u else "",
+            "user_role": u.role if u else "",
+            "establishment_id": l.establishment_id,
+            "establishment_name": e.name if e else ("—" if not l.establishment_id else "Unknown Establishment"),
+            "establishment_code": e.code if e else "",
+            "action_type": l.action_type,
+            "description": l.description,
+            "metadata": meta
+        })
+
+    return {
+        "logs": rows,
+        "total": total,
+        "page": page,
+        "limit": limit
+    }
 
 
 # ── Establishments Management (/api/establishments) ────────────────────────
@@ -652,6 +778,12 @@ async def create_establishment(
     db.add(new_est)
     db.commit()
     db.refresh(new_est)
+
+    log_activity(
+        db, current_user.id, new_est.id, "establishment_created",
+        f"Added establishment {new_est.code} — {new_est.name}",
+        {"code": new_est.code, "name": new_est.name, "coverage_date": new_est.coverage_date}
+    )
 
     return {
         "ok": True,
@@ -1101,6 +1233,11 @@ async def add_employee(
                           d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er,
                           d.branch, d.division, d.unit)
     save_establishment_project(db, est_obj, project)
+    log_activity(
+        db, est_obj.user_id, est_obj.id, "employee_added",
+        f"Added employee {d.name} (UAN: {d.uan or '—'}, Member ID: {d.member_id}) to {project.name}",
+        {"member_id": d.member_id, "name": d.name, "uan": d.uan, "establishment_name": project.name}
+    )
     return {"ok": True}
 
 
@@ -1277,6 +1414,11 @@ async def save_remittances_bulk(
     yr = project.years[key]
     yr.remittances = [r.dict() for r in data.remittances]
     save_establishment_project(db, est_obj, project)
+    log_activity(
+        db, est_obj.user_id, est_obj.id, "challan_saved",
+        f"Saved Form 12A challan remittances for FY {key} in {project.name}",
+        {"year_key": key, "establishment_code": project.code}
+    )
     return {"ok": True}
 
 
@@ -1361,6 +1503,13 @@ async def put_wages(
     ncp_days = d.ncp_days if d.ncp_days and len(d.ncp_days) == 12 else [0] * 12
     project.upsert_entry(key, d.member_id, capped_wages, gross_wages=gross_wages, ncp_days=ncp_days, age_crosses_58=d.age_crosses_58, higher_epf_ee=d.higher_epf_ee, higher_epf_er=d.higher_epf_er)
     save_establishment_project(db, est_obj, project)
+    
+    emp_name = project.get_master(d.member_id).name if project.get_master(d.member_id) else d.member_id
+    log_activity(
+        db, est_obj.user_id, est_obj.id, "wages_saved",
+        f"Updated 12-month wages for {emp_name} (FY {key}) in {project.name}",
+        {"year_key": key, "member_id": d.member_id, "establishment_name": project.name}
+    )
     return {"ok": True}
 
 
@@ -1412,6 +1561,12 @@ async def bulk_month_wages(
         )
         
     save_establishment_project(db, est_obj, project)
+    month_name = MONTHS[d.month_idx] if 0 <= d.month_idx < len(MONTHS) else f"Month {d.month_idx}"
+    log_activity(
+        db, est_obj.user_id, est_obj.id, "wages_saved",
+        f"Saved monthly bulk wages for {month_name} (FY {key}) in {project.name} ({len(d.employees)} employees)",
+        {"year_key": key, "month_idx": d.month_idx, "employee_count": len(d.employees), "establishment_name": project.name}
+    )
     return {"ok": True, "count": len(d.employees)}
 
 

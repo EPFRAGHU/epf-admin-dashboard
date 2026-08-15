@@ -63,6 +63,21 @@ class Payment(Base):
     establishment = relationship("Establishment", back_populates="payments")
 
 
+class ActivityLog(Base):
+    __tablename__ = "activity_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    establishment_id = Column(Integer, ForeignKey("establishments.id", ondelete="SET NULL"), nullable=True, index=True)
+    action_type = Column(String(100), nullable=False, index=True)
+    description = Column(Text, nullable=False)
+    extra_data = Column(Text, nullable=True, default="{}")  # Serialized JSON
+
+    user = relationship("User")
+    establishment = relationship("Establishment")
+
+
 # Legacy tables for migration
 class ProjectData(Base):
     __tablename__ = "projects"

@@ -1,14 +1,25 @@
 /* ================================================================
-   Admin.js — Superadmin Dashboard, Consultant Management & Payment Tracking
+   Admin.js — Superadmin Dashboard, Consultant Management, Payment Tracking & Activity Log
    ================================================================ */
 
 const Admin = (() => {
+  let activeTab = 'overview'; // 'overview' | 'activity_log'
   let overviewData = null;
   let consultants = [];
   let currentSelectedConsultant = null;
   let currentSelectedEstablishment = null;
   let currentPaymentYear = '2026-27';
   let paymentGridState = [];
+
+  // Activity log state
+  let activityLogs = [];
+  let activityPage = 1;
+  let activityLimit = 15;
+  let activityTotal = 0;
+  let filterUser = '';
+  let filterAction = 'all';
+  let filterSearch = '';
+  let filterSince = '';
 
   async function loadOverview() {
     try {
@@ -28,6 +39,27 @@ const Admin = (() => {
     } catch (e) {
       console.error('Failed to load consultants', e);
       return [];
+    }
+  }
+
+  async function loadActivityLogs(page = 1) {
+    activityPage = page;
+    let url = `/api/admin/activity-log?page=${page}&limit=${activityLimit}`;
+    if (filterUser) url += `&user_id=${encodeURIComponent(filterUser)}`;
+    if (filterAction && filterAction !== 'all') url += `&action_type=${encodeURIComponent(filterAction)}`;
+    if (filterSearch) url += `&search=${encodeURIComponent(filterSearch)}`;
+    if (filterSince) url += `&since=${encodeURIComponent(filterSince)}`;
+
+    try {
+      const res = await App.get(url);
+      activityLogs = res.logs || [];
+      activityTotal = res.total || 0;
+      return res;
+    } catch (e) {
+      console.error('Failed to load activity logs', e);
+      activityLogs = [];
+      activityTotal = 0;
+      return { logs: [], total: 0 };
     }
   }
 
@@ -58,7 +90,7 @@ const Admin = (() => {
 
     container.innerHTML = `
       <!-- Admin Overview KPI Cards -->
-      <div class="stat-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:16px; margin-bottom:24px;">
+      <div class="stat-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:16px; margin-bottom:20px;">
         <div class="stat-card" style="background:var(--card); border:1px solid var(--card-border); border-radius:var(--radius); padding:20px; box-shadow:var(--shadow);">
           <div style="display:flex; justify-content:space-between; align-items:flex-start;">
             <div>
@@ -104,11 +136,126 @@ const Admin = (() => {
         </div>
       </div>
 
+      <!-- Navigation Tabs -->
+      <div style="display:flex; gap:10px; margin-bottom:20px; border-bottom:1px solid var(--border); padding-bottom:12px;">
+        <button class="btn ${activeTab === 'overview' ? 'btn-primary' : 'btn-ghost'}" style="font-weight:700;" onclick="Admin.switchTab('overview')">
+          👥 Consultants & Overview
+        </button>
+        <button class="btn ${activeTab === 'activity_log' ? 'btn-primary' : 'btn-ghost'}" style="font-weight:700;" onclick="Admin.switchTab('activity_log')">
+          📜 Activity Log Feed
+        </button>
+      </div>
+
       <!-- Main Admin Content Container -->
       <div id="admin-main-container">
-        ${renderConsultantsSection()}
+        ${activeTab === 'overview' ? renderOverviewTab() : renderActivityLogTabHtml()}
       </div>
     `;
+
+    if (activeTab === 'overview') {
+      loadRecentActivityWidget();
+    } else if (activeTab === 'activity_log') {
+      loadFullActivityLogTable();
+    }
+  }
+
+  function switchTab(tab) {
+    activeTab = tab;
+    const container = document.getElementById('content');
+    if (container) render(container);
+  }
+
+  /* ── Tab 1: Overview & Consultants ────────────────────────────── */
+  function renderOverviewTab() {
+    return `
+      <div style="display:flex; flex-direction:column; gap:24px;">
+        <!-- Consultants Management Table -->
+        ${renderConsultantsSection()}
+
+        <!-- Recent Activity Feed Widget -->
+        <div class="card" style="padding:0; overflow:hidden; border:1px solid var(--card-border);">
+          <div class="card-head" style="display:flex; justify-content:space-between; align-items:center; padding:14px 20px; border-bottom:1px solid var(--border); background:var(--bg2);">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span style="font-size:18px;">⚡</span>
+              <h3 style="margin:0; font-size:16px; font-weight:700;">Recent System Activity</h3>
+            </div>
+            <button class="btn btn-ghost btn-sm" style="color:var(--primary); font-weight:600;" onclick="Admin.switchTab('activity_log')">
+              View All Activities →
+            </button>
+          </div>
+          <div id="admin-recent-activity-widget" style="padding:12px 20px;">
+            <div class="page-loading" style="padding:20px;"><div class="spinner"></div><p>Loading recent events…</p></div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadRecentActivityWidget() {
+    const el = document.getElementById('admin-recent-activity-widget');
+    if (!el) return;
+
+    try {
+      const res = await App.get('/api/admin/activity-log?page=1&limit=6');
+      const logs = res.logs || [];
+
+      if (logs.length === 0) {
+        el.innerHTML = `<div style="text-align:center; padding:20px; color:var(--text3); font-size:13px;">No recent activities recorded yet.</div>`;
+        return;
+      }
+
+      el.innerHTML = `
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          ${logs.map(l => renderActivityRowCompact(l)).join('')}
+        </div>
+      `;
+    } catch (e) {
+      el.innerHTML = `<div style="color:var(--danger); padding:10px; font-size:12px;">Failed to load recent activity.</div>`;
+    }
+  }
+
+  function renderActivityRowCompact(l) {
+    const meta = getActionBadgeInfo(l.action_type);
+    return `
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:var(--card); border:1px solid var(--border); border-radius:var(--radius-sm); gap:12px; flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:12px; min-width:280px; flex:1;">
+          <span style="font-size:18px; background:var(--bg2); padding:6px 8px; border-radius:6px; border:1px solid var(--border);">${meta.icon}</span>
+          <div>
+            <div style="font-weight:600; font-size:13px; color:var(--text1);">${App.esc(l.description)}</div>
+            <div style="font-size:11px; color:var(--text3); margin-top:2px;">
+              <strong style="color:var(--text2);">${App.esc(l.user_name)}</strong>
+              ${l.establishment_name && l.establishment_name !== '—' ? ` · <span style="color:var(--primary); font-weight:600;">${App.esc(l.establishment_name)}</span>` : ''}
+            </div>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span class="badge" style="font-size:10px; background:${meta.bg}; color:${meta.color}; border:1px solid ${meta.border}; font-weight:600;">${meta.label}</span>
+          <span style="font-size:11px; color:var(--text3); white-space:nowrap;">🕒 ${l.time_formatted}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function getActionBadgeInfo(actionType) {
+    switch (actionType) {
+      case 'establishment_created':
+        return { icon: '🏢', label: 'Establishment Created', color: 'var(--primary)', bg: 'rgba(99,102,241,0.1)', border: 'rgba(99,102,241,0.25)' };
+      case 'employee_added':
+        return { icon: '👥', label: 'Employee Added', color: '#0284c7', bg: 'rgba(2,132,199,0.1)', border: 'rgba(2,132,199,0.25)' };
+      case 'wages_saved':
+        return { icon: '💰', label: 'Wages Saved', color: 'var(--green)', bg: 'rgba(16,185,129,0.1)', border: 'rgba(16,185,129,0.25)' };
+      case 'challan_saved':
+        return { icon: '🏦', label: 'Challan Filed', color: 'var(--amber)', bg: 'rgba(245,158,11,0.1)', border: 'rgba(245,158,11,0.25)' };
+      case 'payment_marked':
+        return { icon: '💳', label: 'Payment Marked', color: '#ec4899', bg: 'rgba(236,72,153,0.1)', border: 'rgba(236,72,153,0.25)' };
+      case 'consultant_created':
+        return { icon: '👤', label: 'Consultant Created', color: '#8b5cf6', bg: 'rgba(139,92,246,0.1)', border: 'rgba(139,92,246,0.25)' };
+      case 'consultant_login':
+      case 'superadmin_login':
+        return { icon: '🔑', label: 'User Login', color: '#14b8a6', bg: 'rgba(20,184,166,0.1)', border: 'rgba(20,184,166,0.25)' };
+      default:
+        return { icon: '📌', label: actionType || 'Activity', color: 'var(--text2)', bg: 'var(--bg2)', border: 'var(--border)' };
+    }
   }
 
   function renderConsultantsSection() {
@@ -214,6 +361,157 @@ const Admin = (() => {
       String(c.serial_no).includes(q)
     );
     tbody.innerHTML = renderConsultantRows(filtered);
+  }
+
+  /* ── Tab 2: Full Activity Log Feed ────────────────────────────── */
+  function renderActivityLogTabHtml() {
+    const consultantOptions = consultants.map(c => `
+      <option value="${c.id}" ${String(filterUser) === String(c.id) ? 'selected' : ''}>${App.esc(c.name)} (${c.serial_no ? 'S.No ' + c.serial_no : c.email})</option>
+    `).join('');
+
+    return `
+      <div class="card" style="padding:0; overflow:hidden;">
+        <!-- Filters Header Bar -->
+        <div class="card-head" style="display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap; gap:12px; background:var(--bg2);">
+          <div>
+            <h3 style="margin:0; font-size:17px; font-weight:700;">Global System Activity Log</h3>
+            <p style="margin:2px 0 0 0; font-size:12px; color:var(--text2);">Audit trail of events across all consultants, establishments, wages, challans, and payments</p>
+          </div>
+
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <!-- Filter by Consultant -->
+            <select class="form-input sm" id="act-filter-user" style="width:170px;" onchange="Admin.onActivityFilterChange()">
+              <option value="">All Consultants</option>
+              ${consultantOptions}
+            </select>
+
+            <!-- Filter by Action Type -->
+            <select class="form-input sm" id="act-filter-action" style="width:160px;" onchange="Admin.onActivityFilterChange()">
+              <option value="all" ${filterAction === 'all' ? 'selected' : ''}>All Actions</option>
+              <option value="establishment_created" ${filterAction === 'establishment_created' ? 'selected' : ''}>🏢 Establishment Created</option>
+              <option value="employee_added" ${filterAction === 'employee_added' ? 'selected' : ''}>👥 Employee Added</option>
+              <option value="wages_saved" ${filterAction === 'wages_saved' ? 'selected' : ''}>💰 Wages Saved</option>
+              <option value="challan_saved" ${filterAction === 'challan_saved' ? 'selected' : ''}>🏦 Challans Filed</option>
+              <option value="payment_marked" ${filterAction === 'payment_marked' ? 'selected' : ''}>💳 Payments Marked</option>
+              <option value="consultant_created" ${filterAction === 'consultant_created' ? 'selected' : ''}>👤 Consultant Created</option>
+              <option value="consultant_login" ${filterAction === 'consultant_login' ? 'selected' : ''}>🔑 Consultant Login</option>
+            </select>
+
+            <!-- Search input -->
+            <input type="text" id="act-filter-search" class="form-input sm" placeholder="Search details…" value="${App.esc(filterSearch)}" style="width:180px;" oninput="Admin.debounceActivitySearch(this.value)">
+
+            <button class="btn btn-ghost btn-sm" onclick="Admin.resetActivityFilters()" title="Reset Filters">
+              🔄 Reset
+            </button>
+          </div>
+        </div>
+
+        <div id="admin-activity-log-table-container">
+          <div class="page-loading" style="padding:40px;"><div class="spinner"></div><p>Loading activity logs…</p></div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadFullActivityLogTable(page = 1) {
+    const container = document.getElementById('admin-activity-log-table-container');
+    if (!container) return;
+
+    container.innerHTML = `<div class="page-loading" style="padding:32px;"><div class="spinner"></div><p>Loading page ${page}…</p></div>`;
+
+    await loadActivityLogs(page);
+
+    if (activityLogs.length === 0) {
+      container.innerHTML = `
+        <div style="text-align:center; padding:48px 20px; color:var(--text3);">
+          <span style="font-size:36px; display:block; margin-bottom:8px;">🔍</span>
+          <strong>No matching activity logs found.</strong>
+          <p style="margin:4px 0 0 0; font-size:12px;">Try adjusting your filters or date range.</p>
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th style="width:170px;">Date & Time</th>
+              <th style="width:180px;">Consultant / User</th>
+              <th style="width:200px;">Establishment</th>
+              <th style="width:170px;">Action Type</th>
+              <th>Activity Description & Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${activityLogs.map(l => {
+              const meta = getActionBadgeInfo(l.action_type);
+              return `
+                <tr>
+                  <td style="font-size:12px; color:var(--text2); white-space:nowrap;">
+                    <div style="font-weight:600; color:var(--text1);">${l.time_formatted.split(' ')[0]}</div>
+                    <div style="font-size:11px; color:var(--text3);">${l.time_formatted.split(' ').slice(1).join(' ')}</div>
+                  </td>
+                  <td>
+                    <div style="font-weight:600; color:var(--text1); font-size:13px;">${App.esc(l.user_name)}</div>
+                    <div style="font-size:11px; color:var(--text3); font-family:monospace;">${App.esc(l.user_email || '—')}</div>
+                  </td>
+                  <td>
+                    ${l.establishment_name && l.establishment_name !== '—' ? `
+                      <div style="font-weight:600; color:var(--primary); font-size:13px;">${App.esc(l.establishment_name)}</div>
+                      <div style="font-size:10px; color:var(--text2); font-family:monospace;">${App.esc(l.establishment_code || '')}</div>
+                    ` : '<span style="color:var(--text3);">—</span>'}
+                  </td>
+                  <td>
+                    <span class="badge" style="font-size:11px; background:${meta.bg}; color:${meta.color}; border:1px solid ${meta.border}; font-weight:600; display:inline-flex; align-items:center; gap:4px;">
+                      <span>${meta.icon}</span><span>${meta.label}</span>
+                    </span>
+                  </td>
+                  <td>
+                    <div style="font-size:13px; color:var(--text1); line-height:1.4;">${App.esc(l.description)}</div>
+                  </td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Pagination Footer -->
+      ${App.renderPagination(activityTotal, activityPage, activityLimit, 'Admin.goToActivityPage')}
+    `;
+  }
+
+  function goToActivityPage(page) {
+    loadFullActivityLogTable(page);
+  }
+
+  function onActivityFilterChange() {
+    const userSelect = document.getElementById('act-filter-user');
+    const actionSelect = document.getElementById('act-filter-action');
+    if (userSelect) filterUser = userSelect.value;
+    if (actionSelect) filterAction = actionSelect.value;
+    loadFullActivityLogTable(1);
+  }
+
+  let searchTimeout = null;
+  function debounceActivitySearch(val) {
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {
+      filterSearch = (val || '').trim();
+      loadFullActivityLogTable(1);
+    }, 300);
+  }
+
+  function resetActivityFilters() {
+    filterUser = '';
+    filterAction = 'all';
+    filterSearch = '';
+    filterSince = '';
+    const container = document.getElementById('admin-main-container');
+    if (container) container.innerHTML = renderActivityLogTabHtml();
+    loadFullActivityLogTable(1);
   }
 
   /* ── Add / Edit Consultant Modal ─────────────────────────────── */
@@ -349,11 +647,16 @@ const Admin = (() => {
     const container = document.getElementById('admin-main-container');
     if (!container) return;
 
-    container.innerHTML = `<div class="page-loading"><div class="spinner"></div><p>Loading Establishments…</p></div>`;
+    container.innerHTML = `<div class="page-loading"><div class="spinner"></div><p>Loading Establishments & Consultant Activity…</p></div>`;
 
     try {
-      const res = await App.get(`/api/admin/users/${userId}/establishments`);
+      const [res, actRes] = await Promise.all([
+        App.get(`/api/admin/users/${userId}/establishments`),
+        App.get(`/api/admin/activity-log?user_id=${userId}&limit=8`).catch(() => ({ logs: [] }))
+      ]);
+
       const ests = res.establishments || [];
+      const userLogs = actRes.logs || [];
 
       container.innerHTML = `
         <div style="margin-bottom:16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
@@ -366,7 +669,7 @@ const Admin = (() => {
           </div>
         </div>
 
-        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap:16px;">
+        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap:16px; margin-bottom:24px;">
           ${ests.length === 0 ? `
             <div class="card" style="grid-column: 1 / -1; text-align:center; padding:36px; color:var(--text3);">
               This consultant does not have any establishments registered yet.
@@ -394,6 +697,23 @@ const Admin = (() => {
             </div>
           `).join('')}
         </div>
+
+        <!-- Scoped Activity Log Panel for this Consultant -->
+        <div class="card" style="padding:0; overflow:hidden; border:1px solid var(--card-border);">
+          <div class="card-head" style="padding:14px 20px; border-bottom:1px solid var(--border); background:var(--bg2); display:flex; justify-content:space-between; align-items:center;">
+            <div style="font-weight:700; font-size:15px;">🕒 Recent Activity by ${App.esc(res.user.name)}</div>
+            <span style="font-size:11px; color:var(--text3);">${userLogs.length} Recent Action(s)</span>
+          </div>
+          <div style="padding:14px 20px;">
+            ${userLogs.length === 0 ? `
+              <div style="text-align:center; color:var(--text3); font-size:12px; padding:12px;">No activity logged yet for this consultant.</div>
+            ` : `
+              <div style="display:flex; flex-direction:column; gap:8px;">
+                ${userLogs.map(l => renderActivityRowCompact(l)).join('')}
+              </div>
+            `}
+          </div>
+        </div>
       `;
     } catch (e) {
       container.innerHTML = `
@@ -407,7 +727,8 @@ const Admin = (() => {
 
   function backToConsultantsList() {
     const container = document.getElementById('admin-main-container');
-    if (container) container.innerHTML = renderConsultantsSection();
+    if (container) container.innerHTML = renderOverviewTab();
+    loadRecentActivityWidget();
   }
 
   function switchToEstablishment(estId, estName, estCode) {
@@ -541,7 +862,6 @@ const Admin = (() => {
     if (!paymentGridState[idx]) return;
     if (field === 'is_paid') {
       paymentGridState[idx].is_paid = Boolean(val);
-      // If checked and amount is blank, auto-focus amount
     } else if (field === 'amount') {
       paymentGridState[idx].amount = val === '' ? null : Number(val);
       if (val !== '' && !paymentGridState[idx].is_paid) {
@@ -586,6 +906,7 @@ const Admin = (() => {
 
   return {
     render,
+    switchTab,
     filterConsultants,
     showAddConsultantModal,
     saveNewConsultant,
@@ -598,7 +919,11 @@ const Admin = (() => {
     openPaymentModal,
     changePaymentYear,
     onPaymentFieldChange,
-    savePaymentGrid
+    savePaymentGrid,
+    onActivityFilterChange,
+    debounceActivitySearch,
+    resetActivityFilters,
+    goToActivityPage
   };
 })();
 
