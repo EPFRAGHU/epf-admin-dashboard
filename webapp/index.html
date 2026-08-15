@@ -5,8 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EPF Admin Dashboard</title>
     <meta name="description" content="EPF Form 3A/6A Admin Dashboard — Employee Provident Fund Management System">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <script>
+      (function() {
+        const saved = localStorage.getItem('epf_theme');
+        const theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', theme);
+      })();
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <link rel="stylesheet" href="/css/style.css">
     <link rel="stylesheet" href="/css/epfo-app-theme.css">
@@ -28,6 +34,9 @@
                 </a>
                 <a class="nav-item" data-page="establishment">
                     <span class="nav-icon">🏢</span><span>Establishment</span>
+                </a>
+                <a class="nav-item" data-page="org-structure">
+                    <span class="nav-icon">🏛️</span><span>Org Structure</span>
                 </a>
                 <a class="nav-item" data-page="employees">
                     <span class="nav-icon">👥</span><span>Employees</span>
@@ -69,6 +78,9 @@
             <header class="topbar">
                 <button class="hamburger" onclick="App.toggleSidebar()">☰</button>
                 <h2 class="topbar-title" id="topbar-title">Dashboard</h2>
+                <button class="theme-toggle-btn" id="theme-toggle-btn" onclick="App.toggleTheme()" title="Toggle dark mode">
+                    <span id="theme-toggle-icon">🌙</span>
+                </button>
                 <div class="topbar-right" id="topbar-right"></div>
             </header>
             <div class="content" id="content">
@@ -87,8 +99,11 @@
     <div class="toast-box" id="toast-box"></div>
 
     <script src="/js/app.js"></script>
+    <script src="/js/admin.js"></script>
+    <script src="/js/my-establishments.js"></script>
     <script src="/js/dashboard.js"></script>
     <script src="/js/establishment.js"></script>
+    <script src="/js/org-structure.js"></script>
     <script src="/js/employees.js"></script>
     <script src="/js/years.js"></script>
     <script src="/js/wages.js"></script>

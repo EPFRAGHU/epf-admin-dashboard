@@ -3,22 +3,36 @@
    ================================================================ */
 let masterEmployees = [];
 let filteredEmployees = [];
+let orgStructureData = { branches: [], divisions: [], units: [] };
 let currentEmpPage = 1;
 const EMP_PAGE_SIZE = 50;
 
 App.registerPage('employees', async (container) => {
-  const { employees } = await App.get('/api/employees');
-  masterEmployees = employees;
-  filteredEmployees = [...employees];
+  const [empRes, orgRes] = await Promise.all([
+    App.get('/api/employees'),
+    App.get('/api/org-structure')
+  ]);
+  masterEmployees = empRes.employees || [];
+  filteredEmployees = [...masterEmployees];
+  orgStructureData = orgRes || { branches: [], divisions: [], units: [] };
   currentEmpPage = 1;
   
+  const branches = orgStructureData.branches || [];
+  const branchFilterHtml = branches.length > 0 ? `
+    <select class="form-select" id="emp-branch-filter" onchange="filterEmpTable()" style="max-width:180px; font-size:12px; padding:6px 10px;">
+      <option value="">All Branches</option>
+      ${branches.map(b => `<option value="${App.esc(b)}">${App.esc(b)}</option>`).join('')}
+    </select>
+  ` : '';
+
   container.innerHTML = `<div class="fade-in">
     <div class="toolbar">
-      <div class="toolbar-left">
+      <div class="toolbar-left" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
         <div class="search-box">
           <span class="search-icon">🔍</span>
           <input class="form-input" id="emp-search" placeholder="Search employees…" oninput="filterEmpTable()">
         </div>
+        ${branchFilterHtml}
         <span style="color:var(--text3);font-size:12px" id="emp-count-label">${filteredEmployees.length} employees</span>
       </div>
       <div class="toolbar-right">
@@ -32,6 +46,7 @@ App.registerPage('employees', async (container) => {
           <thead>
             <tr>
               <th>SL</th><th>Member ID</th><th>UAN</th><th>Name</th>
+              <th>Branch</th><th>Division</th><th>Unit</th>
               <th>Father's Name</th><th>DOB</th><th>Higher EPF</th><th>Sex</th>
               <th>DOJ</th><th>DOE</th><th>Reason</th><th>Actions</th>
             </tr>
@@ -72,14 +87,14 @@ function renderEmpTable() {
 }
 
 window.filterEmpTable = () => {
-  const q = document.getElementById('emp-search').value.toLowerCase();
-  if (!q) {
-      filteredEmployees = [...masterEmployees];
-  } else {
-      filteredEmployees = masterEmployees.filter(e => 
-          (e.member_id + ' ' + e.name + ' ' + (e.uan || '')).toLowerCase().includes(q)
-      );
-  }
+  const q = (document.getElementById('emp-search')?.value || '').toLowerCase();
+  const branch = document.getElementById('emp-branch-filter')?.value || '';
+  
+  filteredEmployees = masterEmployees.filter(e => {
+    const matchesQuery = !q || (e.member_id + ' ' + e.name + ' ' + (e.uan || '') + ' ' + (e.branch || '')).toLowerCase().includes(q);
+    const matchesBranch = !branch || (e.branch === branch);
+    return matchesQuery && matchesBranch;
+  });
   currentEmpPage = 1;
   renderEmpTable();
 };
@@ -91,6 +106,9 @@ function empRow(e) {
     <td><strong>${App.fmtId(e.member_id)}</strong></td>
     <td>${App.esc(e.uan)}</td>
     <td class="txt">${App.esc(e.name)}</td>
+    <td>${e.branch ? `<span class="badge" style="background:var(--bg); border:1px solid var(--card-border); font-size:11px;">${App.esc(e.branch)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
+    <td>${e.division ? `<span style="font-size:12px; color:var(--text2);">${App.esc(e.division)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
+    <td>${e.unit ? `<span style="font-size:12px; color:var(--text2);">${App.esc(e.unit)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
     <td>${App.esc(e.father_name)}</td>
     <td>${App.esc(e.dob)}${e.superannuation ? '<br><span class="badge high" style="margin-top:2px; display:inline-block">58+</span>' : ''}</td>
     <td>
@@ -112,6 +130,10 @@ function showEmpModal(emp = null) {
   const isEdit = !!emp;
   const title = isEdit ? `Edit Employee — ${emp.name}` : 'Add New Employee';
   const e = emp || {};
+  const branches = orgStructureData.branches || [];
+  const divisions = orgStructureData.divisions || [];
+  const units = orgStructureData.units || [];
+
   const body = `
     <div class="form-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
       <div class="form-group">
@@ -125,6 +147,27 @@ function showEmpModal(emp = null) {
       <div class="form-group">
         <label class="form-label">Name *</label>
         <input class="form-input" id="m-name" value="${App.esc(e.name || '')}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Branch / Location</label>
+        <select class="form-select" id="m-branch">
+          <option value="">— None / Unassigned —</option>
+          ${branches.map(b => `<option value="${App.esc(b)}" ${e.branch===b?'selected':''}>${App.esc(b)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Division / Department</label>
+        <select class="form-select" id="m-division">
+          <option value="">— None —</option>
+          ${divisions.map(d => `<option value="${App.esc(d)}" ${e.division===d?'selected':''}>${App.esc(d)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Unit / Section</label>
+        <select class="form-select" id="m-unit">
+          <option value="">— None —</option>
+          ${units.map(u => `<option value="${App.esc(u)}" ${e.unit===u?'selected':''}>${App.esc(u)}</option>`).join('')}
+        </select>
       </div>
       <div class="form-group">
         <label class="form-label">Father/Husband Name</label>
@@ -247,6 +290,9 @@ async function saveEmp(origAcc) {
     ifsc: document.getElementById('m-ifsc').value.trim().toUpperCase(),
     higher_epf_ee: document.getElementById('m-higher-epf-ee').checked,
     higher_epf_er: document.getElementById('m-higher-epf-er').checked,
+    branch: document.getElementById('m-branch')?.value || '',
+    division: document.getElementById('m-division')?.value || '',
+    unit: document.getElementById('m-unit')?.value || '',
   };
   if (!d.member_id || !d.name) { App.toast('Member ID and Name are required', 'error'); return; }
   try {

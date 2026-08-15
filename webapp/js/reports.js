@@ -3,7 +3,11 @@
    ================================================================ */
 
 App.registerPage('reports', async (container) => {
-  const { years } = await App.get('/api/years');
+  const [{ years }, orgData] = await Promise.all([
+    App.get('/api/years'),
+    App.get('/api/org-structure')
+  ]);
+  const branches = orgData?.branches || [];
   
   if (years.length === 0) {
     container.innerHTML = `<div class="empty-state">
@@ -103,13 +107,21 @@ App.registerPage('reports', async (container) => {
                 <option value="11">Feb Paid in Mar</option>
               </select>
             </div>
+            <div class="form-group" style="flex:1; min-width:150px">
+              <label class="form-label">Select Branch</label>
+              <select class="form-select" id="ecr-branch">
+                <option value="">All Branches (Combined)</option>
+                ${branches.map(b => `<option value="${App.esc(b)}">${App.esc(b)}</option>`).join('')}
+              </select>
+            </div>
           </div>
           
           <p style="color:var(--text2); font-size:13px; margin-bottom:12px">
-            Generate the #~# separated ECR format text file. You can download a single month as .txt, or the entire year as a .zip.
+            Generate the #~# separated ECR format text file. You can download a single month as .txt, or the entire year as a .zip. Use <strong>Download All Branches</strong> to produce separate files per branch in one ZIP.
           </p>
     
-          <div style="display:flex; justify-content:flex-end;">
+          <div style="display:flex; justify-content:flex-end; gap:10px; flex-wrap:wrap;">
+            <button class="btn btn-glass" onclick="downloadECRBranchZip()" title="Generate separate ECR text file per branch bundled in one ZIP">📦 Download All Branches (ZIP)</button>
             <button class="btn btn-primary" onclick="downloadECR()">📥 Download ECR File</button>
           </div>
         </div>
@@ -323,14 +335,27 @@ window.printEmployeeReport = (empName, uan) => {
 window.downloadECR = () => {
   const y = document.getElementById('ecr-year').value;
   const m = document.getElementById('ecr-month').value;
+  const b = document.getElementById('ecr-branch')?.value || '';
+  const branchParam = b ? `?branch=${encodeURIComponent(b)}` : '';
   
   if (m === 'zip') {
     App.toast(`Generating Yearly ECR ZIP for ${y}...`, 'info');
-    window.open(`/api/reports/${y}/ecr`, '_blank');
+    window.open(`/api/reports/${y}/ecr${branchParam}`, '_blank');
   } else {
     App.toast(`Generating Monthly ECR TXT...`, 'info');
-    window.open(`/api/reports/${y}/ecr/${m}`, '_blank');
+    window.open(`/api/reports/${y}/ecr/${m}${branchParam}`, '_blank');
   }
+};
+
+window.downloadECRBranchZip = () => {
+  const y = document.getElementById('ecr-year').value;
+  const m = document.getElementById('ecr-month').value;
+  if (m === 'zip') {
+    App.toast('Please select a specific month to generate branch-wise ECR ZIP.', 'warning');
+    return;
+  }
+  App.toast(`Generating Branch-wise ECR ZIP for month...`, 'info');
+  window.open(`/api/reports/${y}/ecr/${m}/zip-by-branch`, '_blank');
 };
 
 window.downloadForm9 = (format) => {

@@ -570,6 +570,9 @@ class Employee:
     doj: str = ''
     doe: str = ''
     reason_leaving: str = ''
+    branch: str = ''
+    division: str = ''
+    unit: str = ''
 
     def month_rows(self, worker_epf_rate: float, worker_eps_rate: float,
                    employer_epf_rate: float, employer_eps_rate: float,
@@ -659,6 +662,9 @@ class MasterEmployee:
     ifsc: str = ""
     higher_epf_ee: bool = False
     higher_epf_er: bool = False
+    branch: str = ""
+    division: str = ""
+    unit: str = ""
 
     def to_dict(self):
         return asdict(self)
@@ -668,16 +674,19 @@ class MasterEmployee:
         mid = normalize_member_id(d.get("member_id") or d.get("account_no", ""))
         return MasterEmployee(
             member_id=mid, name=d.get("name", ""),
-                               father_name=d.get("father_name", ""), uan=d.get("uan", ""),
-                               dob=d.get("dob", ""), sex=d.get("sex", ""), doj=d.get("doj", ""),
-                               doe=d.get("doe", ""), reason_leaving=d.get("reason_leaving", ""),
-                               serial_no=d.get("serial_no", 0),
-                               relationship=d.get("relationship", ""), marital_status=d.get("marital_status", ""),
-                               mobile=d.get("mobile", ""), email=d.get("email", ""),
-                               aadhaar=d.get("aadhaar", ""), bank_account=d.get("bank_account", ""),
-                               ifsc=d.get("ifsc", ""),
-                               higher_epf_ee=d.get("higher_epf_ee", False),
-                               higher_epf_er=d.get("higher_epf_er", False))
+            father_name=d.get("father_name", ""), uan=d.get("uan", ""),
+            dob=d.get("dob", ""), sex=d.get("sex", ""), doj=d.get("doj", ""),
+            doe=d.get("doe", ""), reason_leaving=d.get("reason_leaving", ""),
+            serial_no=d.get("serial_no", 0),
+            relationship=d.get("relationship", ""), marital_status=d.get("marital_status", ""),
+            mobile=d.get("mobile", ""), email=d.get("email", ""),
+            aadhaar=d.get("aadhaar", ""), bank_account=d.get("bank_account", ""),
+            ifsc=d.get("ifsc", ""),
+            higher_epf_ee=d.get("higher_epf_ee", False),
+            higher_epf_er=d.get("higher_epf_er", False),
+            branch=d.get("branch", "") or "",
+            division=d.get("division", "") or "",
+            unit=d.get("unit", "") or "")
 
     @property
     def age_years(self):
@@ -768,6 +777,9 @@ class Project:
         self.coverage_date = ""         # Date of Coverage under the EPF Act, DD/MM/YYYY
         self.created_at = datetime.now().strftime("%d-%m-%Y")
         self.is_active = True
+        self.branches: List[str] = []
+        self.divisions: List[str] = []
+        self.units: List[str] = []
         self.master: dict = {}          # member_id -> MasterEmployee
         self.years: dict = {}           # year_key (long_label) -> YearRecord
         self.current_year_key = None
@@ -791,7 +803,8 @@ class Project:
     def upsert_master(self, member_id, name, father_name="", uan="", dob="", sex="", doj="",
                        doe="", reason_leaving="", serial_no=None, relationship="", marital_status="",
                        mobile="", email="", aadhaar="", bank_account="", ifsc="",
-                       higher_epf_ee=False, higher_epf_er=False):
+                       higher_epf_ee=False, higher_epf_er=False,
+                       branch="", division="", unit=""):
         member_id = normalize_member_id(member_id)
         if member_id in self.master:
             m = self.master[member_id]
@@ -813,6 +826,9 @@ class Project:
             if ifsc: m.ifsc = ifsc
             m.higher_epf_ee = higher_epf_ee
             m.higher_epf_er = higher_epf_er
+            if branch is not None: m.branch = branch
+            if division is not None: m.division = division
+            if unit is not None: m.unit = unit
         else:
             if serial_no is None:
                 serial_no = self.next_serial_no()
@@ -822,7 +838,8 @@ class Project:
                                                        relationship=relationship, marital_status=marital_status,
                                                        mobile=mobile, email=email, aadhaar=aadhaar,
                                                        bank_account=bank_account, ifsc=ifsc,
-                                                       higher_epf_ee=higher_epf_ee, higher_epf_er=higher_epf_er)
+                                                       higher_epf_ee=higher_epf_ee, higher_epf_er=higher_epf_er,
+                                                       branch=branch or "", division=division or "", unit=unit or "")
 
     def next_serial_no(self):
         """Next SL No. suggestion for a brand-new employee (one more than the
@@ -961,6 +978,9 @@ class Project:
             doj = m.doj if m else ""
             doe = m.doe if m else ""
             reason_leaving = m.reason_leaving if m else ""
+            branch = getattr(m, 'branch', '') if m else ""
+            division = getattr(m, 'division', '') if m else ""
+            unit = getattr(m, 'unit', '') if m else ""
             result.append(Employee(member_id=e.member_id, name=name, father_name=father, uan=uan,
                                     wages=[int(round(float(x))) if x is not None else 0 for x in e.wages],
                                     gross_wages=[int(round(float(x))) if x is not None else 0 for x in e.gross_wages],
@@ -968,7 +988,8 @@ class Project:
                                     higher_epf_ee=m.higher_epf_ee if m else False,
                                     higher_epf_er=m.higher_epf_er if m else False,
                                     age_crosses_58=getattr(e, 'age_crosses_58', False),
-                                    dob=dob, sex=sex, doj=doj, doe=doe, reason_leaving=reason_leaving))
+                                    dob=dob, sex=sex, doj=doj, doe=doe, reason_leaving=reason_leaving,
+                                    branch=branch, division=division, unit=unit))
         return result
 
     def build_establishment_for_year(self, year_key) -> Establishment:
@@ -987,6 +1008,9 @@ class Project:
             "coverage_date": self.coverage_date,
             "created_at": getattr(self, "created_at", datetime.now().strftime("%d-%m-%Y")),
             "is_active": getattr(self, "is_active", True),
+            "branches": getattr(self, "branches", []),
+            "divisions": getattr(self, "divisions", []),
+            "units": getattr(self, "units", []),
             "master": {k: v.to_dict() for k, v in self.master.items()},
             "years": {k: v.to_dict() for k, v in self.years.items()},
             "current_year_key": self.current_year_key,
@@ -999,6 +1023,9 @@ class Project:
         self.coverage_date = data.get("coverage_date", "")
         self.created_at = data.get("created_at", datetime.now().strftime("%d-%m-%Y"))
         self.is_active = data.get("is_active", True)
+        self.branches = list(data.get("branches", []))
+        self.divisions = list(data.get("divisions", []))
+        self.units = list(data.get("units", []))
         self.master = {normalize_member_id(k): MasterEmployee.from_dict(v) for k, v in data.get("master", {}).items()}
         self.years = {normalize_member_id(k): YearRecord.from_dict(v) for k, v in data.get("years", {}).items()}
         self.current_year_key = data.get("current_year_key") or next(iter(self.years), None)

@@ -1,26 +1,67 @@
 """
-EPF Admin Dashboard — Web Backend
-==================================
-FastAPI server wrapping epf_engine.py for the EPF Form 3A / 6A
-Admin Dashboard web application.
+EPF Admin Dashboard — Multi-Tenant Web Backend
+==============================================
+FastAPI server with JWT authentication, tenant-scoped data isolation,
+superadmin management, consultant establishment tracking, and payment compliance.
 """
 
 import os
 import sys
 import tempfile
+import json
+import uuid
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Query, Header, Request, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
-import json
+from sqlalchemy.orm import Session
+from sqlalchemy.sql import func
 
-from .database import SessionLocal, ProjectData, Setting, DATABASE_URL
+# Database and models
+from .database import (
+    SessionLocal, engine, get_db, Base,
+    User, Establishment, Payment, ActivityLog, ProjectData, Setting, DATABASE_URL
+)
 
-# Import the existing engine from parent directory
+# Auth helpers and dependencies
+from .auth import (
+    hash_password, verify_password, create_access_token, decode_access_token,
+    get_current_user, get_superadmin, get_active_establishment, save_establishment_project
+)
+
+def log_activity(
+    db: Session,
+    user_id: Optional[int],
+    establishment_id: Optional[int],
+    action_type: str,
+    description: str,
+    metadata: Optional[dict] = None
+):
+    """Additive, resilient activity logger that never crashes parent endpoints."""
+    if not db:
+        return
+    try:
+        log_entry = ActivityLog(
+            user_id=user_id,
+            establishment_id=establishment_id,
+            action_type=action_type,
+            description=description,
+            extra_data=json.dumps(metadata or {}, ensure_ascii=False)
+        )
+        db.add(log_entry)
+        db.commit()
+    except Exception as e:
+        print(f"[ActivityLog] Warning: failed to record activity: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+# Engine
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from epf_engine import (
     Project, ExcelGenerator, MONTHS, MONTH_FULL,
@@ -28,188 +69,166 @@ from epf_engine import (
     REASONS_FOR_LEAVING, SUPERANNUATION_AGE, calc_age_years,
     import_wages_from_excel, generate_form9, import_master_from_excel,
     natural_sort_key, get_wage_ceilings_for_year,
+    account2_rate_percent, account22_rate_percent,
+    ACCOUNT_21_RATE, ACCOUNT_22_MIN,
+    generate_ecr_month, calendar_year_for_month, Employee,
+    normalize_member_id, get_excel_sheet_names, get_month_num
 )
 
 # ── App setup ──────────────────────────────────────────────────────────────
-app = FastAPI(title="EPF Admin Dashboard", version="1.6.0")
-project = Project()
-project_filepath: Optional[str] = None
+app = FastAPI(title="EPF Admin Dashboard", version="2.0.0")
 
-
-def _save_settings(filename):
-    if DATABASE_URL and SessionLocal:
-        try:
-            with SessionLocal() as db:
-                setting = db.query(Setting).filter(Setting.key == 'last_project').first()
-                if setting:
-                    setting.value = filename
-                else:
-                    setting = Setting(key='last_project', value=filename)
-                    db.add(setting)
-                db.commit()
-        except Exception as e:
-            print(f"DB Error save_settings: {e}")
-    else:
-        if os.environ.get("RENDER"):
-            raise RuntimeError("Cannot save to JSON on Render. Supabase is required.")
-        try:
-            settings_path = Path(__file__).resolve().parent.parent / "settings.json"
-            with open(settings_path, 'w', encoding='utf-8') as f:
-                json.dump({"last_project": filename}, f)
-        except Exception:
-            pass
-
-def _load_settings():
-    if DATABASE_URL and SessionLocal:
-        try:
-            with SessionLocal() as db:
-                setting = db.query(Setting).filter(Setting.key == 'last_project').first()
-                if setting:
-                    return setting.value
-        except Exception as e:
-            print(f"DB Error load_settings: {e}")
-    else:
-        if os.environ.get("RENDER"):
-            raise RuntimeError("Cannot read from JSON on Render. Supabase is required.")
-        try:
-            settings_path = Path(__file__).resolve().parent.parent / "settings.json"
-            if settings_path.exists():
-                with open(settings_path, 'r', encoding='utf-8') as f:
-                    settings = json.load(f)
-                return settings.get("last_project")
-        except Exception:
-            pass
-    return None
-
-def _get_project_list():
-    if DATABASE_URL and SessionLocal:
-        try:
-            with SessionLocal() as db:
-                projects = db.query(ProjectData.filename).all()
-                return sorted([p[0] for p in projects])
-        except Exception as e:
-            print(f"DB Error get_project_list: {e}")
-            return []
-    else:
-        if os.environ.get("RENDER"):
-            raise RuntimeError("Cannot read from JSON on Render. Supabase is required.")
-        parent = Path(__file__).resolve().parent.parent
-        return sorted([f.name for f in parent.iterdir() if f.name.lower().endswith(".epfproj.json")])
-
-def _load_project_data(filename):
-    if DATABASE_URL and SessionLocal:
-        try:
-            with SessionLocal() as db:
-                project_row = db.query(ProjectData).filter(ProjectData.filename == filename).first()
-                if project_row:
-                    return json.loads(project_row.data)
-        except Exception as e:
-            print(f"DB Error load_project_data: {e}")
-    else:
-        if os.environ.get("RENDER"):
-            raise RuntimeError("Cannot read from JSON on Render. Supabase is required.")
-        path = Path(__file__).resolve().parent.parent / filename
-        if path.exists():
-            with open(path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-    return None
-
-def _save_project_data(filename, data_dict):
-    if DATABASE_URL and SessionLocal:
-        try:
-            with SessionLocal() as db:
-                project_row = db.query(ProjectData).filter(ProjectData.filename == filename).first()
-                if project_row:
-                    project_row.data = json.dumps(data_dict, ensure_ascii=False)
-                else:
-                    project_row = ProjectData(filename=filename, data=json.dumps(data_dict, ensure_ascii=False))
-                    db.add(project_row)
-                db.commit()
-        except Exception as e:
-            print(f"DB Error save_project_data: {e}")
-    else:
-        if os.environ.get("RENDER"):
-            raise RuntimeError("Cannot save to JSON on Render. Supabase is required.")
-        path = Path(__file__).resolve().parent.parent / filename
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data_dict, f, indent=2, ensure_ascii=False)
-
-def _auto_load():
-    global project_filepath
-    last = _load_settings()
-    if last:
-        data = _load_project_data(last)
-        if data:
-            project.load_from_dict(data)
-            project_filepath = last
-            print(f"  [OK] Loaded from settings: {last}")
-            return
-
-    for f in _get_project_list():
-        try:
-            data = _load_project_data(f)
-            if data:
-                project.load_from_dict(data)
-                project_filepath = f
-                print(f"  [OK] Loaded: {f}")
-                print(f"    {project.name} ({project.code}) - "
-                      f"{len(project.master)} employees, {len(project.years)} years")
-                return
-        except Exception as e:
-            print(f"  [ERR] {f}: {e}")
-    print("  No .epfproj.json found — starting empty.")
-
-_auto_load()
-
-# ── Static files ───────────────────────────────────────────────────────────
 WEB = Path(__file__).resolve().parent
 app.mount("/css", StaticFiles(directory=str(WEB / "css")), name="css")
 app.mount("/js", StaticFiles(directory=str(WEB / "js")), name="js")
 
 
+# ── Startup Data Migration & Seed ──────────────────────────────────────────
+def _run_startup_migrations():
+    if not SessionLocal:
+        return
+    with SessionLocal() as db:
+        # 1. Seed Superadmin
+        superadmin = db.query(User).filter(User.role == "superadmin").first()
+        if not superadmin:
+            s_email = os.environ.get("SUPERADMIN_EMAIL", "admin@epfdashboard.com").strip().lower()
+            s_pass = os.environ.get("SUPERADMIN_PASSWORD", "Admin@12345")
+            superadmin = User(
+                serial_no=None,
+                name="System Superadmin",
+                mobile="9999999999",
+                email=s_email,
+                password_hash=hash_password(s_pass),
+                role="superadmin",
+                is_active=True
+            )
+            db.add(superadmin)
+            db.commit()
+            db.refresh(superadmin)
+            print(f"  [OK] Seeded superadmin: {s_email}")
+
+        # 2. Seed Default Consultant
+        consultant = db.query(User).filter(User.role == "consultant").first()
+        if not consultant:
+            consultant = User(
+                serial_no=1,
+                name="Consultant 1",
+                mobile="9876543210",
+                email="consultant@epfdashboard.com",
+                password_hash=hash_password("Consultant@123"),
+                role="consultant",
+                is_active=True
+            )
+            db.add(consultant)
+            db.commit()
+            db.refresh(consultant)
+            print(f"  [OK] Seeded default consultant: consultant@epfdashboard.com")
+
+        # 3. Migrate Existing Establishment Data
+        est_count = db.query(Establishment).count()
+        if est_count == 0:
+            migrated = 0
+            # A. Check ProjectData table
+            try:
+                projects_in_db = db.query(ProjectData).all()
+                for p_row in projects_in_db:
+                    try:
+                        p_dict = json.loads(p_row.data)
+                        code = p_dict.get("code") or "ORBBS1990770000"
+                        name = p_dict.get("name") or p_row.filename.replace("_project.epfproj.json", "").replace(".json", "")
+                        addr = p_dict.get("address") or ""
+                        cov = p_dict.get("coverage_date") or ""
+                        est = Establishment(
+                            user_id=consultant.id,
+                            code=code,
+                            name=name,
+                            address=addr,
+                            coverage_date=cov,
+                            data=p_row.data
+                        )
+                        db.add(est)
+                        migrated += 1
+                    except Exception as e:
+                        print(f"  [ERR] Failed migrating project from DB ({p_row.filename}): {e}")
+                db.commit()
+            except Exception as e:
+                print(f"  [ERR] Querying ProjectData: {e}")
+
+            # B. If still 0, check file system .epfproj.json files
+            if db.query(Establishment).count() == 0:
+                parent = Path(__file__).resolve().parent.parent
+                json_files = sorted([f for f in parent.iterdir() if f.name.lower().endswith(".epfproj.json")])
+                for jf in json_files:
+                    try:
+                        with open(jf, "r", encoding="utf-8") as f:
+                            p_dict = json.load(f)
+                        code = p_dict.get("code") or "ORBBS1990770000"
+                        name = p_dict.get("name") or jf.name.replace("_project.epfproj.json", "").replace(".json", "")
+                        addr = p_dict.get("address") or ""
+                        cov = p_dict.get("coverage_date") or ""
+                        est = Establishment(
+                            user_id=consultant.id,
+                            code=code,
+                            name=name,
+                            address=addr,
+                            coverage_date=cov,
+                            data=json.dumps(p_dict, ensure_ascii=False)
+                        )
+                        db.add(est)
+                        migrated += 1
+                    except Exception as e:
+                        print(f"  [ERR] Failed migrating project file ({jf.name}): {e}")
+                db.commit()
+
+            if migrated > 0:
+                print(f"  [OK] Successfully migrated {migrated} establishment(s) to consultant {consultant.email}")
+
+
+@app.on_event("startup")
+def on_startup():
+    _run_startup_migrations()
+
+
+# ── Static Index Route ─────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return (WEB / "index.html").read_text(encoding="utf-8")
 
 
-def _save():
-    global project_filepath
-    if not project_filepath:
-        safe_name = project.name.replace("/", "-").replace("\\", "-").strip() if project.name else "Default_Establishment"
-        filename = f"{safe_name}_project.epfproj.json"
-        project_filepath = filename
-        _save_settings(filename)
-    try:
-        _save_project_data(project_filepath, project.to_dict())
-    except Exception:
-        pass
+# ── Schemas ────────────────────────────────────────────────────────────────
+class LoginIn(BaseModel):
+    email: str
+    password: str
 
+class UserCreateIn(BaseModel):
+    name: str
+    mobile: Optional[str] = ""
+    email: str
+    password: str
 
-def _is_valid_for_establishment(member_id: str, est_code: str) -> bool:
-    if not est_code or not member_id or member_id.startswith('__UAN__'):
-        return True
-    est_clean = "".join(c for c in est_code if c.isalnum())[:15].upper()
-    if not est_clean:
-        return True
-    
-    # EPFO full member IDs are typically 22 chars (15 est code + 7 member id)
-    if len(member_id) >= len(est_clean):
-        return member_id.upper().startswith(est_clean)
-    return True
+class UserUpdateIn(BaseModel):
+    name: Optional[str] = None
+    mobile: Optional[str] = None
+    email: Optional[str] = None
+    password: Optional[str] = None
+    is_active: Optional[bool] = None
 
-def _is_valid_uan(uan) -> bool:
-    if not uan:
-        return False
-    uan_str = str(uan).strip()
-    return len(uan_str) == 12 and uan_str.isdigit()
-
-# ── Pydantic schemas ──────────────────────────────────────────────────────
 class EstablishmentIn(BaseModel):
     code: str
     name: str
-    address: str
+    address: str = ""
     coverage_date: str = ""
 
+class PaymentUpdateItem(BaseModel):
+    month: str
+    is_paid: bool = False
+    amount: Optional[float] = None
+    paid_date: Optional[str] = None
+    notes: Optional[str] = None
+
+class PaymentsSaveIn(BaseModel):
+    financial_year: str
+    payments: List[PaymentUpdateItem]
 
 class EmployeeIn(BaseModel):
     member_id: str
@@ -231,7 +250,9 @@ class EmployeeIn(BaseModel):
     ifsc: str = ""
     higher_epf_ee: bool = False
     higher_epf_er: bool = False
-
+    branch: str = ""
+    division: str = ""
+    unit: str = ""
 
 class YearIn(BaseModel):
     year_from: str
@@ -243,7 +264,6 @@ class YearIn(BaseModel):
     er_epf_rate: float = 3.67
     er_eps_rate: float = 8.33
 
-
 class YearRatesIn(BaseModel):
     scheme: str
     epf_rate: float = 6.84
@@ -251,7 +271,6 @@ class YearRatesIn(BaseModel):
     emp_epf_rate: float = 12.0
     er_epf_rate: float = 3.67
     er_eps_rate: float = 8.33
-
 
 class WageIn(BaseModel):
     member_id: str
@@ -277,32 +296,599 @@ class BulkMonthWagesIn(BaseModel):
 
 class RemittanceIn(BaseModel):
     month_label: str
-    trrn: str
-    crrn: str
-    members: int
-    acc_01: int
-    acc_02: int
-    acc_10: int
-    acc_21: int
-    acc_22: int
-    credit_date: str
+    trrn: str = ""
+    crrn: str = ""
+    credit_date: str = ""
+    members: int = 0
+    acc_01: int = 0
+    acc_02: int = 0
+    acc_10: int = 0
+    acc_21: int = 0
+    acc_22: int = 0
+
+class BulkRemittanceIn(BaseModel):
+    remittances: List[RemittanceIn]
+
+class OrgItemIn(BaseModel):
+    name: str
+
+
+# ── Auth Endpoints ─────────────────────────────────────────────────────────
+@app.post("/api/auth/login")
+async def login(d: LoginIn, db: Session = Depends(get_db)):
+    email = d.email.strip().lower()
+    user = db.query(User).filter(func.lower(User.email) == email).first()
+    if not user or not verify_password(d.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Your account has been deactivated. Please contact support.")
+
+    token = create_access_token(user.id, user.email, user.role)
+    log_activity(
+        db, user.id, None,
+        "consultant_login" if user.role == "consultant" else "superadmin_login",
+        f"User logged in: {user.name} ({user.email})",
+        {"role": user.role, "email": user.email}
+    )
+    return {
+        "ok": True,
+        "token": token,
+        "user": {
+            "id": user.id,
+            "serial_no": user.serial_no,
+            "name": user.name,
+            "email": user.email,
+            "role": user.role,
+            "mobile": user.mobile
+        }
+    }
+
+
+@app.get("/api/auth/me")
+async def get_me(current_user: User = Depends(get_current_user)):
+    return {
+        "user": {
+            "id": current_user.id,
+            "serial_no": current_user.serial_no,
+            "name": current_user.name,
+            "email": current_user.email,
+            "role": current_user.role,
+            "mobile": current_user.mobile,
+            "created_at": current_user.created_at.strftime("%d-%m-%Y") if current_user.created_at else None
+        }
+    }
+
+
+@app.post("/api/auth/logout")
+async def logout():
+    return {"ok": True, "message": "Logged out successfully"}
+
+
+# ── Superadmin Endpoints (/api/admin/...) ──────────────────────────────────
+@app.get("/api/admin/overview")
+async def admin_overview(
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    total_consultants = db.query(User).filter(User.role == "consultant").count()
+    total_establishments = db.query(Establishment).count()
+    
+    # Total employees across all establishments
+    all_ests = db.query(Establishment).all()
+    total_employees = 0
+    for est in all_ests:
+        try:
+            p_data = json.loads(est.data) if est.data else {}
+            total_employees += len(p_data.get("master", {}))
+        except Exception:
+            pass
+
+    # Payment compliance
+    current_fy = "2026-27"
+    total_expected_payments = total_establishments * 12
+    paid_payments = db.query(Payment).filter(
+        Payment.financial_year == current_fy,
+        Payment.is_paid == True
+    ).count()
+
+    compliance_pct = round((paid_payments / total_expected_payments * 100), 1) if total_expected_payments > 0 else 100.0
+
+    return {
+        "total_consultants": total_consultants,
+        "total_establishments": total_establishments,
+        "total_employees": total_employees,
+        "payment_compliance_pct": compliance_pct,
+        "current_financial_year": current_fy
+    }
+
+
+@app.get("/api/admin/users")
+async def admin_list_users(
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    users = db.query(User).filter(User.role == "consultant").order_by(User.serial_no.asc()).all()
+    rows = []
+    for u in users:
+        est_count = db.query(Establishment).filter(Establishment.user_id == u.id).count()
+        rows.append({
+            "id": u.id,
+            "serial_no": u.serial_no,
+            "name": u.name,
+            "mobile": u.mobile or "—",
+            "email": u.email,
+            "establishment_count": est_count,
+            "is_active": u.is_active,
+            "created_at": u.created_at.strftime("%d-%m-%Y") if u.created_at else "—"
+        })
+    return {"users": rows, "total": len(rows)}
+
+
+@app.post("/api/admin/users")
+async def admin_create_user(
+    d: UserCreateIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    email = d.email.strip().lower()
+    if not email:
+        raise HTTPException(400, "Email is required")
+    if db.query(User).filter(func.lower(User.email) == email).first():
+        raise HTTPException(400, f"User with email '{email}' already exists")
+
+    # Next serial number
+    max_serial = db.query(func.max(User.serial_no)).scalar() or 0
+    next_serial = max_serial + 1
+
+    new_user = User(
+        serial_no=next_serial,
+        name=d.name.strip(),
+        mobile=d.mobile.strip() if d.mobile else "",
+        email=email,
+        password_hash=hash_password(d.password),
+        role="consultant",
+        is_active=True
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    log_activity(
+        db, admin.id, None, "consultant_created",
+        f"Created new consultant account: {new_user.name} (S.No: {new_user.serial_no}, Email: {new_user.email})",
+        {"consultant_id": new_user.id, "serial_no": new_user.serial_no, "name": new_user.name, "email": new_user.email}
+    )
+
+    return {
+        "ok": True,
+        "user": {
+            "id": new_user.id,
+            "serial_no": new_user.serial_no,
+            "name": new_user.name,
+            "email": new_user.email,
+            "mobile": new_user.mobile,
+            "role": new_user.role
+        }
+    }
+
+
+@app.put("/api/admin/users/{user_id}")
+async def admin_update_user(
+    user_id: int,
+    d: UserUpdateIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    if d.email:
+        email = d.email.strip().lower()
+        existing = db.query(User).filter(func.lower(User.email) == email, User.id != user_id).first()
+        if existing:
+            raise HTTPException(400, f"Email '{email}' is already in use by another user")
+        user.email = email
+
+    if d.name is not None: user.name = d.name.strip()
+    if d.mobile is not None: user.mobile = d.mobile.strip()
+    if d.password: user.password_hash = hash_password(d.password)
+    if d.is_active is not None: user.is_active = d.is_active
+
+    db.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def admin_delete_user(
+    user_id: int,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    
+    # Check if user has active establishments
+    est_count = db.query(Establishment).filter(Establishment.user_id == user_id).count()
+    if est_count > 0:
+        raise HTTPException(400, f"Cannot delete consultant because they have {est_count} establishment(s). Delete or reassign their establishments first.")
+
+    db.delete(user)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/admin/users/{user_id}/establishments")
+async def admin_user_establishments(
+    user_id: int,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    ests = db.query(Establishment).filter(Establishment.user_id == user_id).order_by(Establishment.id.asc()).all()
+    rows = []
+    for est in ests:
+        emp_count = 0
+        try:
+            data_dict = json.loads(est.data) if est.data else {}
+            emp_count = len(data_dict.get("master", {}))
+        except Exception:
+            pass
+
+        rows.append({
+            "id": est.id,
+            "code": est.code,
+            "name": est.name,
+            "address": est.address or "—",
+            "coverage_date": est.coverage_date or "—",
+            "employee_count": emp_count,
+            "created_at": est.created_at.strftime("%d-%m-%Y") if est.created_at else "—"
+        })
+
+    return {"establishments": rows, "user": {"id": user.id, "name": user.name, "email": user.email}}
+
+
+@app.get("/api/admin/establishments/{est_id}/payments")
+async def admin_get_establishment_payments(
+    est_id: int,
+    year: str = Query("2026-27"),
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    est = db.query(Establishment).filter(Establishment.id == est_id).first()
+    if not est:
+        raise HTTPException(404, "Establishment not found")
+
+    records = db.query(Payment).filter(
+        Payment.establishment_id == est_id,
+        Payment.financial_year == year
+    ).all()
+    payments_by_month = {p.month: p for p in records}
+
+    PAYMENT_MONTHS = ["Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]
+    grid = []
+    for idx, m in enumerate(PAYMENT_MONTHS):
+        p = payments_by_month.get(m)
+        next_m = PAYMENT_MONTHS[(idx + 1) % 12]
+        grid.append({
+            "month": m,
+            "display_name": f"{m} (Paid in {next_m})",
+            "is_paid": p.is_paid if p else False,
+            "amount": p.amount if p else None,
+            "paid_date": p.paid_date if p else "",
+            "notes": p.notes if p else ""
+        })
+
+    return {
+        "establishment": {"id": est.id, "code": est.code, "name": est.name},
+        "financial_year": year,
+        "months": grid
+    }
+
+
+@app.post("/api/admin/establishments/{est_id}/payments")
+async def admin_save_establishment_payments(
+    est_id: int,
+    d: PaymentsSaveIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    est = db.query(Establishment).filter(Establishment.id == est_id).first()
+    if not est:
+        raise HTTPException(404, "Establishment not found")
+
+    fy = d.financial_year.strip()
+    for item in d.payments:
+        payment = db.query(Payment).filter(
+            Payment.establishment_id == est_id,
+            Payment.financial_year == fy,
+            Payment.month == item.month
+        ).first()
+
+        if not payment:
+            payment = Payment(
+                establishment_id=est_id,
+                financial_year=fy,
+                month=item.month,
+                is_paid=item.is_paid,
+                amount=item.amount,
+                paid_date=item.paid_date or "",
+                notes=item.notes or ""
+            )
+            db.add(payment)
+        else:
+            payment.is_paid = item.is_paid
+            payment.amount = item.amount
+            payment.paid_date = item.paid_date or ""
+            payment.notes = item.notes or ""
+
+    db.commit()
+    paid_count = sum(1 for item in d.payments if item.is_paid)
+    log_activity(
+        db, admin.id, est.id, "payment_marked",
+        f"Marked payment compliance for {est.name} ({est.code}) — FY {fy} ({paid_count} months paid)",
+        {"financial_year": fy, "paid_count": paid_count, "code": est.code}
+    )
+    return {"ok": True}
+
+
+@app.get("/api/admin/activity-log")
+async def admin_get_activity_log(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    user_id: Optional[int] = Query(None),
+    establishment_id: Optional[int] = Query(None),
+    action_type: Optional[str] = Query(None),
+    since: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    query = db.query(ActivityLog)
+
+    if user_id:
+        query = query.filter(ActivityLog.user_id == user_id)
+    if establishment_id:
+        query = query.filter(ActivityLog.establishment_id == establishment_id)
+    if action_type and action_type.lower() != "all":
+        query = query.filter(ActivityLog.action_type == action_type)
+    if since:
+        try:
+            if "-" in since and len(since.split("-")[0]) == 2:
+                dt_since = datetime.strptime(since, "%d-%m-%Y")
+            else:
+                dt_since = datetime.fromisoformat(since)
+            query = query.filter(ActivityLog.timestamp >= dt_since)
+        except Exception:
+            pass
+    if search:
+        s = f"%{search.strip().lower()}%"
+        query = query.filter(func.lower(ActivityLog.description).like(s))
+
+    total = query.count()
+    offset = (page - 1) * limit
+    logs = query.order_by(ActivityLog.timestamp.desc(), ActivityLog.id.desc()).offset(offset).limit(limit).all()
+
+    # Preload users and establishments
+    user_ids = list({l.user_id for l in logs if l.user_id})
+    est_ids = list({l.establishment_id for l in logs if l.establishment_id})
+    
+    users_map = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()} if user_ids else {}
+    ests_map = {e.id: e for e in db.query(Establishment).filter(Establishment.id.in_(est_ids)).all()} if est_ids else {}
+
+    rows = []
+    for l in logs:
+        u = users_map.get(l.user_id)
+        e = ests_map.get(l.establishment_id)
+        
+        meta = {}
+        if l.extra_data:
+            try:
+                meta = json.loads(l.extra_data)
+            except Exception:
+                meta = {}
+
+        rows.append({
+            "id": l.id,
+            "timestamp": l.timestamp.isoformat() if l.timestamp else "",
+            "time_formatted": l.timestamp.strftime("%d-%m-%Y %I:%M %p") if l.timestamp else "—",
+            "user_id": l.user_id,
+            "user_name": u.name if u else ("System" if not l.user_id else "Unknown User"),
+            "user_email": u.email if u else "",
+            "user_role": u.role if u else "",
+            "establishment_id": l.establishment_id,
+            "establishment_name": e.name if e else ("—" if not l.establishment_id else "Unknown Establishment"),
+            "establishment_code": e.code if e else "",
+            "action_type": l.action_type,
+            "description": l.description,
+            "metadata": meta
+        })
+
+    return {
+        "logs": rows,
+        "total": total,
+        "page": page,
+        "limit": limit
+    }
+
+
+# ── Establishments Management (/api/establishments) ────────────────────────
+@app.get("/api/establishments")
+async def list_establishments(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    query = db.query(Establishment)
+    if current_user.role != "superadmin":
+        query = query.filter(Establishment.user_id == current_user.id)
+    ests = query.order_by(Establishment.id.asc()).all()
+
+    rows = []
+    for est in ests:
+        emp_count = 0
+        year_count = 0
+        try:
+            data_dict = json.loads(est.data) if est.data else {}
+            emp_count = len(data_dict.get("master", {}))
+            year_count = len(data_dict.get("years", {}))
+        except Exception:
+            pass
+
+        rows.append({
+            "id": est.id,
+            "user_id": est.user_id,
+            "code": est.code,
+            "name": est.name,
+            "address": est.address or "—",
+            "coverage_date": est.coverage_date or "—",
+            "employee_count": emp_count,
+            "year_count": year_count,
+            "created_at": est.created_at.strftime("%d-%m-%Y") if est.created_at else "—"
+        })
+
+    return {"establishments": rows, "total": len(rows)}
+
+
+@app.post("/api/establishments")
+async def create_establishment(
+    d: EstablishmentIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    code = d.code.strip().upper()
+    name = d.name.strip()
+    if not code or not name:
+        raise HTTPException(400, "Establishment Code and Name are required")
+
+    p = Project()
+    p.set_establishment(code, name, d.address.strip(), d.coverage_date.strip())
+
+    new_est = Establishment(
+        user_id=current_user.id,
+        code=code,
+        name=name,
+        address=d.address.strip(),
+        coverage_date=d.coverage_date.strip(),
+        data=json.dumps(p.to_dict(), ensure_ascii=False)
+    )
+    db.add(new_est)
+    db.commit()
+    db.refresh(new_est)
+
+    log_activity(
+        db, current_user.id, new_est.id, "establishment_created",
+        f"Added establishment {new_est.code} — {new_est.name}",
+        {"code": new_est.code, "name": new_est.name, "coverage_date": new_est.coverage_date}
+    )
+
+    return {
+        "ok": True,
+        "establishment": {
+            "id": new_est.id,
+            "code": new_est.code,
+            "name": new_est.name,
+            "address": new_est.address,
+            "coverage_date": new_est.coverage_date
+        }
+    }
+
+
+@app.delete("/api/establishments/{est_id}")
+async def delete_establishment(
+    est_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    est = db.query(Establishment).filter(Establishment.id == est_id).first()
+    if not est:
+        raise HTTPException(404, "Establishment not found")
+    if current_user.role != "superadmin" and est.user_id != current_user.id:
+        raise HTTPException(403, "Access denied")
+
+    db.delete(est)
+    db.commit()
+    return {"ok": True}
+
+
+# ── Establishment Details (Scoped to Active Establishment) ────────────────
+def _is_valid_for_establishment(member_id: str, est_code: str) -> bool:
+    if not est_code or not member_id or member_id.startswith('__UAN__'):
+        return True
+    est_clean = "".join(c for c in est_code if c.isalnum())[:15].upper()
+    if not est_clean:
+        return True
+    if len(member_id) >= len(est_clean):
+        return member_id.upper().startswith(est_clean)
+    return True
+
+def _is_valid_uan(uan) -> bool:
+    if not uan:
+        return False
+    uan_str = str(uan).strip()
+    return len(uan_str) == 12 and uan_str.isdigit()
+
+def compute_remittance_row(yr, est, month_idx, wages_total, ee_total, er_total, a10_total, members):
+    remit_list = getattr(yr, 'remittances', [])
+    saved_remit = None
+    for r in remit_list:
+        if isinstance(r, dict) and r.get("month_label") == MONTHS[month_idx]:
+            saved_remit = r
+            break
+            
+    trrn = saved_remit.get("trrn", "") if saved_remit else ""
+    crrn = saved_remit.get("crrn", "") if saved_remit else ""
+    credit_date = saved_remit.get("credit_date", "") if saved_remit else ""
+    
+    cal_year = calendar_year_for_month(MONTHS[month_idx], yr.year_from, yr.year_to)
+    m_num = get_month_num(MONTHS[month_idx])
+    
+    a2_rate = account2_rate_percent(cal_year, m_num)
+    a22_rate = account22_rate_percent(cal_year, m_num)
+    
+    acc_01 = ee_total + (er_total - a10_total)
+    a2_amt = round(wages_total * a2_rate / 100) if wages_total > 0 else 0
+    a21_amt = round(wages_total * ACCOUNT_21_RATE / 100) if wages_total > 0 else 0
+    a22_amt = max(round(wages_total * a22_rate / 100), ACCOUNT_22_MIN) if wages_total > 0 else 0
+    
+    return {
+        "month_label": MONTHS[month_idx],
+        "trrn": trrn,
+        "crrn": crrn,
+        "credit_date": credit_date,
+        "members": members,
+        "acc_01": acc_01,
+        "acc_02": a2_amt,
+        "acc_10": a10_total,
+        "acc_21": a21_amt,
+        "acc_22": a22_amt
+    }
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────
 @app.get("/api/dashboard")
-async def dashboard():
+async def dashboard(
+    branch: Optional[str] = None,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+):
+    est_obj, project = active
     year_stats = []
     total_w = total_c = 0
     for yk in project.year_keys_sorted():
         yr = project.years[yk]
         est = project.build_establishment_for_year(yk)
         emps = project.build_employees_for_year(yk)
+        if branch:
+            if branch == "Unassigned":
+                emps = [e for e in emps if not getattr(project.master.get(e.member_id), 'branch', '')]
+            else:
+                emps = [e for e in emps if getattr(project.master.get(e.member_id), 'branch', '') == branch]
         
-        # Monthly accumulators for the new table
         monthly_stats = []
-        months = ['Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb']
         year_from_int = int(yr.year_from)
-        
         yw = ywt = yet = 0
         
         for i in range(12):
@@ -312,12 +898,14 @@ async def dashboard():
             m_eps_wage = 0
             m_worker = 0
             m_employer = 0
+            m_ee_epf = 0
+            m_er_epf = 0
+            m_er_eps = 0
             
             for emp in emps:
                 wages = emp.wages[i] if emp.wages and len(emp.wages) > i else 0
                 gross = emp.gross_wages[i] if emp.gross_wages and len(emp.gross_wages) > i else 0
                 
-                # Use the existing month_rows function to get precise calculations for this month
                 mrows = emp.month_rows(est.worker_epf_rate, est.worker_eps_rate,
                                      est.employer_epf_rate, est.employer_eps_rate,
                                      wage_ceilings=get_wage_ceilings_for_year(yr.year_from))
@@ -332,68 +920,106 @@ async def dashboard():
                     
                 if wages > 0 or gross > 0:
                     m_emp_count += 1
-                    
-                m_gross += gross
-                m_epf_wage += wages
-                m_eps_wage += eps_wage
-                m_worker += w_tot
-                m_employer += e_tot
+                    m_gross += gross
+                    m_epf_wage += wages
+                    m_eps_wage += eps_wage
+                    m_worker += w_tot
+                    m_employer += e_tot
+                    m_ee_epf += w_epf
+                    m_er_epf += e_epf
+                    m_er_eps += e_eps
             
-            month_year = f"{months[i]} {year_from_int if i < 10 else year_from_int + 1}"
+            yw += m_epf_wage
+            ywt += m_worker
+            yet += m_employer
+            
+            remit_row = compute_remittance_row(
+                yr, est, i,
+                wages_total=m_epf_wage,
+                ee_total=m_ee_epf,
+                er_total=(m_er_epf + m_er_eps),
+                a10_total=m_er_eps,
+                members=m_emp_count
+            )
+            
+            cal_yr = year_from_int if i < 10 else year_from_int + 1
+            month_total = remit_row["acc_01"] + remit_row["acc_02"] + remit_row["acc_10"] + remit_row["acc_21"] + remit_row["acc_22"]
+            
             monthly_stats.append({
-                "month": month_year,
+                "month_idx": i,
+                "month": f"{MONTHS[i]} {cal_yr}",
                 "employees": m_emp_count,
                 "gross_wages": m_gross,
                 "epf_wages": m_epf_wage,
                 "eps_wages": m_eps_wage,
                 "worker_share": m_worker,
                 "employer_share": m_employer,
-                "total": m_worker + m_employer
+                "total": m_worker + m_employer,
+                "trrn": remit_row["trrn"],
+                "crrn": remit_row["crrn"],
+                "credit_date": remit_row["credit_date"],
+                "acc_01": remit_row["acc_01"],
+                "acc_02": remit_row["acc_02"],
+                "acc_10": remit_row["acc_10"],
+                "acc_21": remit_row["acc_21"],
+                "acc_22": remit_row["acc_22"],
+                "remit_total": month_total
             })
-            
-            yw += m_epf_wage
-            ywt += m_worker
-            yet += m_employer
 
-        total_w += yw; total_c += ywt + yet
+        total_w += yw
+        total_c += (ywt + yet)
         
-        # Calculate yearly totals from the monthly stats
-        year_total_gross = sum(m["gross_wages"] for m in monthly_stats)
-        year_total_epf = sum(m["epf_wages"] for m in monthly_stats)
-        year_total_eps = sum(m["eps_wages"] for m in monthly_stats)
-        year_total_worker = sum(m["worker_share"] for m in monthly_stats)
-        year_total_employer = sum(m["employer_share"] for m in monthly_stats)
-        year_total = year_total_worker + year_total_employer
+        tot_acc_01 = sum(m["acc_01"] for m in monthly_stats)
+        tot_acc_02 = sum(m["acc_02"] for m in monthly_stats)
+        tot_acc_10 = sum(m["acc_10"] for m in monthly_stats)
+        tot_acc_21 = sum(m["acc_21"] for m in monthly_stats)
+        tot_acc_22 = sum(m["acc_22"] for m in monthly_stats)
+        tot_remit_total = sum(m["remit_total"] for m in monthly_stats)
         
         year_stats.append({
-            "key": yk, "label": yr.long_label,
-            "employees": len(emps), "wages": yw,
-            "worker": ywt, "employer": yet,
-            "total": ywt + yet,
-            "scheme": "Post-1997" if yr.is_post_1997 else "Pre-1997",
+            "key": yk, "label": yr.long_label, "scheme": yr.scheme,
+            "epf_wages": yw, "worker_total": ywt, "employer_total": yet,
+            "total_contributions": ywt + yet,
             "monthly_stats": monthly_stats,
             "totals": {
-                "gross_wages": year_total_gross,
-                "epf_wages": year_total_epf,
-                "eps_wages": year_total_eps,
-                "worker_share": year_total_worker,
-                "employer_share": year_total_employer,
-                "total": year_total
+                "gross_wages": sum(m["gross_wages"] for m in monthly_stats),
+                "epf_wages": yw,
+                "eps_wages": sum(m["eps_wages"] for m in monthly_stats),
+                "worker_share": ywt,
+                "employer_share": yet,
+                "total": ywt + yet,
+                "acc_01": tot_acc_01,
+                "acc_02": tot_acc_02,
+                "acc_10": tot_acc_10,
+                "acc_21": tot_acc_21,
+                "acc_22": tot_acc_22,
+                "remit_total": tot_remit_total
             }
         })
+
+    grand_remit_total = sum(y["totals"]["remit_total"] for y in year_stats)
+    emp_count = len(project.master) if not branch else (
+        len([m for m in project.master.values() if not m.branch]) if branch == "Unassigned"
+        else len([m for m in project.master.values() if m.branch == branch])
+    )
     return {
-        "establishment": {"code": project.code, "name": project.name,
-                          "address": project.address},
-        "employees": len(project.master),
+        "establishment": {"id": est_obj.id, "code": project.code, "name": project.name, "address": project.address},
+        "employees": emp_count,
         "years": len(project.years),
         "total_wages": total_w,
         "total_contributions": total_c,
+        "grand_remit_total": grand_remit_total,
         "year_stats": year_stats,
     }
 
 
 @app.get("/api/dashboard/month_employees/{key}/{month_index}")
-async def dashboard_month_employees(key: str, month_index: int):
+async def dashboard_month_employees(
+    key: str,
+    month_index: int,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+):
+    est_obj, project = active
     if key not in project.years:
         raise HTTPException(404, "Year not found")
         
@@ -405,7 +1031,6 @@ async def dashboard_month_employees(key: str, month_index: int):
         raise HTTPException(400, "Invalid month index")
         
     results = []
-    
     for emp in emps:
         wages = emp.wages[month_index] if emp.wages and len(emp.wages) > month_index else 0
         gross = emp.gross_wages[month_index] if emp.gross_wages and len(emp.gross_wages) > month_index else 0
@@ -418,10 +1043,7 @@ async def dashboard_month_employees(key: str, month_index: int):
             _, w_epf, w_eps, w_tot, e_epf, e_eps, e_tot = mrows[month_index]
             
             ceiling = get_wage_ceilings_for_year(yr.year_from)[month_index]
-            if est.worker_eps_rate == 0:
-                eps_wage = 0 if emp.age_crosses_58 else min(wages, ceiling)
-            else:
-                eps_wage = wages
+            eps_wage = (0 if emp.age_crosses_58 else min(wages, ceiling)) if est.worker_eps_rate == 0 else wages
                 
             results.append({
                 "uan": emp.uan,
@@ -444,23 +1066,139 @@ async def dashboard_month_employees(key: str, month_index: int):
     }
 
 
-# ── Establishment ─────────────────────────────────────────────────────────
+# ── Establishment Endpoints ───────────────────────────────────────────────
 @app.get("/api/establishment")
-async def get_est():
-    return {"code": project.code, "name": project.name,
-            "address": project.address, "coverage_date": project.coverage_date}
+async def get_est(active: Tuple[Establishment, Project] = Depends(get_active_establishment)):
+    est_obj, project = active
+    return {
+        "id": est_obj.id,
+        "code": project.code,
+        "name": project.name,
+        "address": project.address,
+        "coverage_date": project.coverage_date
+    }
 
 
 @app.put("/api/establishment")
-async def put_est(d: EstablishmentIn):
+async def put_est(
+    d: EstablishmentIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
     project.set_establishment(d.code, d.name, d.address, d.coverage_date)
-    _save()
+    save_establishment_project(db, est_obj, project)
     return {"ok": True}
 
 
-# ── Employees ─────────────────────────────────────────────────────────────
+# ── Org Structure Endpoints ───────────────────────────────────────────────
+@app.get("/api/org-structure")
+async def get_org_structure(active: Tuple[Establishment, Project] = Depends(get_active_establishment)):
+    est_obj, project = active
+    return {
+        "branches": getattr(project, "branches", []),
+        "divisions": getattr(project, "divisions", []),
+        "units": getattr(project, "units", [])
+    }
+
+@app.post("/api/org-structure/branches")
+async def add_branch(
+    d: OrgItemIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
+    name = d.name.strip()
+    if not name: raise HTTPException(400, "Branch name cannot be empty")
+    if not hasattr(project, "branches"): project.branches = []
+    if name not in project.branches:
+        project.branches.append(name)
+        save_establishment_project(db, est_obj, project)
+    return {"ok": True, "branches": project.branches}
+
+@app.delete("/api/org-structure/branches/{name:path}")
+async def delete_branch(
+    name: str,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
+    name = name.strip()
+    affected = [m for m in project.master.values() if getattr(m, 'branch', '') == name]
+    if affected:
+        raise HTTPException(400, f"Cannot delete branch '{name}' because it is assigned to {len(affected)} employee(s)")
+    if hasattr(project, "branches") and name in project.branches:
+        project.branches.remove(name)
+        save_establishment_project(db, est_obj, project)
+    return {"ok": True, "branches": project.branches}
+
+@app.post("/api/org-structure/divisions")
+async def add_division(
+    d: OrgItemIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
+    name = d.name.strip()
+    if not name: raise HTTPException(400, "Division name cannot be empty")
+    if not hasattr(project, "divisions"): project.divisions = []
+    if name not in project.divisions:
+        project.divisions.append(name)
+        save_establishment_project(db, est_obj, project)
+    return {"ok": True, "divisions": project.divisions}
+
+@app.delete("/api/org-structure/divisions/{name:path}")
+async def delete_division(
+    name: str,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
+    name = name.strip()
+    affected = [m for m in project.master.values() if getattr(m, 'division', '') == name]
+    if affected:
+        raise HTTPException(400, f"Cannot delete division '{name}' because it is assigned to {len(affected)} employee(s)")
+    if hasattr(project, "divisions") and name in project.divisions:
+        project.divisions.remove(name)
+        save_establishment_project(db, est_obj, project)
+    return {"ok": True, "divisions": project.divisions}
+
+@app.post("/api/org-structure/units")
+async def add_unit(
+    d: OrgItemIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
+    name = d.name.strip()
+    if not name: raise HTTPException(400, "Unit name cannot be empty")
+    if not hasattr(project, "units"): project.units = []
+    if name not in project.units:
+        project.units.append(name)
+        save_establishment_project(db, est_obj, project)
+    return {"ok": True, "units": project.units}
+
+@app.delete("/api/org-structure/units/{name:path}")
+async def delete_unit(
+    name: str,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
+    name = name.strip()
+    affected = [m for m in project.master.values() if getattr(m, 'unit', '') == name]
+    if affected:
+        raise HTTPException(400, f"Cannot delete unit '{name}' because it is assigned to {len(affected)} employee(s)")
+    if hasattr(project, "units") and name in project.units:
+        project.units.remove(name)
+        save_establishment_project(db, est_obj, project)
+    return {"ok": True, "units": project.units}
+
+
+# ── Employees Endpoints ───────────────────────────────────────────────────
 @app.get("/api/employees")
-async def list_employees():
+async def list_employees(active: Tuple[Establishment, Project] = Depends(get_active_establishment)):
+    est_obj, project = active
     rows = []
     for m in project.master_list():
         age = calc_age_years(m.dob)
@@ -473,24 +1211,44 @@ async def list_employees():
             "superannuation": age is not None and age >= SUPERANNUATION_AGE,
             "higher_epf_ee": m.higher_epf_ee,
             "higher_epf_er": m.higher_epf_er,
+            "branch": getattr(m, "branch", ""),
+            "division": getattr(m, "division", ""),
+            "unit": getattr(m, "unit", ""),
         })
     return {"employees": rows, "total": len(rows)}
 
 
 @app.post("/api/employees")
-async def add_employee(d: EmployeeIn):
+async def add_employee(
+    d: EmployeeIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
     if project.get_master(d.member_id):
         raise HTTPException(400, f"Account {d.member_id} already exists")
     project.upsert_master(d.member_id, d.name, d.father_name, d.uan,
                           d.dob, d.sex, d.doj, d.doe, d.reason_leaving, d.serial_no,
                           d.relationship, d.marital_status, d.mobile, d.email, d.aadhaar,
-                          d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er)
-    _save()
+                          d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er,
+                          d.branch, d.division, d.unit)
+    save_establishment_project(db, est_obj, project)
+    log_activity(
+        db, est_obj.user_id, est_obj.id, "employee_added",
+        f"Added employee {d.name} (UAN: {d.uan or '—'}, Member ID: {d.member_id}) to {project.name}",
+        {"member_id": d.member_id, "name": d.name, "uan": d.uan, "establishment_name": project.name}
+    )
     return {"ok": True}
 
 
 @app.put("/api/employees/{acc:path}")
-async def edit_employee(acc: str, d: EmployeeIn):
+async def edit_employee(
+    acc: str,
+    d: EmployeeIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
     if d.member_id != acc:
         if project.get_master(d.member_id):
             raise HTTPException(400, f"Account {d.member_id} already exists")
@@ -498,73 +1256,30 @@ async def edit_employee(acc: str, d: EmployeeIn):
     project.upsert_master(d.member_id, d.name, d.father_name, d.uan,
                           d.dob, d.sex, d.doj, d.doe, d.reason_leaving, d.serial_no,
                           d.relationship, d.marital_status, d.mobile, d.email, d.aadhaar,
-                          d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er)
-    _save()
+                          d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er,
+                          d.branch, d.division, d.unit)
+    save_establishment_project(db, est_obj, project)
     return {"ok": True}
 
 
 @app.delete("/api/employees/{acc:path}")
-async def del_employee(acc: str):
+async def del_employee(
+    acc: str,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
     if not project.get_master(acc):
         raise HTTPException(404, "Not found")
     project.remove_master(acc)
-    _save()
+    save_establishment_project(db, est_obj, project)
     return {"ok": True}
 
 
-@app.post("/api/employees/import")
-async def import_master(file: UploadFile = File(...)):
-    ext = os.path.splitext(file.filename)[1].lower() or ".xlsx"
-    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-    try:
-        tmp.write(await file.read()); tmp.close()
-        records, warnings = import_master_from_excel(tmp.name)
-        
-        imported_count = 0
-        skipped_count = 0
-        
-        existing_uans = {m.uan for m in project.master.values() if m.uan}
-        existing_ids = {m.member_id for m in project.master.values() if m.member_id}
-        
-        for r in records:
-            member_id = r.get("member_id", "") or r.get("account_no", "")
-            uan = r.get("uan", "")
-            # Need to normalize the extracted member_id to match how it's stored
-            from epf_engine import normalize_member_id
-            norm_id = normalize_member_id(member_id)
-            
-            if not _is_valid_uan(uan):
-                warnings.append(f"Skipped {norm_id or r.get('name', 'Unknown')}: Missing or invalid 12-digit UAN")
-                skipped_count += 1
-                continue
-                
-            if (uan and uan in existing_uans) or (norm_id and norm_id in existing_ids):
-                skipped_count += 1
-                continue
-                
-            if not _is_valid_for_establishment(norm_id, project.code):
-                warnings.append(f"Skipped {norm_id}: Member ID does not belong to establishment {project.code}")
-                skipped_count += 1
-                continue
-                
-            project.upsert_master(norm_id, r["name"], r.get("father_name", ""),
-                                  uan, r.get("dob", ""), r.get("sex", ""),
-                                  r.get("doj", ""), r.get("doe", ""), r.get("reason_leaving", ""),
-                                  r.get("serial_no"))
-            if uan: existing_uans.add(uan)
-            if norm_id: existing_ids.add(norm_id)
-            imported_count += 1
-            
-        _save()
-        return {"ok": True, "imported": imported_count, "skipped": skipped_count, "warnings": warnings[:20]}
-    except Exception as e:
-        raise HTTPException(400, str(e))
-    finally:
-        os.unlink(tmp.name)
-
-# ── Years ─────────────────────────────────────────────────────────────────
+# ── Years Endpoints ───────────────────────────────────────────────────────
 @app.get("/api/years")
-async def list_years():
+async def list_years(active: Tuple[Establishment, Project] = Depends(get_active_establishment)):
+    est_obj, project = active
     rows = []
     for yk in project.year_keys_sorted():
         yr = project.years[yk]
@@ -583,108 +1298,59 @@ async def list_years():
 
 
 @app.post("/api/years")
-async def add_year(d: YearIn):
+async def add_year(
+    d: YearIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
     key = f"{d.year_from}-{d.year_to[-2:]}"
     if key in project.years:
         raise HTTPException(400, f"Year {key} already exists")
     project.add_year(d.year_from, d.year_to, d.scheme,
                      d.epf_rate, d.fpf_rate,
                      d.emp_epf_rate, d.er_epf_rate, d.er_eps_rate)
-    _save()
+    save_establishment_project(db, est_obj, project)
     return {"ok": True, "key": key}
 
 
 @app.put("/api/years/{key}")
-async def edit_year(key: str, d: YearRatesIn):
+async def edit_year(
+    key: str,
+    d: YearRatesIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
     if key not in project.years:
         raise HTTPException(404, "Year not found")
     project.update_year_rates(key, d.scheme, d.epf_rate, d.fpf_rate,
                               d.emp_epf_rate, d.er_epf_rate, d.er_eps_rate)
-    _save()
+    save_establishment_project(db, est_obj, project)
     return {"ok": True}
 
 
 @app.delete("/api/years/{key}")
-async def del_year(key: str):
+async def del_year(
+    key: str,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
     if key not in project.years:
         raise HTTPException(404, "Year not found")
     project.remove_year(key)
-    _save()
+    save_establishment_project(db, est_obj, project)
     return {"ok": True}
-
-# ── Remittances ───────────────────────────────────────────────────────────
-
-from pydantic import BaseModel
-from typing import List
-
-class BulkRemittanceIn(BaseModel):
-    remittances: List[RemittanceIn]
-
-@app.get("/api/years/{key}/remittances")
-async def get_remittances(key: str):
-    from epf_engine import get_month_num, calendar_year_for_month, account2_rate_percent, account22_rate_percent, ACCOUNT_21_RATE, ACCOUNT_22_MIN, MONTHS
-    if key not in project.years:
-        raise HTTPException(404, "Year not found")
-        
-    yr = project.years[key]
-    est = project.build_establishment_for_year(key)
-    employees = project.build_employees_for_year(key)
-    # Only include employees with wages
-    employees = [emp for emp in employees if sum(emp.wages) > 0]
-    
-    all_month_rows = [emp.month_rows(est.worker_epf_rate, est.worker_eps_rate, est.employer_epf_rate, est.employer_eps_rate) for emp in employees]
-    
-    results = []
-    
-    for i, month_label in enumerate(MONTHS):
-        # Find if user saved data for this month
-        saved_entry = next((r for r in yr.remittances if r.get("month_label") == month_label), {})
-        
-        cal_year = calendar_year_for_month(month_label, est.year_from, est.year_to)
-        a2_rate = account2_rate_percent(cal_year, get_month_num(month_label))
-        a22_rate = account22_rate_percent(cal_year, get_month_num(month_label))
-        
-        wages_total = sum(rows[i][0] for rows in all_month_rows)
-        ee_total = sum(rows[i][1] for rows in all_month_rows)
-        er_total = sum(rows[i][4] for rows in all_month_rows)
-        a10_total = sum(rows[i][5] for rows in all_month_rows)
-        
-        a2_amt = round(wages_total * a2_rate / 100)
-        a21_amt = round(wages_total * ACCOUNT_21_RATE / 100)
-        a22_amt = (max(round(wages_total * a22_rate / 100), ACCOUNT_22_MIN) if (a22_rate > 0 and wages_total > 0) else 0)
-        
-        members = sum(1 for rows in all_month_rows if rows[i][0] > 0)
-        acc_01 = ee_total + er_total
-        
-        results.append({
-            "month_label": month_label,
-            "trrn": saved_entry.get("trrn", ""),
-            "crrn": saved_entry.get("crrn", ""),
-            "credit_date": saved_entry.get("credit_date", ""),
-            "members": members,
-            "acc_01": acc_01,
-            "acc_02": a2_amt,
-            "acc_10": a10_total,
-            "acc_21": a21_amt,
-            "acc_22": a22_amt
-        })
-        
-    return {"remittances": results}
-
-@app.post("/api/years/{key}/remittances/bulk")
-async def save_remittances_bulk(key: str, data: BulkRemittanceIn):
-    if key not in project.years:
-        raise HTTPException(404, "Year not found")
-        
-    yr = project.years[key]
-    yr.remittances = [r.dict() for r in data.remittances]
-    _save()
-    return {"ok": True}
-
 
 
 @app.post("/api/years/bulk")
-async def bulk_add_years(d: dict):
+async def bulk_add_years(
+    d: dict,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
     start_y = int(d.get("start_year", 1980))
     end_y = int(d.get("end_year", 2026))
     added = 0
@@ -699,12 +1365,70 @@ async def bulk_add_years(d: dict):
                 project.add_year(year_from, year_to, SCHEME_POST_1997, 0.0, 0.0, 12.0, 3.67, 8.33)
             added += 1
     if added > 0:
-        _save()
+        save_establishment_project(db, est_obj, project)
     return {"ok": True, "added": added}
 
-# ── Wages ─────────────────────────────────────────────────────────────────
+
+# ── Remittances Endpoints ─────────────────────────────────────────────────
+@app.get("/api/years/{key}/remittances")
+async def get_remittances(
+    key: str,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+):
+    est_obj, project = active
+    if key not in project.years:
+        raise HTTPException(404, "Year not found")
+        
+    yr = project.years[key]
+    est = project.build_establishment_for_year(key)
+    employees = project.build_employees_for_year(key)
+    employees = [emp for emp in employees if sum(emp.wages) > 0]
+    
+    all_month_rows = [emp.month_rows(est.worker_epf_rate, est.worker_eps_rate, est.employer_epf_rate, est.employer_eps_rate) for emp in employees]
+    results = []
+    
+    for i, month_label in enumerate(MONTHS):
+        wages_total = sum(rows[i][0] for rows in all_month_rows)
+        ee_total = sum(rows[i][1] for rows in all_month_rows)
+        er_total = sum(rows[i][4] for rows in all_month_rows)
+        a10_total = sum(rows[i][5] for rows in all_month_rows)
+        members = sum(1 for rows in all_month_rows if rows[i][0] > 0)
+        
+        row_data = compute_remittance_row(yr, est, i, wages_total, ee_total, er_total, a10_total, members)
+        results.append(row_data)
+        
+    return {"remittances": results}
+
+
+@app.post("/api/years/{key}/remittances/bulk")
+async def save_remittances_bulk(
+    key: str,
+    data: BulkRemittanceIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
+    if key not in project.years:
+        raise HTTPException(404, "Year not found")
+        
+    yr = project.years[key]
+    yr.remittances = [r.dict() for r in data.remittances]
+    save_establishment_project(db, est_obj, project)
+    log_activity(
+        db, est_obj.user_id, est_obj.id, "challan_saved",
+        f"Saved Form 12A challan remittances for FY {key} in {project.name}",
+        {"year_key": key, "establishment_code": project.code}
+    )
+    return {"ok": True}
+
+
+# ── Wages Endpoints ───────────────────────────────────────────────────────
 @app.get("/api/years/{key}/wages")
-async def get_wages(key: str):
+async def get_wages(
+    key: str,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+):
+    est_obj, project = active
     if key not in project.years:
         raise HTTPException(404, "Year not found")
     yr = project.years[key]
@@ -728,7 +1452,7 @@ async def get_wages(key: str):
             "dob": m.dob if m else "", "sex": m.sex if m else "",
             "doj": m.doj if m else "", "doe": m.doe if m else "",
             "wages": [int(round(float(w))) if w is not None else 0 for w in emp.wages],
-            "gross_wages": [int(round(float(g))) if g is not None else 0 for g in emp.gross_wages],
+            "gross_wages": [int(round(float(g_val))) if g_val is not None else 0 for g_val in emp.gross_wages],
             "ncp_days": getattr(emp, 'ncp_days', [0]*12),
             "higher_epf_ee": emp.higher_epf_ee,
             "higher_epf_er": emp.higher_epf_er,
@@ -759,12 +1483,17 @@ async def get_wages(key: str):
 
 
 @app.post("/api/years/{key}/wages")
-async def put_wages(key: str, d: WageIn):
+async def put_wages(
+    key: str,
+    d: WageIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
     if key not in project.years:
         raise HTTPException(404, "Year not found")
     if len(d.wages) != 12:
         raise HTTPException(400, "Need exactly 12 wage values")
-    # Auto-create master entry if needed
     if not project.get_master(d.member_id):
         raise HTTPException(404, f"Employee {d.member_id} not in master")
     
@@ -773,24 +1502,34 @@ async def put_wages(key: str, d: WageIn):
     capped_wages = [min(w, g) for w, g in zip(wages_int, gross_wages)]
     ncp_days = d.ncp_days if d.ncp_days and len(d.ncp_days) == 12 else [0] * 12
     project.upsert_entry(key, d.member_id, capped_wages, gross_wages=gross_wages, ncp_days=ncp_days, age_crosses_58=d.age_crosses_58, higher_epf_ee=d.higher_epf_ee, higher_epf_er=d.higher_epf_er)
-    _save()
+    save_establishment_project(db, est_obj, project)
+    
+    emp_name = project.get_master(d.member_id).name if project.get_master(d.member_id) else d.member_id
+    log_activity(
+        db, est_obj.user_id, est_obj.id, "wages_saved",
+        f"Updated 12-month wages for {emp_name} (FY {key}) in {project.name}",
+        {"year_key": key, "member_id": d.member_id, "establishment_name": project.name}
+    )
     return {"ok": True}
 
 
 @app.post("/api/years/{key}/wages/bulk_month")
-async def bulk_month_wages(key: str, d: BulkMonthWagesIn):
+async def bulk_month_wages(
+    key: str,
+    d: BulkMonthWagesIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
     if key not in project.years:
         raise HTTPException(404, "Year not found")
-    
     if not (0 <= d.month_idx <= 11):
         raise HTTPException(400, "Invalid month index")
 
     for emp_update in d.employees:
-        # Check if master exists, if not continue or create? We assume it exists because they were rendered.
         if not project.get_master(emp_update.member_id):
             continue
             
-        # Get existing wages for this employee in this year, or create default 0 arrays
         yr = project.years[key]
         existing_emp = next((e for e in yr.entries if e.member_id == emp_update.member_id), None)
         
@@ -806,7 +1545,6 @@ async def bulk_month_wages(key: str, d: BulkMonthWagesIn):
         capped_epf_wage = int(round(float(min(emp_update.epf_wage, emp_update.gross_wage))))
         gross_wage = int(round(float(emp_update.gross_wage)))
         
-        # Update just the specific month index
         wages_arr[d.month_idx] = capped_epf_wage
         gross_wages_arr[d.month_idx] = gross_wage
         ncp_days_arr[d.month_idx] = emp_update.ncp_days
@@ -822,12 +1560,24 @@ async def bulk_month_wages(key: str, d: BulkMonthWagesIn):
             higher_epf_er=emp_update.higher_epf_er
         )
         
-    _save()
+    save_establishment_project(db, est_obj, project)
+    month_name = MONTHS[d.month_idx] if 0 <= d.month_idx < len(MONTHS) else f"Month {d.month_idx}"
+    log_activity(
+        db, est_obj.user_id, est_obj.id, "wages_saved",
+        f"Saved monthly bulk wages for {month_name} (FY {key}) in {project.name} ({len(d.employees)} employees)",
+        {"year_key": key, "month_idx": d.month_idx, "employee_count": len(d.employees), "establishment_name": project.name}
+    )
     return {"ok": True, "count": len(d.employees)}
 
 
 @app.delete("/api/years/{key}/wages/{acc:path}")
-async def del_wages(key: str, acc: str):
+async def del_wages(
+    key: str,
+    acc: str,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
     if key not in project.years:
         raise HTTPException(404, "Year not found")
     yr = project.years[key]
@@ -835,22 +1585,31 @@ async def del_wages(key: str, acc: str):
     if idx is None:
         raise HTTPException(404, "Entry not found")
     project.remove_entry(key, idx)
-    _save()
+    save_establishment_project(db, est_obj, project)
     return {"ok": True}
 
 
 @app.delete("/api/years/{key}/wages")
-async def del_all_wages(key: str):
+async def del_all_wages(
+    key: str,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
     if key not in project.years:
         raise HTTPException(404, "Year not found")
     project.years[key].entries.clear()
-    _save()
+    save_establishment_project(db, est_obj, project)
     return {"ok": True}
 
 
-# ── Reports ───────────────────────────────────────────────────────────────
+# ── Reports & Form Exports ─────────────────────────────────────────────────
 @app.get("/api/reports/employee_wage_history/{member_id:path}")
-async def report_employee_wage_history(member_id: str):
+async def report_employee_wage_history(
+    member_id: str,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+):
+    est_obj, project = active
     master = project.get_master(member_id)
     if not master:
         raise HTTPException(404, "Employee not found")
@@ -861,16 +1620,9 @@ async def report_employee_wage_history(member_id: str):
         emps = project.build_employees_for_year(yk)
         emp = next((e for e in emps if e.member_id == member_id), None)
         
-        if emp and emp.wages:
-            wages = emp.wages
-        else:
-            wages = [0] * 12
-            
+        wages = emp.wages if (emp and emp.wages) else [0] * 12
         total_wages = sum((int(w) if w else 0) for w in wages)
         
-        # Only add years where there is some data or the employee was employed
-        # But for history, showing all years or just years since DOJ makes sense.
-        # It's fine to show all, or filter to > 0 total wages. We'll include all.
         years_data.append({
             "year": f"{yr.year_from}-{yr.year_to}",
             "wages": wages,
@@ -895,8 +1647,15 @@ async def report_employee_wage_history(member_id: str):
         "years": years_data
     }
 
+
 @app.get("/api/reports/{key}")
-def generate_report(key: str, format: str = 'excel', forms: str = ''):
+def generate_report(
+    key: str,
+    format: str = 'excel',
+    forms: str = '',
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+):
+    est_obj, project = active
     if key not in project.years:
         raise HTTPException(404, "Year not found")
     yr = project.years[key]
@@ -932,18 +1691,23 @@ def generate_report(key: str, format: str = 'excel', forms: str = ''):
         except Exception as e:
             raise HTTPException(500, f"PDF generation failed: {str(e)}")
             
-    return FileResponse(path, filename=fname,
-                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    return FileResponse(path, filename=fname, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.get("/api/reports/{key}/employee/{member_id:path}")
-def generate_employee_report(key: str, member_id: str, format: str = 'pdf', forms: str = '3A'):
+def generate_employee_report(
+    key: str,
+    member_id: str,
+    format: str = 'pdf',
+    forms: str = '3A',
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+):
+    est_obj, project = active
     if key not in project.years:
         raise HTTPException(404, "Year not found")
     est = project.build_establishment_for_year(key)
     emps = project.build_employees_for_year(key)
     
-    from epf_engine import normalize_member_id
     acc = normalize_member_id(member_id)
     emp = next((e for e in emps if e.member_id == acc), None)
     if not emp:
@@ -965,9 +1729,7 @@ def generate_employee_report(key: str, member_id: str, format: str = 'pdf', form
         pdf_fname = fname.replace('.xlsx', '.pdf')
         pdf_path = os.path.join(tmp, pdf_fname)
         try:
-            from pdf_engine import _build_pdf_doc, _default_table_style
             import pdf_engine
-            # Temporarily replace project employees with just this one for 3A Generation
             orig_build = project.build_employees_for_year
             project.build_employees_for_year = lambda yk: [emp] if yk == key else orig_build(yk)
             try:
@@ -979,12 +1741,15 @@ def generate_employee_report(key: str, member_id: str, format: str = 'pdf', form
         except Exception as e:
             raise HTTPException(500, f"PDF generation failed: {str(e)}")
             
-    return FileResponse(path, filename=fname,
-                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    return FileResponse(path, filename=fname, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.get("/api/reports/form9/download")
-def report_form9(format: str = 'excel'):
+def report_form9(
+    format: str = 'excel',
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+):
+    est_obj, project = active
     if not project.master:
         raise HTTPException(400, "No employees")
     tmp = tempfile.mkdtemp()
@@ -1003,28 +1768,43 @@ def report_form9(format: str = 'excel'):
         except Exception as e:
             raise HTTPException(500, f"PDF generation failed: {str(e)}")
             
-    return FileResponse(path, filename=fname,
-                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    return FileResponse(path, filename=fname, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
 
 import zipfile
 import io
 
 @app.get("/api/reports/{year_key}/ecr/{month_idx}")
-async def generate_ecr_txt(year_key: str, month_idx: int):
+async def generate_ecr_txt(
+    year_key: str,
+    month_idx: int,
+    branch: Optional[str] = None,
+    division: Optional[str] = None,
+    unit: Optional[str] = None,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+):
+    est_obj, project = active
     year_record = project.years.get(year_key)
     if not year_record:
         raise HTTPException(404, "Year not found")
         
-    from epf_engine import generate_ecr_month, MONTHS, calendar_year_for_month, Employee
-    
     employees_with_wages = []
     for master_emp in project.master.values():
+        if branch:
+            if branch == "Unassigned" and master_emp.branch: continue
+            elif branch != "Unassigned" and master_emp.branch != branch: continue
+        if division and master_emp.division != division: continue
+        if unit and master_emp.unit != unit: continue
+
         entry = next((e for e in year_record.entries if e.member_id == master_emp.member_id), None)
         emp_obj = Employee(
             member_id=master_emp.member_id,
             name=master_emp.name,
             father_name=master_emp.father_name,
-            uan=master_emp.uan
+            uan=master_emp.uan,
+            branch=master_emp.branch,
+            division=master_emp.division,
+            unit=master_emp.unit
         )
         if entry:
             emp_obj.wages = entry.wages
@@ -1045,25 +1825,126 @@ async def generate_ecr_txt(year_key: str, month_idx: int):
     month_str = MONTHS[month_idx][:3].upper()
     cal_year = calendar_year_for_month(MONTHS[month_idx], year_record.year_from, year_record.year_to)
     
-    fname = f"{est_code}_ECR_{month_str}_{cal_year}.txt"
+    if branch:
+        clean_b = "".join(c for c in branch if c.isalnum() or c in ('_', '-')) or "Unassigned"
+        fname = f"{est_code}_ECR_{clean_b}_{month_str}_{cal_year}.txt"
+    else:
+        fname = f"{est_code}_ECR_{month_str}_{cal_year}.txt"
     return Response(content=txt, media_type="text/plain", headers={"Content-Disposition": f"attachment; filename={fname}"})
 
-@app.get("/api/reports/{year_key}/ecr")
-async def generate_ecr_zip(year_key: str):
+
+@app.get("/api/reports/{year_key}/ecr/{month_idx}/by-branch")
+async def get_ecr_by_branch_stats(
+    year_key: str,
+    month_idx: int,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+):
+    est_obj, project = active
     year_record = project.years.get(year_key)
     if not year_record:
         raise HTTPException(404, "Year not found")
         
-    from epf_engine import generate_ecr_month, MONTHS, calendar_year_for_month, Employee
+    branch_stats = {}
+    for master_emp in project.master.values():
+        entry = next((e for e in year_record.entries if e.member_id == master_emp.member_id), None)
+        if not entry: continue
+        w = entry.wages[month_idx] if entry.wages and len(entry.wages) > month_idx else 0
+        g = entry.gross_wages[month_idx] if entry.gross_wages and len(entry.gross_wages) > month_idx else 0
+        if w > 0 or g > 0:
+            b_name = master_emp.branch or "Unassigned"
+            if b_name not in branch_stats:
+                branch_stats[b_name] = {"branch": b_name, "employee_count": 0, "total_wages": 0}
+            branch_stats[b_name]["employee_count"] += 1
+            branch_stats[b_name]["total_wages"] += w
+
+    return {"branches": sorted(branch_stats.values(), key=lambda x: x["branch"])}
+
+
+@app.get("/api/reports/{year_key}/ecr/{month_idx}/zip-by-branch")
+async def generate_ecr_zip_by_branch(
+    year_key: str,
+    month_idx: int,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+):
+    est_obj, project = active
+    year_record = project.years.get(year_key)
+    if not year_record:
+        raise HTTPException(404, "Year not found")
+        
+    branch_emps = {}
+    for master_emp in project.master.values():
+        entry = next((e for e in year_record.entries if e.member_id == master_emp.member_id), None)
+        w = entry.wages[month_idx] if entry and entry.wages and len(entry.wages) > month_idx else 0
+        g = entry.gross_wages[month_idx] if entry and entry.gross_wages and len(entry.gross_wages) > month_idx else 0
+        if w > 0 or g > 0:
+            b_name = master_emp.branch or "Unassigned"
+            if b_name not in branch_emps:
+                branch_emps[b_name] = []
+            emp_obj = Employee(
+                member_id=master_emp.member_id,
+                name=master_emp.name,
+                father_name=master_emp.father_name,
+                uan=master_emp.uan,
+                branch=master_emp.branch,
+                division=master_emp.division,
+                unit=master_emp.unit,
+                wages=entry.wages if entry else [0]*12,
+                gross_wages=entry.gross_wages if entry else [0]*12,
+                ncp_days=getattr(entry, 'ncp_days', [0]*12) if entry else [0]*12,
+                higher_epf_ee=master_emp.higher_epf_ee,
+                higher_epf_er=master_emp.higher_epf_er,
+                age_crosses_58=getattr(entry, 'age_crosses_58', False) if entry else False
+            )
+            branch_emps[b_name].append(emp_obj)
+
+    est = project.build_establishment_for_year(year_key)
+    est_code = "".join(c for c in est.code if c.isalnum())[:15] or "EST"
+    month_str = MONTHS[month_idx][:3].upper()
+    cal_year = calendar_year_for_month(MONTHS[month_idx], year_record.year_from, year_record.year_to)
     
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
+        for b_name, emps_list in sorted(branch_emps.items()):
+            txt = generate_ecr_month(est, emps_list, year_record, month_idx)
+            clean_b = "".join(c for c in b_name if c.isalnum() or c in ('_', '-')) or "Unassigned"
+            fname = f"{est_code}_ECR_{clean_b}_{month_str}_{cal_year}.txt"
+            zip_file.writestr(fname, txt)
+            
+    zip_buffer.seek(0)
+    zip_fname = f"{est_code}_ECR_Branches_{month_str}_{cal_year}.zip"
+    return Response(content=zip_buffer.getvalue(), media_type="application/zip", headers={"Content-Disposition": f"attachment; filename={zip_fname}"})
+
+
+@app.get("/api/reports/{year_key}/ecr")
+async def generate_ecr_zip(
+    year_key: str,
+    branch: Optional[str] = None,
+    division: Optional[str] = None,
+    unit: Optional[str] = None,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+):
+    est_obj, project = active
+    year_record = project.years.get(year_key)
+    if not year_record:
+        raise HTTPException(404, "Year not found")
+        
     employees_with_wages = []
     for master_emp in project.master.values():
+        if branch:
+            if branch == "Unassigned" and master_emp.branch: continue
+            elif branch != "Unassigned" and master_emp.branch != branch: continue
+        if division and master_emp.division != division: continue
+        if unit and master_emp.unit != unit: continue
+
         entry = next((e for e in year_record.entries if e.member_id == master_emp.member_id), None)
         emp_obj = Employee(
             member_id=master_emp.member_id,
             name=master_emp.name,
             father_name=master_emp.father_name,
-            uan=master_emp.uan
+            uan=master_emp.uan,
+            branch=master_emp.branch,
+            division=master_emp.division,
+            unit=master_emp.unit
         )
         if entry:
             emp_obj.wages = entry.wages
@@ -1079,6 +1960,7 @@ async def generate_ecr_zip(year_key: str):
 
     est = project.build_establishment_for_year(year_key)
     est_code = "".join(c for c in est.code if c.isalnum())[:15] or "EST"
+    clean_b = ("_" + "".join(c for c in branch if c.isalnum() or c in ('_', '-'))) if branch else ""
     
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
@@ -1086,32 +1968,30 @@ async def generate_ecr_zip(year_key: str):
             txt = generate_ecr_month(est, employees_with_wages, year_record, idx)
             month_str = MONTHS[idx][:3].upper()
             cal_year = calendar_year_for_month(MONTHS[idx], year_record.year_from, year_record.year_to)
-            fname = f"{est_code}_ECR_{month_str}_{cal_year}.txt"
+            fname = f"{est_code}_ECR{clean_b}_{month_str}_{cal_year}.txt"
             zip_file.writestr(fname, txt)
             
     zip_buffer.seek(0)
-    zip_fname = f"{est_code}_ECR_{year_record.year_from}_{year_record.year_to}.zip"
+    zip_fname = f"{est_code}_ECR{clean_b}_{year_record.year_from}_{year_record.year_to}.zip"
     return Response(content=zip_buffer.getvalue(), media_type="application/zip", headers={"Content-Disposition": f"attachment; filename={zip_fname}"})
 
-# ── Bulk Import ───────────────────────────────────────────────────────────
-import uuid
-from typing import List
 
+# ── Bulk Import & Import Endpoints ─────────────────────────────────────────
 BULK_IMPORT_CACHE = {}
 
 @app.post("/api/wages/bulk_analyze")
-async def bulk_analyze_wages(file: UploadFile = File(...)):
+async def bulk_analyze_wages(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user)
+):
     ext = os.path.splitext(file.filename)[1].lower() or ".xlsx"
     tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
     tmp.write(await file.read()); tmp.close()
     
     try:
-        from epf_engine import get_excel_sheet_names
         sheets = get_excel_sheet_names(tmp.name)
-        
         token = str(uuid.uuid4())
         BULK_IMPORT_CACHE[token] = tmp.name
-        
         return {"ok": True, "token": token, "sheets": sheets}
     except Exception as e:
         os.unlink(tmp.name)
@@ -1122,12 +2002,16 @@ class BulkImportReq(BaseModel):
     sheets: List[str]
 
 @app.post("/api/wages/bulk_import")
-async def bulk_import_wages(req: BulkImportReq):
+async def bulk_import_wages(
+    req: BulkImportReq,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
     if req.token not in BULK_IMPORT_CACHE:
         raise HTTPException(400, "File expired or not found. Please upload again.")
         
     filepath = BULK_IMPORT_CACHE[req.token]
-    
     total_imported = 0
     all_warnings = []
     
@@ -1139,9 +2023,7 @@ async def bulk_import_wages(req: BulkImportReq):
                 if any(str(y) in year_key for y in range(1952, 1997)):
                     is_post_1997 = False
                 
-                from epf_engine import SCHEME_PRE_1997, SCHEME_POST_1997
                 scheme = SCHEME_POST_1997 if is_post_1997 else SCHEME_PRE_1997
-                
                 if is_post_1997:
                     project.add_year(year_key, year_key, scheme=scheme, 
                                      epf_rate=0, fpf_rate=0, 
@@ -1163,6 +2045,7 @@ async def bulk_import_wages(req: BulkImportReq):
                 if not _is_valid_for_establishment(resolved_id, project.code):
                     warnings.append(f"Skipped {resolved_id}: Does not belong to establishment {project.code}")
                     continue
+
                 project.upsert_master(
                     resolved_id, 
                     r["name"], 
@@ -1180,7 +2063,7 @@ async def bulk_import_wages(req: BulkImportReq):
             if warnings:
                 all_warnings.append(f"[{sheet_name}] " + ", ".join(warnings[:3]))
         
-        _save()
+        save_establishment_project(db, est_obj, project)
         return {"ok": True, "imported": total_imported, "warnings": all_warnings}
     except Exception as e:
         raise HTTPException(400, str(e))
@@ -1188,9 +2071,17 @@ async def bulk_import_wages(req: BulkImportReq):
         os.unlink(filepath)
         del BULK_IMPORT_CACHE[req.token]
 
-# ── Import ────────────────────────────────────────────────────────────────
+
 @app.post("/api/import/{key}")
-async def import_wages(key: str, import_type: str = Form("yearly"), month_idx: int = Form(-1), file: UploadFile = File(...)):
+async def import_wages(
+    key: str,
+    import_type: str = Form("yearly"),
+    month_idx: int = Form(-1),
+    file: UploadFile = File(...),
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
     if key not in project.years:
         raise HTTPException(404, "Year not found")
     ext = os.path.splitext(file.filename)[1].lower() or ".xlsx"
@@ -1238,156 +2129,61 @@ async def import_wages(key: str, import_type: str = Form("yearly"), month_idx: i
                 project.upsert_entry(key, resolved_id, new_wages, new_gross, new_ncp)
             else:
                 project.upsert_entry(key, resolved_id, r["wages"], r.get("gross_wages"), r.get("ncp_days"))
-        _save()
+        save_establishment_project(db, est_obj, project)
         return {"ok": True, "imported": len(records), "warnings": warnings[:20]}
     finally:
         os.unlink(tmp.name)
 
 
-# ── Save ──────────────────────────────────────────────────────────────────
-@app.post("/api/save")
-async def save_project():
-    global project_filepath
-    if not project_filepath:
-        safe_name = project.name.replace("/", "-").replace("\\", "-").strip() if project.name else "Default_Establishment"
-        filename = f"{safe_name}_project.epfproj.json"
-        project_filepath = filename
-        _save_settings(filename)
+@app.post("/api/master/import")
+async def import_master_file(
+    file: UploadFile = File(...),
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
+    ext = os.path.splitext(file.filename)[1].lower() or ".xlsx"
+    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
     try:
-        _save_project_data(project_filepath, project.to_dict())
-    except Exception:
-        pass
-    return {"ok": True, "file": project_filepath}
-
-
-# ── Projects ──────────────────────────────────────────────────────────────
-@app.get("/api/projects")
-async def list_projects():
-    files = _get_project_list()
-    active = project_filepath if project_filepath else None
-    return {"projects": files, "active": active}
-
-@app.post("/api/projects/switch")
-async def switch_project(d: dict):
-    global project, project_filepath
-    filename = d.get("filename")
-    
-    data = _load_project_data(filename)
-    if not data:
-        raise HTTPException(404, "Project not found")
+        tmp.write(await file.read()); tmp.close()
+        records = import_master_from_excel(tmp.name)
+        existing_uans = {m.uan for m in project.master.values() if m.uan}
+        existing_ids = set(project.master.keys())
+        imported_count = 0
+        skipped_count = 0
+        warnings = []
         
-    new_proj = Project()
-    new_proj.load_from_dict(data)
-    project = new_proj
-    project_filepath = filename
-    _save_settings(filename)
-    return {"ok": True}
-
-@app.post("/api/projects/new")
-async def new_project(d: dict):
-    global project, project_filepath
-    name = d.get("name", "New Establishment")
-    code = d.get("code", "")
-    address = d.get("address", "")
-    coverage_date = d.get("coverage_date", "")
-    
-    safe_name = name.replace("/", "-").replace("\\", "-").strip()
-    filename = f"{safe_name}_project.epfproj.json"
-    
-    if _load_project_data(filename):
-        raise HTTPException(400, "Project already exists")
-    
-    new_proj = Project()
-    new_proj.name = name
-    new_proj.code = code
-    new_proj.address = address
-    new_proj.coverage_date = coverage_date
-    _save_project_data(filename, new_proj.to_dict())
-    
-    project = new_proj
-    project_filepath = filename
-    _save_settings(filename)
-    return {"ok": True, "filename": filename}
-
-@app.post("/api/projects/update_details")
-async def update_project_details(d: dict):
-    filename = d.get("filename")
-    if not filename:
-        raise HTTPException(400, "Filename required")
-        
-    data = _load_project_data(filename)
-    if not data:
-        raise HTTPException(404, "Project not found")
-        
-    data["code"] = d.get("code", data.get("code", ""))
-    data["name"] = d.get("name", data.get("name", ""))
-    data["address"] = d.get("address", data.get("address", ""))
-    data["coverage_date"] = d.get("coverage_date", data.get("coverage_date", ""))
-    
-    _save_project_data(filename, data)
-    
-    # If it's the currently active project, update it in memory too
-    global project, project_filepath
-    if project_filepath == filename:
-        project.load_from_dict(data)
-        
-    return {"ok": True}
-
-
-# ── All Establishments ────────────────────────────────────────────────────────
-@app.get("/api/all_establishments")
-async def get_all_establishments():
-    projects = _get_project_list()
-    result = []
-    for filename in projects:
-        data = _load_project_data(filename)
-        if not data:
-            continue
-        
-        created_at = data.get("created_at")
-        if not created_at:
-            created_at = datetime.now().strftime("%d-%m-%Y")
+        for r in records:
+            uan = r.get("uan", "")
+            norm_id = project.resolve_member_id(r["member_id"], uan)
+            if not _is_valid_uan(uan):
+                warnings.append(f"Skipped {norm_id or r.get('name', 'Unknown')}: Missing or invalid 12-digit UAN")
+                skipped_count += 1
+                continue
+                
+            if (uan and uan in existing_uans) or (norm_id and norm_id in existing_ids):
+                skipped_count += 1
+                continue
+                
+            if not _is_valid_for_establishment(norm_id, project.code):
+                warnings.append(f"Skipped {norm_id}: Member ID does not belong to establishment {project.code}")
+                skipped_count += 1
+                continue
+                
+            project.upsert_master(norm_id, r["name"], r.get("father_name", ""),
+                                  uan, r.get("dob", ""), r.get("sex", ""),
+                                  r.get("doj", ""), r.get("doe", ""), r.get("reason_leaving", ""),
+                                  r.get("serial_no"))
+            if uan: existing_uans.add(uan)
+            if norm_id: existing_ids.add(norm_id)
+            imported_count += 1
             
-        wage_summary = {}
-        years_data = data.get("years", {})
-        for y_key, y_record in years_data.items():
-            employee_counts = [0] * 12
-            for entry in y_record.get("entries", []):
-                wages = entry.get("wages", [])
-                gross_wages = entry.get("gross_wages", [])
-                for i in range(12):
-                    w = wages[i] if i < len(wages) else 0
-                    g = gross_wages[i] if i < len(gross_wages) else 0
-                    if (w and w > 0) or (g and g > 0):
-                        employee_counts[i] += 1
-            wage_summary[y_key] = employee_counts
-            
-        result.append({
-            "filename": filename,
-            "code": data.get("code", ""),
-            "name": data.get("name", ""),
-            "address": data.get("address", ""),
-            "coverage_date": data.get("coverage_date", ""),
-            "created_at": created_at,
-            "is_active": data.get("is_active", True),
-            "total_employees": len(data.get("master", [])),
-            "wage_summary": wage_summary
-        })
-    return {"establishments": result}
-
-@app.post("/api/establishments/toggle_status")
-async def toggle_establishment_status(d: dict):
-    filename = d.get("filename")
-    if not filename:
-        raise HTTPException(400, "Filename required")
-        
-    data = _load_project_data(filename)
-    if not data:
-        raise HTTPException(404, "Project not found")
-        
-    data["is_active"] = not data.get("is_active", True)
-    _save_project_data(filename, data)
-    return {"ok": True, "is_active": data["is_active"]}
+        save_establishment_project(db, est_obj, project)
+        return {"ok": True, "imported": imported_count, "skipped": skipped_count, "warnings": warnings[:20]}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    finally:
+        os.unlink(tmp.name)
 
 
 # ── Constants ─────────────────────────────────────────────────────────────
@@ -1405,6 +2201,6 @@ async def constants():
 
 if __name__ == "__main__":
     import uvicorn
-    print("\n--- EPF Admin Dashboard ---")
+    print("\n--- EPF Admin Dashboard (Multi-Tenant) ---")
     print("=" * 40)
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
