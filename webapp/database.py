@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, Float, DateTime, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, Float, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy.sql import func
 from dotenv import load_dotenv
@@ -136,6 +136,35 @@ class Setting(Base):
     __tablename__ = "settings"
     key = Column(String, primary_key=True)
     value = Column(String)
+
+
+class FeatureFlag(Base):
+    __tablename__ = "feature_flags"
+    key = Column(String(100), primary_key=True)
+    value = Column(Boolean, nullable=False, default=True)
+    description = Column(String(255), nullable=True)
+
+
+class RolePermission(Base):
+    __tablename__ = "role_permissions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    role = Column(String(50), nullable=False, index=True)  # 'consultant' or 'employer'
+    action = Column(String(100), nullable=False, index=True)
+    allowed = Column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (UniqueConstraint('role', 'action', name='uq_role_permissions_role_action'),)
+
+
+class UserPermissionOverride(Base):
+    __tablename__ = "user_permission_overrides"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    action = Column(String(100), nullable=False, index=True)
+    allowed = Column(Boolean, nullable=False, default=True)
+
+    __table_args__ = (UniqueConstraint('user_id', 'action', name='uq_user_permission_overrides_user_action'),)
+
+    user = relationship("User")
 
 
 SessionLocal = None

@@ -13,7 +13,7 @@ import uuid
 import calendar
 import requests
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 from datetime import datetime, date, timedelta
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Query, Header, Request, status
@@ -27,7 +27,8 @@ from sqlalchemy.sql import func
 # Database and models
 from .database import (
     SessionLocal, engine, get_db, Base,
-    User, Establishment, Payment, SubscriptionFee, AdvanceCreditLedger, ActivityLog, ProjectData, Setting, DATABASE_URL
+    User, Establishment, Payment, SubscriptionFee, AdvanceCreditLedger, ActivityLog, ProjectData, Setting, DATABASE_URL,
+    FeatureFlag, RolePermission, UserPermissionOverride
 )
 
 # Auth helpers and dependencies
@@ -65,6 +66,73 @@ def log_activity(
             db.rollback()
         except Exception:
             pass
+
+
+# ── Permission / Feature-Flag System ────────────────────────────────────────
+# Finite list of CRUD-level actions this permission system governs. Not every
+# UI element -- just the app's real create/edit/delete/download operations.
+PERMISSION_ACTIONS = [
+    "employee.add", "employee.edit", "employee.delete",
+    "establishment.add", "establishment.edit", "establishment.delete",
+    "wages.edit", "wages.delete",
+    "ecr.download", "forms.download",
+]
+
+# key -> (default value, description). All default True so this system is purely
+# additive on deploy -- nothing changes until a superadmin toggles something off.
+FEATURE_FLAG_DEFAULTS = {
+    "subscription_enforcement_enabled": (True, "Blocks report/ECR downloads for establishments with unpaid, overdue subscription fees"),
+    "cashfree_payments_enabled": (True, "Enables Cashfree payment-link generation for subscription fees and advance credit"),
+    "branch_feature_enabled": (True, "Enables branch/division/unit ECR filtering and by-branch ZIP downloads"),
+    "advance_credit_enabled": (True, "Enables prepaying advance credit toward future subscription fees"),
+}
+
+
+def has_permission(db: Session, user: User, action: str) -> bool:
+    """Superadmin always passes. Otherwise: a per-user override (if one exists for
+    this action) wins; failing that, the user's role default applies; failing that
+    (an action this rollout doesn't know about yet), fail OPEN so nothing gets
+    accidentally locked out -- but log it so the gap gets noticed."""
+    if not db or user.role == "superadmin":
+        return True
+
+    override = db.query(UserPermissionOverride).filter(
+        UserPermissionOverride.user_id == user.id,
+        UserPermissionOverride.action == action
+    ).first()
+    if override is not None:
+        return override.allowed
+
+    role_perm = db.query(RolePermission).filter(
+        RolePermission.role == user.role,
+        RolePermission.action == action
+    ).first()
+    if role_perm is not None:
+        return role_perm.allowed
+
+    print(f"  [WARN] has_permission: no RolePermission row for role={user.role!r} action={action!r} -- defaulting to allowed=True")
+    return True
+
+
+def require_permission(db: Session, user: User, action: str):
+    if not has_permission(db, user, action):
+        raise HTTPException(status_code=403, detail=f"Your account does not have permission to do this ({action}). Contact your administrator.")
+
+
+def is_feature_enabled(db: Session, key: str) -> bool:
+    """Defaults to True (fail-open) if the flag row doesn't exist yet."""
+    if not db:
+        return True
+    flag = db.query(FeatureFlag).filter(FeatureFlag.key == key).first()
+    if flag is None:
+        return True
+    return bool(flag.value)
+
+
+def require_feature_enabled(db: Session, key: str, feature_label: str):
+    if not is_feature_enabled(db, key):
+        raise HTTPException(status_code=403, detail=f"{feature_label} is currently disabled by your administrator.")
+
 
 # Engine
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -228,6 +296,8 @@ def is_month_overdue(year_key: str, month_idx: int) -> bool:
 
 def get_unpaid_months_for_year(db: Session, establishment: Establishment, project: Project, year_key: str) -> List[str]:
     """Returns list of formatted month names for which wages exist, fee is unpaid, and grace period has elapsed."""
+    if not is_feature_enabled(db, "subscription_enforcement_enabled"):
+        return []
     fee_rows = sync_subscription_fees_for_year(db, establishment, project, year_key)
     year_record = project.years.get(year_key)
     if not year_record:
@@ -419,6 +489,29 @@ def _run_startup_migrations():
             if migrated > 0:
                 print(f"  [OK] Successfully migrated {migrated} establishment(s) to consultant {consultant.email}")
 
+        # 4. Seed Feature Flags (all default ON -- matches current live behavior exactly;
+        # nothing is disabled until a superadmin deliberately flips one off)
+        flags_added = 0
+        for flag_key, (default_value, description) in FEATURE_FLAG_DEFAULTS.items():
+            if not db.query(FeatureFlag).filter(FeatureFlag.key == flag_key).first():
+                db.add(FeatureFlag(key=flag_key, value=default_value, description=description))
+                flags_added += 1
+        if flags_added:
+            db.commit()
+            print(f"  [OK] Seeded {flags_added} feature flag(s)")
+
+        # 5. Seed Role Permissions -- both roles allowed everything by default, so this
+        # rollout is purely additive: nothing newly blocked until the superadmin changes it
+        perms_added = 0
+        for seed_role in ("consultant", "employer"):
+            for seed_action in PERMISSION_ACTIONS:
+                if not db.query(RolePermission).filter(RolePermission.role == seed_role, RolePermission.action == seed_action).first():
+                    db.add(RolePermission(role=seed_role, action=seed_action, allowed=True))
+                    perms_added += 1
+        if perms_added:
+            db.commit()
+            print(f"  [OK] Seeded {perms_added} role permission row(s)")
+
 
 @app.on_event("startup")
 def on_startup():
@@ -463,6 +556,21 @@ class EstablishmentIn(BaseModel):
 
 class DefaultRateIn(BaseModel):
     default_rate: float
+
+class FeatureFlagsUpdateIn(BaseModel):
+    flags: Dict[str, bool]  # flag key -> new value
+
+class RolePermissionRow(BaseModel):
+    role: str
+    action: str
+    allowed: bool
+
+class RolePermissionsUpdateIn(BaseModel):
+    permissions: List[RolePermissionRow]
+
+class PermissionOverrideIn(BaseModel):
+    action: str
+    allowed: bool
 
 class SubscriptionFeeItemIn(BaseModel):
     month: str
@@ -925,6 +1033,163 @@ async def admin_set_default_rate(
     return {"ok": True, "default_rate": d.default_rate}
 
 
+# ── Permissions & Feature Flags (superadmin-managed, no code changes needed) ──
+@app.get("/api/admin/feature-flags")
+async def admin_list_feature_flags(
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    rows = db.query(FeatureFlag).order_by(FeatureFlag.key.asc()).all()
+    existing_keys = {r.key for r in rows}
+    # Surface any flag defined in code but not yet seeded (e.g. right after a deploy,
+    # before startup migration has run against this connection) so the UI never 404s.
+    for key, (default_value, description) in FEATURE_FLAG_DEFAULTS.items():
+        if key not in existing_keys:
+            rows.append(FeatureFlag(key=key, value=default_value, description=description))
+    return {"flags": [{"key": r.key, "value": r.value, "description": r.description} for r in rows]}
+
+
+@app.put("/api/admin/feature-flags")
+async def admin_update_feature_flags(
+    d: FeatureFlagsUpdateIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    changed = []
+    for key, new_value in d.flags.items():
+        flag = db.query(FeatureFlag).filter(FeatureFlag.key == key).first()
+        if not flag:
+            default_value, description = FEATURE_FLAG_DEFAULTS.get(key, (True, None))
+            flag = FeatureFlag(key=key, value=default_value, description=description)
+            db.add(flag)
+        if flag.value != new_value:
+            changed.append((key, flag.value, new_value))
+            flag.value = new_value
+    db.commit()
+
+    for key, old_value, new_value in changed:
+        log_activity(
+            db, admin.id, None, "feature_flag_changed",
+            f"Feature flag '{key}' changed from {old_value} to {new_value}",
+            {"key": key, "old_value": old_value, "new_value": new_value}
+        )
+    return {"ok": True, "changed": len(changed)}
+
+
+@app.get("/api/admin/role-permissions")
+async def admin_list_role_permissions(
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    rows = db.query(RolePermission).all()
+    existing = {(r.role, r.action) for r in rows}
+    result = [{"role": r.role, "action": r.action, "allowed": r.allowed} for r in rows]
+    for seed_role in ("consultant", "employer"):
+        for seed_action in PERMISSION_ACTIONS:
+            if (seed_role, seed_action) not in existing:
+                result.append({"role": seed_role, "action": seed_action, "allowed": True})
+    return {"permissions": result, "actions": PERMISSION_ACTIONS}
+
+
+@app.put("/api/admin/role-permissions")
+async def admin_update_role_permissions(
+    d: RolePermissionsUpdateIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    changed = []
+    for row in d.permissions:
+        if row.role not in ("consultant", "employer"):
+            raise HTTPException(400, f"Invalid role '{row.role}' — must be 'consultant' or 'employer'")
+        perm = db.query(RolePermission).filter(RolePermission.role == row.role, RolePermission.action == row.action).first()
+        if not perm:
+            perm = RolePermission(role=row.role, action=row.action, allowed=row.allowed)
+            db.add(perm)
+            if row.allowed is False:
+                changed.append((row.role, row.action, True, row.allowed))
+        elif perm.allowed != row.allowed:
+            changed.append((row.role, row.action, perm.allowed, row.allowed))
+            perm.allowed = row.allowed
+    db.commit()
+
+    for role, action, old_value, new_value in changed:
+        log_activity(
+            db, admin.id, None, "role_permission_changed",
+            f"Permission '{action}' for role '{role}' changed from {old_value} to {new_value}",
+            {"role": role, "action": action, "old_value": old_value, "new_value": new_value}
+        )
+    return {"ok": True, "changed": len(changed)}
+
+
+@app.get("/api/admin/users/{user_id}/permission-overrides")
+async def admin_list_user_permission_overrides(
+    user_id: int,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    rows = db.query(UserPermissionOverride).filter(UserPermissionOverride.user_id == user_id).order_by(UserPermissionOverride.action.asc()).all()
+    return {
+        "overrides": [{"id": r.id, "action": r.action, "allowed": r.allowed} for r in rows],
+        "actions": PERMISSION_ACTIONS
+    }
+
+
+@app.post("/api/admin/users/{user_id}/permission-overrides")
+async def admin_add_user_permission_override(
+    user_id: int,
+    d: PermissionOverrideIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    if d.action not in PERMISSION_ACTIONS:
+        raise HTTPException(400, f"Unknown action '{d.action}'")
+
+    existing = db.query(UserPermissionOverride).filter(UserPermissionOverride.user_id == user_id, UserPermissionOverride.action == d.action).first()
+    if existing:
+        old_value = existing.allowed
+        existing.allowed = d.allowed
+    else:
+        old_value = None
+        db.add(UserPermissionOverride(user_id=user_id, action=d.action, allowed=d.allowed))
+    db.commit()
+
+    log_activity(
+        db, admin.id, None, "permission_override_added",
+        f"Permission override for {user.name}: '{d.action}' set to {d.allowed}" + (f" (was {old_value})" if old_value is not None else ""),
+        {"user_id": user_id, "action": d.action, "old_value": old_value, "new_value": d.allowed}
+    )
+    return {"ok": True}
+
+
+@app.delete("/api/admin/users/{user_id}/permission-overrides/{override_id}")
+async def admin_delete_user_permission_override(
+    user_id: int,
+    override_id: int,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    override = db.query(UserPermissionOverride).filter(UserPermissionOverride.id == override_id, UserPermissionOverride.user_id == user_id).first()
+    if not override:
+        raise HTTPException(404, "Override not found")
+    user = db.query(User).filter(User.id == user_id).first()
+    action, old_value = override.action, override.allowed
+    db.delete(override)
+    db.commit()
+
+    log_activity(
+        db, admin.id, None, "permission_override_removed",
+        f"Removed permission override for {user.name if user else user_id}: '{action}' (was {old_value}) — now falls back to role default",
+        {"user_id": user_id, "action": action, "old_value": old_value, "new_value": None}
+    )
+    return {"ok": True}
+
+
 # ── Subscription Fee Management Endpoints ─────────────────────────────────
 @app.get("/api/admin/establishments/{est_id}/subscription-fees")
 async def admin_get_establishment_subscription_fees(
@@ -1138,6 +1403,7 @@ async def admin_create_subscription_fee_link(
     db: Session = Depends(get_db)
 ):
     """Generates a Cashfree Payment Link for one month's already-billed SubscriptionFee row."""
+    require_feature_enabled(db, "cashfree_payments_enabled", "Cashfree payments")
     est = db.query(Establishment).filter(Establishment.id == est_id).first()
     if not est:
         raise HTTPException(404, "Establishment not found")
@@ -1219,6 +1485,7 @@ async def admin_add_advance_payment(
     db: Session = Depends(get_db)
 ):
     """Manual advance top-up (superadmin recorded it by hand -- UPI/cash/etc, no Cashfree)."""
+    require_feature_enabled(db, "advance_credit_enabled", "Advance credit")
     est = db.query(Establishment).filter(Establishment.id == est_id).first()
     if not est:
         raise HTTPException(404, "Establishment not found")
@@ -1257,6 +1524,8 @@ async def admin_create_advance_payment_link(
 ):
     """Generates a Cashfree Payment Link for an advance top-up. The balance is NOT touched
     here -- only the webhook (or a manual refresh) confirming actual payment updates it."""
+    require_feature_enabled(db, "cashfree_payments_enabled", "Cashfree payments")
+    require_feature_enabled(db, "advance_credit_enabled", "Advance credit")
     est = db.query(Establishment).filter(Establishment.id == est_id).first()
     if not est:
         raise HTTPException(404, "Establishment not found")
@@ -1686,6 +1955,7 @@ async def create_establishment(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    require_permission(db, current_user, "establishment.add")
     code = d.code.strip().upper()
     name = d.name.strip()
     if not code or not name:
@@ -1737,6 +2007,7 @@ async def delete_establishment(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    require_permission(db, current_user, "establishment.delete")
     est = db.query(Establishment).filter(Establishment.id == est_id).first()
     if not est:
         raise HTTPException(404, "Establishment not found")
@@ -2022,9 +2293,10 @@ async def put_est(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    require_permission(db, current_user, "establishment.edit")
     est_obj, project = active
     project.set_establishment(d.code, d.name, d.address, d.coverage_date)
-    
+
     old_rate = est_obj.custom_rate_per_employee
     if d.custom_rate_per_employee is not None:
         est_obj.custom_rate_per_employee = d.custom_rate_per_employee if d.custom_rate_per_employee > 0 else None
@@ -2188,6 +2460,7 @@ async def establishment_create_fee_link(
 ):
     """Consultant self-serve version of the superadmin per-month payment-link endpoint,
     scoped to the caller's own active establishment."""
+    require_feature_enabled(db, "cashfree_payments_enabled", "Cashfree payments")
     est_obj, project = active
     fee_row = db.query(SubscriptionFee).filter(
         SubscriptionFee.establishment_id == est_obj.id,
@@ -2240,6 +2513,8 @@ async def consultant_create_advance_payment_link(
 ):
     """Self-serve advance-credit top-up -- lets a consultant generate their own Cashfree
     link for their active establishment, without waiting on the superadmin."""
+    require_feature_enabled(db, "cashfree_payments_enabled", "Cashfree payments")
+    require_feature_enabled(db, "advance_credit_enabled", "Advance credit")
     est_obj, project = active
     if d.amount <= 0:
         raise HTTPException(400, "Amount must be positive")
@@ -2440,8 +2715,10 @@ async def list_employees(active: Tuple[Establishment, Project] = Depends(get_act
 async def add_employee(
     d: EmployeeIn,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    require_permission(db, current_user, "employee.add")
     est_obj, project = active
     if project.get_master(d.member_id):
         raise HTTPException(400, f"Account {d.member_id} already exists")
@@ -2464,8 +2741,10 @@ async def edit_employee(
     acc: str,
     d: EmployeeIn,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    require_permission(db, current_user, "employee.edit")
     est_obj, project = active
     if d.member_id != acc:
         if project.get_master(d.member_id):
@@ -2484,8 +2763,10 @@ async def edit_employee(
 async def del_employee(
     acc: str,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    require_permission(db, current_user, "employee.delete")
     est_obj, project = active
     if not project.get_master(acc):
         raise HTTPException(404, "Not found")
@@ -2729,8 +3010,10 @@ async def put_wages(
     key: str,
     d: WageIn,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    require_permission(db, current_user, "wages.edit")
     est_obj, project = active
     if key not in project.years:
         raise HTTPException(404, "Year not found")
@@ -2761,8 +3044,10 @@ async def bulk_month_wages(
     key: str,
     d: BulkMonthWagesIn,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    require_permission(db, current_user, "wages.edit")
     est_obj, project = active
     if key not in project.years:
         raise HTTPException(404, "Year not found")
@@ -2819,8 +3104,10 @@ async def del_wages(
     key: str,
     acc: str,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    require_permission(db, current_user, "wages.delete")
     est_obj, project = active
     if key not in project.years:
         raise HTTPException(404, "Year not found")
@@ -2837,8 +3124,10 @@ async def del_wages(
 async def del_all_wages(
     key: str,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    require_permission(db, current_user, "wages.delete")
     est_obj, project = active
     if key not in project.years:
         raise HTTPException(404, "Year not found")
@@ -2967,6 +3256,7 @@ def generate_report(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    require_permission(db, current_user, "forms.download")
     est_obj, project = active
     if current_user.role != "superadmin":
         unpaid = get_unpaid_months_for_year(db, est_obj, project, key)
@@ -3025,6 +3315,7 @@ def generate_employee_report(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    require_permission(db, current_user, "forms.download")
     est_obj, project = active
     if current_user.role != "superadmin":
         unpaid = get_unpaid_months_for_year(db, est_obj, project, key)
@@ -3039,7 +3330,7 @@ def generate_employee_report(
         raise HTTPException(404, "Year not found")
     est = project.build_establishment_for_year(key)
     emps = project.build_employees_for_year(key)
-    
+
     acc = normalize_member_id(member_id)
     emp = next((e for e in emps if e.member_id == acc), None)
     if not emp:
@@ -3083,6 +3374,7 @@ def report_form9(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    require_permission(db, current_user, "forms.download")
     est_obj, project = active
     if current_user.role != "superadmin":
         all_unpaid = []
@@ -3130,7 +3422,10 @@ async def generate_ecr_txt(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    require_permission(db, current_user, "ecr.download")
     est_obj, project = active
+    if branch or division or unit:
+        require_feature_enabled(db, "branch_feature_enabled", "Branch/division/unit filtering")
     if current_user.role != "superadmin":
         if not (0 <= month_idx < 12):
             raise HTTPException(400, "Invalid month index")
@@ -3143,7 +3438,7 @@ async def generate_ecr_txt(
                 SubscriptionFee.financial_year == year_key,
                 SubscriptionFee.month == m_abbr
             ).first()
-            if fee_row and not fee_row.is_paid and is_month_overdue(year_key, month_idx):
+            if fee_row and not fee_row.is_paid and is_month_overdue(year_key, month_idx) and is_feature_enabled(db, "subscription_enforcement_enabled"):
                 year_record = project.years.get(year_key)
                 cal_yr = calendar_year_for_month(m_abbr, year_record.year_from, year_record.year_to) if year_record else ""
                 display_m = f"{MONTH_FULL.get(m_abbr.upper(), m_abbr)} {cal_yr}".strip()
@@ -3155,7 +3450,7 @@ async def generate_ecr_txt(
     year_record = project.years.get(year_key)
     if not year_record:
         raise HTTPException(404, "Year not found")
-        
+
     employees_with_wages = []
     for master_emp in project.master.values():
         if branch:
@@ -3205,8 +3500,10 @@ async def generate_ecr_txt(
 async def get_ecr_by_branch_stats(
     year_key: str,
     month_idx: int,
-    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
 ):
+    require_feature_enabled(db, "branch_feature_enabled", "Branch-wise ECR breakdown")
     est_obj, project = active
     year_record = project.years.get(year_key)
     if not year_record:
@@ -3236,6 +3533,8 @@ async def generate_ecr_zip_by_branch(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    require_permission(db, current_user, "ecr.download")
+    require_feature_enabled(db, "branch_feature_enabled", "Branch-wise ECR download")
     est_obj, project = active
     if current_user.role != "superadmin":
         if not (0 <= month_idx < 12):
@@ -3249,7 +3548,7 @@ async def generate_ecr_zip_by_branch(
                 SubscriptionFee.financial_year == year_key,
                 SubscriptionFee.month == m_abbr
             ).first()
-            if fee_row and not fee_row.is_paid and is_month_overdue(year_key, month_idx):
+            if fee_row and not fee_row.is_paid and is_month_overdue(year_key, month_idx) and is_feature_enabled(db, "subscription_enforcement_enabled"):
                 year_record = project.years.get(year_key)
                 cal_yr = calendar_year_for_month(m_abbr, year_record.year_from, year_record.year_to) if year_record else ""
                 display_m = f"{MONTH_FULL.get(m_abbr.upper(), m_abbr)} {cal_yr}".strip()
@@ -3261,7 +3560,7 @@ async def generate_ecr_zip_by_branch(
     year_record = project.years.get(year_key)
     if not year_record:
         raise HTTPException(404, "Year not found")
-        
+
     branch_emps = {}
     for master_emp in project.master.values():
         entry = next((e for e in year_record.entries if e.member_id == master_emp.member_id), None)
@@ -3316,7 +3615,10 @@ async def generate_ecr_zip(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    require_permission(db, current_user, "ecr.download")
     est_obj, project = active
+    if branch or division or unit:
+        require_feature_enabled(db, "branch_feature_enabled", "Branch/division/unit filtering")
     if current_user.role != "superadmin":
         unpaid = get_unpaid_months_for_year(db, est_obj, project, year_key)
         if unpaid:

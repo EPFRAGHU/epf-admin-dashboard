@@ -40,6 +40,38 @@ const Admin = (() => {
   let subPayFilterFY = '';
   let subPayFilterSearch = '';
 
+  // Permissions & Feature Flags state
+  let featureFlags = [];
+  let rolePermissions = [];
+  let permissionActions = [];
+  let rolePermsDirty = false;
+
+  const PERMISSION_ACTIONS_FALLBACK = [
+    'employee.add', 'employee.edit', 'employee.delete',
+    'establishment.add', 'establishment.edit', 'establishment.delete',
+    'wages.edit', 'wages.delete',
+    'ecr.download', 'forms.download'
+  ];
+
+  const ACTION_LABELS = {
+    'employee.add': 'Add Employee',
+    'employee.edit': 'Edit Employee',
+    'employee.delete': 'Delete Employee',
+    'establishment.add': 'Add Establishment',
+    'establishment.edit': 'Edit Establishment',
+    'establishment.delete': 'Delete Establishment',
+    'wages.edit': 'Edit Wages',
+    'wages.delete': 'Delete Wages',
+    'ecr.download': 'Download ECR',
+    'forms.download': 'Download Forms (3A/6A/12A/5/10/9)'
+  };
+
+  const FEATURE_FLAG_GROUPS = [
+    { title: 'Payments', keys: ['cashfree_payments_enabled', 'subscription_enforcement_enabled'] },
+    { title: 'Advance Credit', keys: ['advance_credit_enabled'] },
+    { title: 'Branches', keys: ['branch_feature_enabled'] }
+  ];
+
   async function loadOverview() {
     try {
       overviewData = await App.get('/api/admin/overview');
@@ -168,11 +200,14 @@ const Admin = (() => {
         <button class="btn ${activeTab === 'subscription_payments' ? 'btn-primary' : 'btn-ghost'}" style="font-weight:700;" onclick="Admin.switchTab('subscription_payments')">
           💳 Subscription Payments
         </button>
+        <button class="btn ${activeTab === 'permissions' ? 'btn-primary' : 'btn-ghost'}" style="font-weight:700;" onclick="Admin.switchTab('permissions')">
+          🔐 Permissions & Features
+        </button>
       </div>
 
       <!-- Main Admin Content Container -->
       <div id="admin-main-container">
-        ${activeTab === 'overview' ? renderOverviewTab() : activeTab === 'activity_log' ? renderActivityLogTabHtml() : renderSubscriptionPaymentsTabHtml()}
+        ${activeTab === 'overview' ? renderOverviewTab() : activeTab === 'activity_log' ? renderActivityLogTabHtml() : activeTab === 'subscription_payments' ? renderSubscriptionPaymentsTabHtml() : renderPermissionsTabHtml()}
       </div>
     `;
 
@@ -182,6 +217,8 @@ const Admin = (() => {
       loadFullActivityLogTable();
     } else if (activeTab === 'subscription_payments') {
       loadSubscriptionPaymentsTable();
+    } else if (activeTab === 'permissions') {
+      loadPermissionsTab();
     }
   }
 
@@ -786,6 +823,264 @@ const Admin = (() => {
     );
   }
 
+  /* ── Tab 4: Permissions & Features ──────────────────────────────── */
+  function renderPermissionsTabHtml() {
+    return `
+      <div style="display:flex; flex-direction:column; gap:24px;">
+        <div class="card" style="padding:0; overflow:hidden;">
+          <div class="card-head" style="padding:16px 20px; border-bottom:1px solid var(--border);">
+            <h3 style="margin:0; font-size:17px; font-weight:700;">Feature Flags</h3>
+            <p style="margin:2px 0 0 0; font-size:12px; color:var(--text2);">Platform-wide switches. Toggling one applies immediately to every account.</p>
+          </div>
+          <div id="admin-feature-flags-body" style="padding:16px 20px;">
+            <div class="page-loading" style="padding:20px;"><div class="spinner"></div><p>Loading feature flags…</p></div>
+          </div>
+        </div>
+
+        <div class="card" style="padding:0; overflow:hidden;">
+          <div class="card-head" style="display:flex; justify-content:space-between; align-items:flex-start; padding:16px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap; gap:12px;">
+            <div>
+              <h3 style="margin:0; font-size:17px; font-weight:700;">Role Permissions</h3>
+              <p style="margin:2px 0 0 0; font-size:12px; color:var(--text2);">Default permissions for every Consultant / Employer account. Individual users can still be overridden from their own detail view.</p>
+            </div>
+            <button class="btn btn-primary btn-sm" id="rp-save-btn" onclick="Admin.confirmSaveRolePermissions()" disabled>💾 Save Changes</button>
+          </div>
+          <div id="admin-role-permissions-body" style="padding:0;">
+            <div class="page-loading" style="padding:20px;"><div class="spinner"></div><p>Loading role permissions…</p></div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadPermissionsTab() {
+    rolePermsDirty = false;
+    try {
+      const [flagsRes, permsRes] = await Promise.all([
+        App.get('/api/admin/feature-flags'),
+        App.get('/api/admin/role-permissions')
+      ]);
+      featureFlags = flagsRes.flags || [];
+      rolePermissions = permsRes.permissions || [];
+      permissionActions = permsRes.actions || PERMISSION_ACTIONS_FALLBACK;
+    } catch (e) {
+      featureFlags = [];
+      rolePermissions = [];
+      permissionActions = PERMISSION_ACTIONS_FALLBACK;
+    }
+    renderFeatureFlagsBody();
+    renderRolePermissionsBody();
+  }
+
+  function renderFeatureFlagsBody() {
+    const el = document.getElementById('admin-feature-flags-body');
+    if (!el) return;
+    if (featureFlags.length === 0) {
+      el.innerHTML = `<div style="text-align:center; color:var(--text3); padding:16px;">No feature flags found.</div>`;
+      return;
+    }
+    const byKey = {};
+    featureFlags.forEach(f => byKey[f.key] = f);
+    const groupedKeys = new Set();
+    FEATURE_FLAG_GROUPS.forEach(g => g.keys.forEach(k => groupedKeys.add(k)));
+    const ungrouped = featureFlags.filter(f => !groupedKeys.has(f.key));
+
+    const groupHtml = (title, keys) => {
+      const flags = keys.map(k => byKey[k]).filter(Boolean);
+      if (flags.length === 0) return '';
+      return `
+        <div style="margin-bottom:18px;">
+          <div style="font-size:11px; font-weight:700; color:var(--text3); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">${App.esc(title)}</div>
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            ${flags.map(f => featureFlagRowHtml(f)).join('')}
+          </div>
+        </div>
+      `;
+    };
+
+    el.innerHTML = `
+      ${FEATURE_FLAG_GROUPS.map(g => groupHtml(g.title, g.keys)).join('')}
+      ${ungrouped.length > 0 ? groupHtml('Other', ungrouped.map(f => f.key)) : ''}
+    `;
+  }
+
+  function featureFlagRowHtml(f) {
+    return `
+      <label style="display:flex; align-items:center; justify-content:space-between; gap:16px; padding:10px 14px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-sm); cursor:pointer;">
+        <div>
+          <div style="font-weight:600; font-size:13px; color:var(--text1); font-family:monospace;">${App.esc(f.key)}</div>
+          ${f.description ? `<div style="font-size:11px; color:var(--text2); margin-top:2px;">${App.esc(f.description)}</div>` : ''}
+        </div>
+        <input type="checkbox" data-flag-key="${App.esc(f.key)}" ${f.value ? 'checked' : ''} onchange="Admin.onFeatureFlagToggle(this)" style="width:20px; height:20px; cursor:pointer; flex-shrink:0;">
+      </label>
+    `;
+  }
+
+  async function onFeatureFlagToggle(checkboxEl) {
+    const key = checkboxEl.getAttribute('data-flag-key');
+    const value = checkboxEl.checked;
+    checkboxEl.disabled = true;
+    try {
+      await App.put('/api/admin/feature-flags', { flags: { [key]: value } });
+      const f = featureFlags.find(x => x.key === key);
+      if (f) f.value = value;
+      App.toast(`'${key}' is now ${value ? 'enabled' : 'disabled'}`);
+    } catch (e) {
+      checkboxEl.checked = !value; // revert on failure
+    } finally {
+      checkboxEl.disabled = false;
+    }
+  }
+
+  function renderRolePermissionsBody() {
+    const el = document.getElementById('admin-role-permissions-body');
+    if (!el) return;
+    const actions = permissionActions.length ? permissionActions : PERMISSION_ACTIONS_FALLBACK;
+    const lookup = {};
+    rolePermissions.forEach(p => { lookup[`${p.role}:${p.action}`] = p.allowed; });
+
+    el.innerHTML = `
+      <div class="table-wrap">
+        <table class="table" id="admin-role-perm-table">
+          <thead>
+            <tr>
+              <th>Action</th>
+              <th style="text-align:center; width:130px;">Consultant</th>
+              <th style="text-align:center; width:130px;">Employer</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${actions.map(action => `
+              <tr>
+                <td style="font-size:13px;">
+                  <div style="font-weight:600; color:var(--text1);">${App.esc(ACTION_LABELS[action] || action)}</div>
+                  <div style="font-size:10px; color:var(--text3); font-family:monospace;">${App.esc(action)}</div>
+                </td>
+                <td style="text-align:center;">
+                  <input type="checkbox" data-role="consultant" data-action="${App.esc(action)}" ${lookup[`consultant:${action}`] !== false ? 'checked' : ''} onchange="Admin.onRolePermissionToggle(this)" style="width:18px; height:18px; cursor:pointer;">
+                </td>
+                <td style="text-align:center;">
+                  <input type="checkbox" data-role="employer" data-action="${App.esc(action)}" ${lookup[`employer:${action}`] !== false ? 'checked' : ''} onchange="Admin.onRolePermissionToggle(this)" style="width:18px; height:18px; cursor:pointer;">
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function onRolePermissionToggle() {
+    rolePermsDirty = true;
+    const btn = document.getElementById('rp-save-btn');
+    if (btn) btn.disabled = false;
+  }
+
+  function confirmSaveRolePermissions() {
+    App.confirm(
+      `Save changes to the Role Permissions matrix?<br><br><span style="color:var(--text2); font-size:12px;">This immediately changes what EVERY Consultant or Employer account can do — not just one user.</span>`,
+      saveRolePermissions
+    );
+  }
+
+  async function saveRolePermissions() {
+    const table = document.getElementById('admin-role-perm-table');
+    if (!table) return;
+    const checkboxes = table.querySelectorAll('input[type="checkbox"][data-role]');
+    const permissions = Array.from(checkboxes).map(cb => ({
+      role: cb.getAttribute('data-role'),
+      action: cb.getAttribute('data-action'),
+      allowed: cb.checked
+    }));
+
+    try {
+      const res = await App.put('/api/admin/role-permissions', { permissions });
+      App.toast(res.changed > 0 ? `Saved — ${res.changed} permission(s) changed` : 'No changes to save');
+      rolePermsDirty = false;
+      const btn = document.getElementById('rp-save-btn');
+      if (btn) btn.disabled = true;
+      await loadPermissionsTab();
+    } catch (e) {
+      // Handled
+    }
+  }
+
+  /* ── User Detail: Permission Overrides ──────────────────────────── */
+  async function loadUserPermissionOverrides(userId) {
+    const el = document.getElementById('user-permission-overrides-body');
+    if (!el) return;
+    el.innerHTML = `<div style="text-align:center; color:var(--text3); font-size:12px; padding:12px;">Loading…</div>`;
+    try {
+      const res = await App.get(`/api/admin/users/${userId}/permission-overrides`);
+      renderUserPermissionOverrides(userId, res.overrides || [], res.actions || PERMISSION_ACTIONS_FALLBACK);
+    } catch (e) {
+      el.innerHTML = `<div style="text-align:center; color:var(--danger); font-size:12px; padding:12px;">Failed to load overrides.</div>`;
+    }
+  }
+
+  function renderUserPermissionOverrides(userId, overrides, actions) {
+    const el = document.getElementById('user-permission-overrides-body');
+    if (!el) return;
+    const overriddenActions = new Set(overrides.map(o => o.action));
+    const availableActions = actions.filter(a => !overriddenActions.has(a));
+
+    el.innerHTML = `
+      ${overrides.length === 0 ? `
+        <div style="font-size:12px; color:var(--text3); padding:8px 0;">No exceptions — this user follows their role's default permissions.</div>
+      ` : `
+        <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px;">
+          ${overrides.map(o => `
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-sm);">
+              <div style="font-size:12px;">
+                <span style="font-weight:600; color:var(--text1);">${App.esc(ACTION_LABELS[o.action] || o.action)}</span>
+                <span class="badge ${o.allowed ? 'low' : 'high'}" style="font-size:10px; margin-left:8px;">${o.allowed ? 'Allowed' : 'Denied'}</span>
+              </div>
+              <button class="btn btn-ghost btn-sm" style="color:var(--danger); padding:2px 8px; font-size:11px;" onclick="Admin.removeUserPermissionOverride(${userId}, ${o.id})">Remove</button>
+            </div>
+          `).join('')}
+        </div>
+      `}
+      ${availableActions.length > 0 ? `
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; border-top:1px dashed var(--border); padding-top:12px;">
+          <select id="upo-action-select" class="form-input sm" style="width:220px;">
+            ${availableActions.map(a => `<option value="${App.esc(a)}">${App.esc(ACTION_LABELS[a] || a)}</option>`).join('')}
+          </select>
+          <select id="upo-allowed-select" class="form-input sm" style="width:110px;">
+            <option value="true">Allow</option>
+            <option value="false">Deny</option>
+          </select>
+          <button class="btn btn-primary btn-sm" onclick="Admin.addUserPermissionOverride(${userId})">+ Add Exception</button>
+        </div>
+      ` : ''}
+    `;
+  }
+
+  async function addUserPermissionOverride(userId) {
+    const actionEl = document.getElementById('upo-action-select');
+    const allowedEl = document.getElementById('upo-allowed-select');
+    if (!actionEl || !allowedEl) return;
+    try {
+      await App.post(`/api/admin/users/${userId}/permission-overrides`, {
+        action: actionEl.value,
+        allowed: allowedEl.value === 'true'
+      });
+      App.toast('Permission override saved');
+      loadUserPermissionOverrides(userId);
+    } catch (e) {
+      // Handled
+    }
+  }
+
+  async function removeUserPermissionOverride(userId, overrideId) {
+    try {
+      await App.del(`/api/admin/users/${userId}/permission-overrides/${overrideId}`);
+      App.toast('Override removed — user falls back to role default');
+      loadUserPermissionOverrides(userId);
+    } catch (e) {
+      // Handled
+    }
+  }
+
   /* ── Add / Edit User Modal ─────────────────────────────── */
   function showAddConsultantModal() {
     addUserRole = 'consultant';
@@ -1080,6 +1375,17 @@ const Admin = (() => {
           }).join('')}
         </div>
 
+        <!-- Permission Overrides for this User -->
+        <div class="card" style="padding:0; overflow:hidden; border:1px solid var(--card-border); margin-bottom:24px;">
+          <div class="card-head" style="padding:14px 20px; border-bottom:1px solid var(--border); background:var(--bg2);">
+            <div style="font-weight:700; font-size:15px;">🔐 Permission Overrides</div>
+            <div style="font-size:11px; color:var(--text3); margin-top:2px;">Action-specific exceptions for ${App.esc(res.user.name)} — take precedence over their role's default permissions.</div>
+          </div>
+          <div id="user-permission-overrides-body" style="padding:14px 20px;">
+            <div style="text-align:center; color:var(--text3); font-size:12px; padding:12px;">Loading…</div>
+          </div>
+        </div>
+
         <!-- Scoped Activity Log Panel for this Consultant -->
         <div class="card" style="padding:0; overflow:hidden; border:1px solid var(--card-border);">
           <div class="card-head" style="padding:14px 20px; border-bottom:1px solid var(--border); background:var(--bg2); display:flex; justify-content:space-between; align-items:center;">
@@ -1097,6 +1403,7 @@ const Admin = (() => {
           </div>
         </div>
       `;
+      loadUserPermissionOverrides(userId);
     } catch (e) {
       container.innerHTML = `
         <div class="card" style="text-align:center; padding:32px; color:var(--danger);">
@@ -1865,7 +2172,12 @@ const Admin = (() => {
     onSubPaymentsFilterChange,
     debounceSubPaymentsSearch,
     resetSubPaymentsFilters,
-    showSubPaymentDetail
+    showSubPaymentDetail,
+    onFeatureFlagToggle,
+    onRolePermissionToggle,
+    confirmSaveRolePermissions,
+    addUserPermissionOverride,
+    removeUserPermissionOverride
   };
 })();
 
