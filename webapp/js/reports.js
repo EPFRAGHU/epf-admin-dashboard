@@ -18,7 +18,17 @@ App.registerPage('reports', async (container) => {
     return;
   }
   
-  const subBanner = subStatus && subStatus.has_overdue ? `
+  const subBanner = subStatus && subStatus.is_in_trial ? `
+    <div style="background:rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.3); border-radius:var(--radius-sm); padding:14px 18px; margin-bottom:20px; display:flex; align-items:flex-start; gap:12px;">
+      <span style="font-size:22px; line-height:1;">🎁</span>
+      <div style="flex:1;">
+        <div style="font-weight:700; color:#3b82f6; font-size:14px;">Free Trial — ${subStatus.trial_days_left} day${subStatus.trial_days_left === 1 ? '' : 's'} left</div>
+        <div style="font-size:12px; color:var(--text1); margin-top:2px; line-height:1.4;">
+          Statutory Form and ECR downloads are unlocked during your trial (until ${subStatus.trial_ends_on}), regardless of subscription payment status.
+        </div>
+      </div>
+    </div>
+  ` : subStatus && subStatus.has_overdue ? `
     <div style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.3); border-radius:var(--radius-sm); padding:14px 18px; margin-bottom:20px; display:flex; align-items:flex-start; gap:12px;">
       <span style="font-size:22px; line-height:1;">⚠️</span>
       <div style="flex:1;">

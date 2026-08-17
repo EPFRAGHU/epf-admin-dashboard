@@ -319,6 +319,10 @@ const Admin = (() => {
       case 'employer_login':
       case 'superadmin_login':
         return { icon: '🔑', label: 'User Login', color: '#14b8a6', bg: 'rgba(20,184,166,0.1)', border: 'rgba(20,184,166,0.25)' };
+      case 'trial_started':
+      case 'trial_extended':
+      case 'trial_ended':
+        return { icon: '🎁', label: actionType === 'trial_ended' ? 'Trial Ended' : actionType === 'trial_extended' ? 'Trial Changed' : 'Trial Started', color: '#3b82f6', bg: 'rgba(59,130,246,0.1)', border: 'rgba(59,130,246,0.25)' };
       default:
         return { icon: '📌', label: actionType || 'Activity', color: 'var(--text2)', bg: 'var(--bg2)', border: 'var(--border)' };
     }
@@ -396,6 +400,19 @@ const Admin = (() => {
       return `<span class="badge" style="background:rgba(245,158,11,0.12); color:var(--amber); font-weight:700; font-size:11px;">Employer</span>`;
     }
     return `<span class="badge" style="background:rgba(99,102,241,0.12); color:var(--primary); font-weight:700; font-size:11px;">Consultant</span>`;
+  }
+
+  // Trial badge takes visual priority over the Paid/Fees Due/Overdue payment badge
+  // wherever both could apply -- a trial establishment shouldn't look scary just
+  // because it also has unpaid fee rows sitting in the background.
+  function trialBadgeHtml(est) {
+    if (!est || !est.is_in_trial) return '';
+    const daysLeft = est.trial_days_left != null ? est.trial_days_left : 0;
+    const soon = daysLeft <= 7;
+    const bg = soon ? 'rgba(245,158,11,0.12)' : 'rgba(59,130,246,0.12)';
+    const color = soon ? 'var(--amber)' : '#3b82f6';
+    const border = soon ? 'rgba(245,158,11,0.3)' : 'rgba(59,130,246,0.3)';
+    return `<span class="badge" style="background:${bg}; color:${color}; border:1px solid ${border}; font-weight:700; font-size:11px;">🎁 Trial — ${daysLeft} day${daysLeft === 1 ? '' : 's'} left</span>`;
   }
 
   function renderConsultantRows(list) {
@@ -1314,6 +1331,7 @@ const Admin = (() => {
               <div style="font-size:12px; color:var(--text2); margin-top:2px;">${roleBadgeHtml(res.user.role)} ${App.esc(res.user.email)} · ${ests.length} Total Covered Establishment(s)</div>
             </div>
           </div>
+          <button class="btn btn-primary btn-sm" onclick="Admin.showAddEstablishmentForUserModal(${userId})">+ Add Establishment</button>
         </div>
 
         <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap:16px; margin-bottom:24px;">
@@ -1323,7 +1341,9 @@ const Admin = (() => {
             </div>
           ` : ests.map(e => {
             let subBadge = '';
-            if (e.has_overdue_subscription) {
+            if (e.is_in_trial) {
+              subBadge = trialBadgeHtml(e);
+            } else if (e.has_overdue_subscription) {
               subBadge = `<span class="badge high" style="font-size:11px; font-weight:700; background:rgba(239,68,68,0.1); color:var(--danger); border:1px solid rgba(239,68,68,0.3);">⚠️ ${e.unpaid_subscription_months.length} mo overdue</span>`;
             } else if (e.unpaid_subscription_months && e.unpaid_subscription_months.length > 0) {
               subBadge = `<span class="badge mid" style="font-size:11px; font-weight:600;">Fees Due</span>`;
@@ -1349,10 +1369,16 @@ const Admin = (() => {
                   <p style="margin:0 0 8px 0; font-size:12px; color:var(--text2); line-height:1.4;">${App.esc(e.address || 'Address not specified')}</p>
                   
                   <div style="font-size:11px; color:var(--text3); margin-bottom:4px;">Coverage Date: <strong>${App.esc(e.coverage_date || '—')}</strong></div>
-                  <div style="font-size:11px; color:var(--text2); margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
+                  <div style="font-size:11px; color:var(--text2); margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
                     <span>Fee Rate: <strong>${effectiveRateDisplay}</strong></span>
                     <button class="btn btn-ghost btn-sm" style="padding:2px 6px; font-size:11px;" onclick="Admin.showEditEstablishmentModal(${e.id}, '${App.esc(e.name)}', '${App.esc(e.code)}', ${e.custom_rate_per_employee != null ? e.custom_rate_per_employee : 'null'})" title="Override Rate for this Establishment">
                       ✏️ Edit Rate
+                    </button>
+                  </div>
+                  <div style="font-size:11px; color:var(--text2); margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
+                    <span>Trial: <strong>${e.trial_ends_on ? (e.is_in_trial ? `Active until ${App.esc(e.trial_ends_on)}` : `Expired ${App.esc(e.trial_ends_on)}`) : 'None'}</strong></span>
+                    <button class="btn btn-ghost btn-sm" style="padding:2px 6px; font-size:11px;" onclick="Admin.showManageTrialModal(${e.id}, '${App.esc(e.name)}', '${App.esc(e.code)}', ${e.trial_ends_on ? `'${e.trial_ends_on}'` : 'null'})" title="Set, extend, or end a free trial">
+                      🎁 Manage Trial
                     </button>
                   </div>
                 </div>
@@ -1541,6 +1567,16 @@ const Admin = (() => {
           </span>
         </div>
       </div>
+
+      ${est.is_in_trial ? `
+      <div style="margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; padding:12px 18px; background:rgba(59,130,246,0.08); border:1px solid rgba(59,130,246,0.3); border-radius:var(--radius-sm);">
+        <div style="display:flex; align-items:center; gap:10px;">
+          ${trialBadgeHtml(est)}
+          <span style="font-size:12px; color:var(--text2);">Downloads are unlocked regardless of the payment status below, until ${App.esc(est.trial_ends_on)}.</span>
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="Admin.showManageTrialModal(${est.id}, '${App.esc(est.name)}', '${App.esc(est.code)}', '${App.esc(est.trial_ends_on)}')">🎁 Manage Trial</button>
+      </div>
+      ` : ''}
 
       <!-- Advance Credit Section -->
       <div style="margin-bottom:14px; background:var(--bg2); padding:14px 18px; border-radius:var(--radius-sm); border:1px solid var(--border);">
@@ -1966,6 +2002,116 @@ const Admin = (() => {
     }
   }
 
+  /* ── Manage Trial Modal ──────────────────────────────────────── */
+  function showManageTrialModal(estId, estName, estCode, currentTrialEndsOn) {
+    const statusLine = currentTrialEndsOn
+      ? `Currently ${new Date(currentTrialEndsOn) >= new Date(new Date().toDateString()) ? 'active until' : 'expired on'} <strong>${App.esc(currentTrialEndsOn)}</strong>`
+      : 'No trial currently set — normal subscription billing applies.';
+
+    const bodyHtml = `
+      <form id="manage-trial-form" onsubmit="event.preventDefault(); Admin.saveTrial(${estId});">
+        <div style="font-size:12px; color:var(--text2); margin-bottom:14px; padding:10px 12px; background:var(--bg2); border-radius:var(--radius-sm); border:1px solid var(--border);">
+          ${statusLine}
+        </div>
+        <div class="form-group" style="margin-bottom:8px;">
+          <label class="form-label" style="font-weight:600;">Free Trial Until</label>
+          <input type="date" id="mt-trial-date" class="form-input" value="${currentTrialEndsOn ? App.esc(currentTrialEndsOn) : ''}">
+          <div style="font-size:11px; color:var(--text3); margin-top:4px;">While active, ECR/form downloads are never locked for unpaid fees, regardless of payment status. Leave blank and save to clear the trial.</div>
+        </div>
+      </form>
+    `;
+    const footerHtml = `
+      <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
+      ${currentTrialEndsOn ? `<button class="btn btn-ghost" style="color:var(--danger);" onclick="Admin.clearTrial(${estId})">End Trial Now</button>` : ''}
+      <button class="btn btn-primary" onclick="Admin.saveTrial(${estId})">Save</button>
+    `;
+    App.openModal(`Manage Trial: ${App.esc(estName)}`, bodyHtml, footerHtml);
+  }
+
+  async function saveTrial(estId) {
+    const dateInput = document.getElementById('mt-trial-date');
+    const value = dateInput ? dateInput.value.trim() : '';
+    try {
+      await App.put(`/api/admin/establishments/${estId}/trial`, { trial_ends_on: value || null });
+      App.toast(value ? `Trial saved — active until ${value}` : 'Trial cleared');
+      App.closeModal();
+      if (currentSelectedConsultant) {
+        showConsultantEstablishments(currentSelectedConsultant.id);
+      }
+    } catch (e) {
+      // Handled
+    }
+  }
+
+  async function clearTrial(estId) {
+    try {
+      await App.put(`/api/admin/establishments/${estId}/trial`, { trial_ends_on: null });
+      App.toast('Trial ended');
+      App.closeModal();
+      if (currentSelectedConsultant) {
+        showConsultantEstablishments(currentSelectedConsultant.id);
+      }
+    } catch (e) {
+      // Handled
+    }
+  }
+
+  /* ── Add Establishment on behalf of a User (superadmin only) ─── */
+  function showAddEstablishmentForUserModal(userId) {
+    const bodyHtml = `
+      <form id="add-est-for-user-form" onsubmit="event.preventDefault(); Admin.saveNewEstablishmentForUser(${userId});">
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label" style="font-weight:600;">Establishment Code *</label>
+          <input type="text" id="aefu-code" class="form-input" placeholder="e.g. ORBBS1990770000" maxlength="15" required style="font-family:monospace; font-weight:600;">
+        </div>
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label" style="font-weight:600;">Establishment Name *</label>
+          <input type="text" id="aefu-name" class="form-input" placeholder="e.g. ODISHA COMPUTER ACADEMY" required>
+        </div>
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label" style="font-weight:600;">Postal Address</label>
+          <textarea id="aefu-address" class="form-input" rows="2" placeholder="Full postal address of the establishment"></textarea>
+        </div>
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label" style="font-weight:600;">EPF Coverage Date</label>
+          <input type="text" id="aefu-coverage" class="form-input" placeholder="DD-MM-YYYY (e.g. 01-04-2015)">
+        </div>
+        <div class="form-group" style="margin-bottom:16px;">
+          <label class="form-label" style="font-weight:600;">Free Trial Until <span style="font-weight:400; color:var(--text3);">(optional, superadmin-only)</span></label>
+          <input type="date" id="aefu-trial" class="form-input">
+          <div style="font-size:11px; color:var(--text3); margin-top:4px;">Leave blank to bill normally from the start. Can be set/changed later via "Manage Trial".</div>
+        </div>
+      </form>
+    `;
+    const footerHtml = `
+      <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="Admin.saveNewEstablishmentForUser(${userId})">Create Establishment</button>
+    `;
+    App.openModal('Add Establishment', bodyHtml, footerHtml, false, true);
+  }
+
+  async function saveNewEstablishmentForUser(userId) {
+    const code = document.getElementById('aefu-code').value.trim().toUpperCase();
+    const name = document.getElementById('aefu-name').value.trim();
+    const address = document.getElementById('aefu-address').value.trim();
+    const coverage_date = document.getElementById('aefu-coverage').value.trim();
+    const trial_ends_on = document.getElementById('aefu-trial').value.trim() || null;
+
+    if (!code || !name) {
+      App.toast('Establishment Code and Name are required.', 'error');
+      return;
+    }
+
+    try {
+      const res = await App.post('/api/establishments', { code, name, address, coverage_date, owner_user_id: userId, trial_ends_on });
+      App.toast(`Establishment "${res.establishment.name}" created successfully`);
+      App.closeModal();
+      showConsultantEstablishments(userId);
+    } catch (e) {
+      // Handled
+    }
+  }
+
   /* ── 12-Month Payment Compliance Grid (TRRN / Remittance) ────── */
   async function openPaymentModal(estId, estName, estCode, fy = '2026-27') {
     currentSelectedEstablishment = { id: estId, name: estName, code: estCode };
@@ -2146,6 +2292,11 @@ const Admin = (() => {
     showConsultantEstablishments,
     backToConsultantsList,
     switchToEstablishment,
+    showManageTrialModal,
+    saveTrial,
+    clearTrial,
+    showAddEstablishmentForUserModal,
+    saveNewEstablishmentForUser,
     openSubscriptionModal,
     changeSubscriptionYear,
     onSubscriptionFieldChange,

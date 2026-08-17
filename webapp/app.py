@@ -80,12 +80,30 @@ PERMISSION_ACTIONS = [
 
 # key -> (default value, description). All default True so this system is purely
 # additive on deploy -- nothing changes until a superadmin toggles something off.
+# NOTE: subscription enforcement is deliberately NOT one of these -- it's controlled
+# per-establishment via Establishment.trial_ends_on instead (see is_establishment_in_trial),
+# since a platform-wide kill-switch was too blunt a tool for "give this one establishment
+# a free trial."
 FEATURE_FLAG_DEFAULTS = {
-    "subscription_enforcement_enabled": (True, "Blocks report/ECR downloads for establishments with unpaid, overdue subscription fees"),
     "cashfree_payments_enabled": (True, "Enables Cashfree payment-link generation for subscription fees and advance credit"),
     "branch_feature_enabled": (True, "Enables branch/division/unit ECR filtering and by-branch ZIP downloads"),
     "advance_credit_enabled": (True, "Enables prepaying advance credit toward future subscription fees"),
 }
+
+# Feature-flag keys previously seeded that no longer mean anything -- cleaned up at
+# startup so the superadmin's Feature Flags UI doesn't show a dead toggle.
+OBSOLETE_FEATURE_FLAG_KEYS = ["subscription_enforcement_enabled"]
+
+
+def is_establishment_in_trial(establishment: Establishment) -> bool:
+    """True while establishment.trial_ends_on is set and today is on or before it."""
+    return establishment.trial_ends_on is not None and date.today() <= establishment.trial_ends_on
+
+
+def get_trial_days_left(establishment: Establishment) -> Optional[int]:
+    if not is_establishment_in_trial(establishment):
+        return None
+    return (establishment.trial_ends_on - date.today()).days
 
 
 def has_permission(db: Session, user: User, action: str) -> bool:
@@ -296,7 +314,7 @@ def is_month_overdue(year_key: str, month_idx: int) -> bool:
 
 def get_unpaid_months_for_year(db: Session, establishment: Establishment, project: Project, year_key: str) -> List[str]:
     """Returns list of formatted month names for which wages exist, fee is unpaid, and grace period has elapsed."""
-    if not is_feature_enabled(db, "subscription_enforcement_enabled"):
+    if is_establishment_in_trial(establishment):
         return []
     fee_rows = sync_subscription_fees_for_year(db, establishment, project, year_key)
     year_record = project.years.get(year_key)
@@ -362,6 +380,7 @@ def _run_startup_migrations():
                 _try_ddl(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS max_establishments INTEGER;")
                 _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN IF NOT EXISTS custom_rate_per_employee FLOAT;")
                 _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN IF NOT EXISTS advance_credit_balance FLOAT DEFAULT 0;")
+                _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN IF NOT EXISTS trial_ends_on DATE;")
                 # SQLite doesn't support "IF NOT EXISTS" on ADD COLUMN -- this is a
                 # harmless no-op there once the column exists, and on Postgres it's a
                 # no-op too now that _try_ddl rolls back instead of poisoning the
@@ -500,6 +519,11 @@ def _run_startup_migrations():
             db.commit()
             print(f"  [OK] Seeded {flags_added} feature flag(s)")
 
+        obsolete_removed = db.query(FeatureFlag).filter(FeatureFlag.key.in_(OBSOLETE_FEATURE_FLAG_KEYS)).delete(synchronize_session=False)
+        if obsolete_removed:
+            db.commit()
+            print(f"  [OK] Removed {obsolete_removed} obsolete feature flag(s)")
+
         # 5. Seed Role Permissions -- both roles allowed everything by default, so this
         # rollout is purely additive: nothing newly blocked until the superadmin changes it
         perms_added = 0
@@ -553,6 +577,11 @@ class EstablishmentIn(BaseModel):
     address: str = ""
     coverage_date: str = ""
     custom_rate_per_employee: Optional[float] = None
+    trial_ends_on: Optional[str] = None  # "YYYY-MM-DD"; superadmin-only, ignored otherwise
+    owner_user_id: Optional[int] = None  # superadmin-only: create on behalf of this user
+
+class TrialUpdateIn(BaseModel):
+    trial_ends_on: Optional[str] = None  # "YYYY-MM-DD", or null/omitted to clear the trial
 
 class DefaultRateIn(BaseModel):
     default_rate: float
@@ -982,6 +1011,9 @@ async def admin_user_establishments(
             "employee_count": emp_count,
             "unpaid_subscription_months": unpaid,
             "has_overdue_subscription": len(unpaid) > 0,
+            "trial_ends_on": est.trial_ends_on.isoformat() if est.trial_ends_on else None,
+            "is_in_trial": is_establishment_in_trial(est),
+            "trial_days_left": get_trial_days_left(est),
             "created_at": est.created_at.strftime("%d-%m-%Y") if est.created_at else "—"
         })
 
@@ -1254,7 +1286,10 @@ async def admin_get_establishment_subscription_fees(
             "id": est.id,
             "code": est.code,
             "name": est.name,
-            "custom_rate": est.custom_rate_per_employee
+            "custom_rate": est.custom_rate_per_employee,
+            "trial_ends_on": est.trial_ends_on.isoformat() if est.trial_ends_on else None,
+            "is_in_trial": is_establishment_in_trial(est),
+            "trial_days_left": get_trial_days_left(est)
         },
         "consultant": {
             "id": consultant.id if consultant else None,
@@ -1271,6 +1306,61 @@ async def admin_get_establishment_subscription_fees(
         },
         "financial_year": year,
         "months": months_data
+    }
+
+
+@app.put("/api/admin/establishments/{est_id}/trial")
+async def admin_update_establishment_trial(
+    est_id: int,
+    d: TrialUpdateIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Set, extend, or clear (trial_ends_on=null) an establishment's free trial, independent
+    of establishment creation -- e.g. to start a trial for an already-live paying
+    establishment, extend one that's about to lapse, or end one early."""
+    est = db.query(Establishment).filter(Establishment.id == est_id).first()
+    if not est:
+        raise HTTPException(404, "Establishment not found")
+
+    old_date = est.trial_ends_on
+    new_date = None
+    if d.trial_ends_on:
+        try:
+            new_date = datetime.strptime(d.trial_ends_on, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(400, "trial_ends_on must be in YYYY-MM-DD format")
+
+    if old_date == new_date:
+        return {
+            "ok": True,
+            "trial_ends_on": new_date.isoformat() if new_date else None,
+            "is_in_trial": is_establishment_in_trial(est),
+            "trial_days_left": get_trial_days_left(est)
+        }
+
+    est.trial_ends_on = new_date
+    db.commit()
+
+    old_str = old_date.strftime('%d-%m-%Y') if old_date else "None"
+    new_str = new_date.strftime('%d-%m-%Y') if new_date else "None"
+    if old_date is None:
+        action_type, desc = "trial_started", f"Started free trial for {est.name} ({est.code}) until {new_str}"
+    elif new_date is None:
+        action_type, desc = "trial_ended", f"Ended free trial early for {est.name} ({est.code}) (was until {old_str})"
+    else:
+        action_type, desc = "trial_extended", f"Changed free trial for {est.name} ({est.code}) from {old_str} to {new_str}"
+
+    log_activity(
+        db, admin.id, est.id, action_type, desc,
+        {"old_trial_ends_on": old_date.isoformat() if old_date else None, "new_trial_ends_on": new_date.isoformat() if new_date else None}
+    )
+
+    return {
+        "ok": True,
+        "trial_ends_on": new_date.isoformat() if new_date else None,
+        "is_in_trial": is_establishment_in_trial(est),
+        "trial_days_left": get_trial_days_left(est)
     }
 
 
@@ -1961,21 +2051,40 @@ async def create_establishment(
     if not code or not name:
         raise HTTPException(400, "Establishment Code and Name are required")
 
-    if current_user.role == "employer" and current_user.max_establishments is not None:
-        existing_count = db.query(Establishment).filter(Establishment.user_id == current_user.id).count()
-        if existing_count >= current_user.max_establishments:
-            raise HTTPException(403, f"You've reached your limit of {current_user.max_establishments} establishment(s). Contact your administrator to increase this.")
+    # owner_user_id and trial_ends_on are superadmin-only levers -- silently ignored
+    # (not an error) for anyone else, so a Consultant/Employer can never grant
+    # themselves or someone else an establishment/trial via this same endpoint.
+    owner = current_user
+    if current_user.role == "superadmin" and d.owner_user_id:
+        owner = db.query(User).filter(User.id == d.owner_user_id).first()
+        if not owner:
+            raise HTTPException(404, "Target user not found")
+        if owner.role not in ("consultant", "employer"):
+            raise HTTPException(400, "Establishments can only be owned by a Consultant or Employer account")
+
+    if owner.role == "employer" and owner.max_establishments is not None:
+        existing_count = db.query(Establishment).filter(Establishment.user_id == owner.id).count()
+        if existing_count >= owner.max_establishments:
+            raise HTTPException(403, f"{owner.name} has reached their limit of {owner.max_establishments} establishment(s). Increase their allocation first.")
+
+    trial_ends_on_value = None
+    if current_user.role == "superadmin" and d.trial_ends_on:
+        try:
+            trial_ends_on_value = datetime.strptime(d.trial_ends_on, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(400, "trial_ends_on must be in YYYY-MM-DD format")
 
     p = Project()
     p.set_establishment(code, name, d.address.strip(), d.coverage_date.strip())
 
     new_est = Establishment(
-        user_id=current_user.id,
+        user_id=owner.id,
         code=code,
         name=name,
         address=d.address.strip(),
         coverage_date=d.coverage_date.strip(),
         custom_rate_per_employee=d.custom_rate_per_employee,
+        trial_ends_on=trial_ends_on_value,
         data=json.dumps(p.to_dict(), ensure_ascii=False)
     )
     db.add(new_est)
@@ -1984,9 +2093,15 @@ async def create_establishment(
 
     log_activity(
         db, current_user.id, new_est.id, "establishment_created",
-        f"Added establishment {new_est.code} — {new_est.name}",
-        {"code": new_est.code, "name": new_est.name, "coverage_date": new_est.coverage_date, "custom_rate": new_est.custom_rate_per_employee}
+        f"Added establishment {new_est.code} — {new_est.name}" + (f" (on behalf of {owner.name})" if owner.id != current_user.id else ""),
+        {"code": new_est.code, "name": new_est.name, "coverage_date": new_est.coverage_date, "custom_rate": new_est.custom_rate_per_employee, "owner_user_id": owner.id}
     )
+    if trial_ends_on_value:
+        log_activity(
+            db, current_user.id, new_est.id, "trial_started",
+            f"Started free trial for {new_est.name} ({new_est.code}) until {trial_ends_on_value.strftime('%d-%m-%Y')}",
+            {"old_trial_ends_on": None, "new_trial_ends_on": trial_ends_on_value.isoformat()}
+        )
 
     return {
         "ok": True,
@@ -1996,7 +2111,8 @@ async def create_establishment(
             "name": new_est.name,
             "address": new_est.address,
             "coverage_date": new_est.coverage_date,
-            "custom_rate_per_employee": new_est.custom_rate_per_employee
+            "custom_rate_per_employee": new_est.custom_rate_per_employee,
+            "trial_ends_on": trial_ends_on_value.isoformat() if trial_ends_on_value else None
         }
     }
 
@@ -2323,7 +2439,10 @@ async def get_establishment_subscription_status(
         "financial_year": year,
         "has_overdue": len(unpaid) > 0,
         "unpaid_months": unpaid,
-        "total_overdue": len(unpaid)
+        "total_overdue": len(unpaid),
+        "is_in_trial": is_establishment_in_trial(est_obj),
+        "trial_ends_on": est_obj.trial_ends_on.isoformat() if est_obj.trial_ends_on else None,
+        "trial_days_left": get_trial_days_left(est_obj)
     }
 
 
@@ -3438,7 +3557,7 @@ async def generate_ecr_txt(
                 SubscriptionFee.financial_year == year_key,
                 SubscriptionFee.month == m_abbr
             ).first()
-            if fee_row and not fee_row.is_paid and is_month_overdue(year_key, month_idx) and is_feature_enabled(db, "subscription_enforcement_enabled"):
+            if fee_row and not fee_row.is_paid and is_month_overdue(year_key, month_idx) and not is_establishment_in_trial(est_obj):
                 year_record = project.years.get(year_key)
                 cal_yr = calendar_year_for_month(m_abbr, year_record.year_from, year_record.year_to) if year_record else ""
                 display_m = f"{MONTH_FULL.get(m_abbr.upper(), m_abbr)} {cal_yr}".strip()
@@ -3548,7 +3667,7 @@ async def generate_ecr_zip_by_branch(
                 SubscriptionFee.financial_year == year_key,
                 SubscriptionFee.month == m_abbr
             ).first()
-            if fee_row and not fee_row.is_paid and is_month_overdue(year_key, month_idx) and is_feature_enabled(db, "subscription_enforcement_enabled"):
+            if fee_row and not fee_row.is_paid and is_month_overdue(year_key, month_idx) and not is_establishment_in_trial(est_obj):
                 year_record = project.years.get(year_key)
                 cal_yr = calendar_year_for_month(m_abbr, year_record.year_from, year_record.year_to) if year_record else ""
                 display_m = f"{MONTH_FULL.get(m_abbr.upper(), m_abbr)} {cal_yr}".strip()

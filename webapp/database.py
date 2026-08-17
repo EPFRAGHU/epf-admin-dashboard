@@ -1,5 +1,5 @@
 import os
-from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, Float, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, Float, DateTime, Date, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from sqlalchemy.sql import func
 from dotenv import load_dotenv
@@ -43,6 +43,7 @@ class Establishment(Base):
     coverage_date = Column(String(50), nullable=True)
     custom_rate_per_employee = Column(Float, nullable=True)  # Nullable rate override (₹/emp)
     advance_credit_balance = Column(Float, nullable=False, default=0.0)  # Prepaid subscription credit (₹), auto-applied to future months
+    trial_ends_on = Column(Date, nullable=True)  # Null = no trial (normal enforcement). Superadmin-set only.
     data = Column(Text, nullable=False, default="{}")  # Serialized Project JSON
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
