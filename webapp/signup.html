@@ -15,6 +15,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/css/style.css">
   <link rel="stylesheet" href="/css/epfo-app-theme.css">
+  <link rel="stylesheet" href="/css/google-signin.css">
 </head>
 <body>
   <div style="display:flex; justify-content:center; align-items:center; min-height:100vh; background:var(--bg); padding:20px;">
@@ -34,6 +35,40 @@
 
         <div id="signup-status" style="display:none; font-size:12px; padding:10px 12px; border-radius:var(--radius-sm); margin-bottom:16px;"></div>
 
+        <div id="su-employer-fields" style="display:none;">
+          <div class="form-group" style="margin-bottom:12px;">
+            <label class="form-label" style="font-weight:600;">Establishment Code *</label>
+            <input type="text" id="su-est-code" class="form-input" placeholder="e.g. ORBBS1990770000" maxlength="15" style="font-family:monospace; font-weight:600;">
+          </div>
+          <div class="form-group" style="margin-bottom:12px;">
+            <label class="form-label" style="font-weight:600;">Establishment Name *</label>
+            <input type="text" id="su-est-name" class="form-input" placeholder="e.g. ODISHA COMPUTER ACADEMY">
+          </div>
+          <div class="form-group" style="margin-bottom:12px;">
+            <label class="form-label" style="font-weight:600;">Establishment Address</label>
+            <textarea id="su-est-address" class="form-input" rows="2" placeholder="Full postal address of the establishment"></textarea>
+          </div>
+          <div class="form-group" style="margin-bottom:12px;">
+            <label class="form-label" style="font-weight:600;">Date of Coverage</label>
+            <input type="date" id="su-est-coverage" class="form-input">
+          </div>
+        </div>
+
+        <div style="display:flex; align-items:flex-start; gap:8px; margin-bottom:20px;">
+          <input type="checkbox" id="su-agree" style="width:16px; height:16px; margin-top:2px; cursor:pointer;" onchange="Signup.onAgreeChange()">
+          <label for="su-agree" style="font-size:12px; color:var(--text2); line-height:1.5; cursor:pointer;">
+            I agree to the <a href="/terms" target="_blank" rel="noopener" style="color:var(--primary);">Terms of Service</a> and <a href="/privacy" target="_blank" rel="noopener" style="color:var(--primary);">Privacy Policy</a>
+          </label>
+        </div>
+
+        <div id="su-google-btn-wrap" style="margin-bottom:16px;"></div>
+
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">
+          <div style="flex:1; height:1px; background:var(--card-border);"></div>
+          <span style="font-size:11px; color:var(--text3); text-transform:uppercase;">or continue with email</span>
+          <div style="flex:1; height:1px; background:var(--card-border);"></div>
+        </div>
+
         <form id="signup-form" onsubmit="event.preventDefault(); Signup.submit();">
           <div class="form-group" style="margin-bottom:12px;">
             <label class="form-label" id="su-name-label" style="font-weight:600;">Name of the Consultant *</label>
@@ -47,26 +82,6 @@
             <label class="form-label" style="font-weight:600;">Mobile Number</label>
             <input type="tel" id="su-mobile" class="form-input" placeholder="e.g. 9876543210">
           </div>
-
-          <div id="su-employer-fields" style="display:none;">
-            <div class="form-group" style="margin-bottom:12px;">
-              <label class="form-label" style="font-weight:600;">Establishment Code *</label>
-              <input type="text" id="su-est-code" class="form-input" placeholder="e.g. ORBBS1990770000" maxlength="15" style="font-family:monospace; font-weight:600;">
-            </div>
-            <div class="form-group" style="margin-bottom:12px;">
-              <label class="form-label" style="font-weight:600;">Establishment Name *</label>
-              <input type="text" id="su-est-name" class="form-input" placeholder="e.g. ODISHA COMPUTER ACADEMY">
-            </div>
-            <div class="form-group" style="margin-bottom:12px;">
-              <label class="form-label" style="font-weight:600;">Establishment Address</label>
-              <textarea id="su-est-address" class="form-input" rows="2" placeholder="Full postal address of the establishment"></textarea>
-            </div>
-            <div class="form-group" style="margin-bottom:12px;">
-              <label class="form-label" style="font-weight:600;">Date of Coverage</label>
-              <input type="date" id="su-est-coverage" class="form-input">
-            </div>
-          </div>
-
           <div class="form-group" style="margin-bottom:12px;">
             <label class="form-label" style="font-weight:600;">Password *</label>
             <input type="password" id="su-password" class="form-input" placeholder="Create a login password" required>
@@ -74,13 +89,6 @@
           <div class="form-group" style="margin-bottom:16px;">
             <label class="form-label" style="font-weight:600;">Confirm Password *</label>
             <input type="password" id="su-password-confirm" class="form-input" placeholder="Re-enter your password" required>
-          </div>
-
-          <div style="display:flex; align-items:flex-start; gap:8px; margin-bottom:20px;">
-            <input type="checkbox" id="su-agree" style="width:16px; height:16px; margin-top:2px; cursor:pointer;" onchange="Signup.onAgreeChange()">
-            <label for="su-agree" style="font-size:12px; color:var(--text2); line-height:1.5; cursor:pointer;">
-              I agree to the <a href="/terms" target="_blank" rel="noopener" style="color:var(--primary);">Terms of Service</a> and <a href="/privacy" target="_blank" rel="noopener" style="color:var(--primary);">Privacy Policy</a>
-            </label>
           </div>
 
           <button type="submit" id="signup-submit-btn" class="btn btn-primary" disabled style="width:100%; padding:12px; font-size:15px; font-weight:700;">

@@ -15,10 +15,12 @@ import requests
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict
 from datetime import datetime, date, timedelta
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Query, Header, Request, status
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response, RedirectResponse
+from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -34,10 +36,12 @@ from .database import (
 # Auth helpers and dependencies
 from .auth import (
     hash_password, verify_password, create_access_token, decode_access_token,
-    get_current_user, get_superadmin, get_active_establishment, save_establishment_project
+    get_current_user, get_superadmin, get_active_establishment, save_establishment_project,
+    JWT_SECRET
 )
 
 from . import cashfree_client
+from . import google_oauth
 
 def log_activity(
     db: Session,
@@ -340,6 +344,12 @@ def get_unpaid_months_for_year(db: Session, establishment: Establishment, projec
 # ── App setup ──────────────────────────────────────────────────────────────
 app = FastAPI(title="EPF Admin Dashboard", version="2.1.0")
 
+# Required by Authlib's OAuth client to stash the Google auth state/nonce (and, for the
+# signup flow, the role/establishment fields chosen before redirecting to Google) across
+# the redirect round-trip. Reuses JWT_SECRET as a default so this works out of the box in
+# dev without a second secret to configure -- override with SESSION_SECRET_KEY in production.
+app.add_middleware(SessionMiddleware, secret_key=os.environ.get("SESSION_SECRET_KEY", JWT_SECRET))
+
 WEB = Path(__file__).resolve().parent
 app.mount("/css", StaticFiles(directory=str(WEB / "css")), name="css")
 app.mount("/js", StaticFiles(directory=str(WEB / "js")), name="js")
@@ -381,6 +391,12 @@ def _run_startup_migrations():
                 _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN IF NOT EXISTS custom_rate_per_employee FLOAT;")
                 _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN IF NOT EXISTS advance_credit_balance FLOAT DEFAULT 0;")
                 _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN IF NOT EXISTS trial_ends_on DATE;")
+                _try_ddl(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(255);")
+                _try_ddl(conn, "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id);")
+                _try_ddl(conn, "ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;")
+                _try_ddl(conn, "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS google_id VARCHAR(255);")
+                _try_ddl(conn, "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS email_verified_via_google BOOLEAN DEFAULT false;")
+                _try_ddl(conn, "ALTER TABLE signup_requests ALTER COLUMN password_hash DROP NOT NULL;")
                 # SQLite doesn't support "IF NOT EXISTS" on ADD COLUMN -- this is a
                 # harmless no-op there once the column exists, and on Postgres it's a
                 # no-op too now that _try_ddl rolls back instead of poisoning the
@@ -751,6 +767,8 @@ class OrgItemIn(BaseModel):
 async def login(d: LoginIn, db: Session = Depends(get_db)):
     email = d.email.strip().lower()
     user = db.query(User).filter(func.lower(User.email) == email).first()
+    if user and not user.password_hash:
+        raise HTTPException(status_code=401, detail="This account uses Google Sign-In. Please use the \"Sign in with Google\" button instead.")
     if not user or not verify_password(d.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
     if not user.is_active:
@@ -799,8 +817,150 @@ async def logout():
     return {"ok": True, "message": "Logged out successfully"}
 
 
-# ── Public Signup (no auth required) ────────────────────────────────────────
+# ── Google OAuth ("Sign in with Google") ────────────────────────────────────
 DUPLICATE_ESTABLISHMENT_MESSAGE = "This establishment has already been registered on our platform. If you believe this is an error, please contact support."
+
+
+@app.get("/api/auth/google/login")
+async def google_login(
+    request: Request,
+    mode: str = Query("login"),  # 'login' or 'signup'
+    role: Optional[str] = Query(None),
+    establishment_code: Optional[str] = Query(None),
+    establishment_name: Optional[str] = Query(None),
+    establishment_address: Optional[str] = Query(None),
+    coverage_date: Optional[str] = Query(None),
+    agreed_to_terms: Optional[str] = Query(None),
+):
+    """Kicks off the Google consent screen redirect. For mode='signup', the caller has
+    already picked a role (and, for Employer, filled in establishment details) on the
+    /signup page -- those fields are stashed in the server-side session so the callback
+    can create the SignupRequest once Google confirms the verified identity. Google sign-in
+    only replaces the identity/password portion of the form, not the rest of it."""
+    if not google_oauth.is_configured():
+        raise HTTPException(503, "Google Sign-In is not configured on this server yet.")
+
+    request.session.pop("google_pending_signup", None)
+    if mode == "signup":
+        role_norm = (role or "").strip().lower()
+        if role_norm not in ("consultant", "employer"):
+            raise HTTPException(400, "Role must be 'consultant' or 'employer'")
+        if str(agreed_to_terms).strip().lower() not in ("1", "true", "yes"):
+            raise HTTPException(400, "You must agree to the Terms of Service and Privacy Policy to sign up.")
+
+        pending = {"role": role_norm}
+        if role_norm == "employer":
+            code = (establishment_code or "").strip().upper()
+            name = (establishment_name or "").strip()
+            if not code or not name:
+                raise HTTPException(400, "Establishment Code and Name are required for an Employer signup")
+            pending["establishment_code"] = code
+            pending["establishment_name"] = name
+            pending["establishment_address"] = (establishment_address or "").strip()
+            pending["coverage_date"] = (coverage_date or "").strip()
+        request.session["google_pending_signup"] = pending
+
+    redirect_uri = f"{_app_base_url(request)}/api/auth/google/callback"
+    return await google_oauth.oauth.google.authorize_redirect(request, redirect_uri)
+
+
+@app.get("/api/auth/google/callback")
+async def google_callback(request: Request, db: Session = Depends(get_db)):
+    if not google_oauth.is_configured():
+        raise HTTPException(503, "Google Sign-In is not configured on this server yet.")
+
+    try:
+        token = await google_oauth.oauth.google.authorize_access_token(request)
+    except Exception:
+        return RedirectResponse(url="/?google_error=" + quote("Google sign-in failed. Please try again."))
+
+    userinfo = token.get("userinfo") or {}
+    google_sub = userinfo.get("sub")
+    google_email = (userinfo.get("email") or "").strip().lower()
+    google_name = userinfo.get("name") or (google_email.split("@")[0] if google_email else "")
+
+    if not google_sub or not google_email or not userinfo.get("email_verified"):
+        return RedirectResponse(url="/?google_error=" + quote("Google did not return a verified email address."))
+
+    pending_signup = request.session.pop("google_pending_signup", None)
+
+    # 1. An account already exists for this Google identity (matched by google_id first,
+    # then by email so an existing password-based account can link up) -- log them in,
+    # regardless of whether they arrived via the login page or signup page.
+    user = db.query(User).filter(User.google_id == google_sub).first()
+    if not user:
+        user = db.query(User).filter(func.lower(User.email) == google_email).first()
+
+    if user:
+        if not user.is_active:
+            return RedirectResponse(url="/?google_error=" + quote("Your account has been deactivated. Please contact support."))
+        if not user.google_id:
+            user.google_id = google_sub  # backfill the link for a pre-existing password account
+            db.commit()
+
+        jwt_token = create_access_token(user.id, user.email, user.role)
+        log_activity(
+            db, user.id, None,
+            "superadmin_login" if user.role == "superadmin" else f"{user.role}_login",
+            f"User logged in via Google: {user.name} ({user.email})",
+            {"role": user.role, "email": user.email, "via": "google"}
+        )
+        return RedirectResponse(url=f"/?google_token={jwt_token}")
+
+    # 2. No matching account -- this is a new signup via Google.
+    if not pending_signup:
+        # They clicked "Sign in with Google" straight from the login page and have no
+        # account yet. Nothing is created -- send them to the signup page to pick a role;
+        # the name/email are passed only to pre-fill the form, not as anything trusted.
+        return RedirectResponse(url=f"/signup?google_no_account=1&google_email={quote(google_email)}&google_name={quote(google_name)}")
+
+    if db.query(SignupRequest).filter(func.lower(SignupRequest.email) == google_email, SignupRequest.status == "pending").first():
+        return RedirectResponse(url="/signup?google_error=" + quote("A signup request with this email is already pending review."))
+
+    role = pending_signup["role"]
+    establishment_code = pending_signup.get("establishment_code")
+    establishment_name = pending_signup.get("establishment_name")
+
+    if role == "employer":
+        code_taken = (
+            db.query(Establishment).filter(func.upper(Establishment.code) == establishment_code).first()
+            or db.query(SignupRequest).filter(
+                func.upper(SignupRequest.establishment_code) == establishment_code,
+                SignupRequest.status == "pending"
+            ).first()
+        )
+        if code_taken:
+            return RedirectResponse(url="/signup?google_error=" + quote(DUPLICATE_ESTABLISHMENT_MESSAGE))
+
+    coverage_date_value = pending_signup.get("coverage_date", "")
+    if role == "employer" and coverage_date_value:
+        try:
+            coverage_date_value = datetime.strptime(coverage_date_value, "%Y-%m-%d").strftime("%d-%m-%Y")
+        except ValueError:
+            pass
+
+    req = SignupRequest(
+        role=role,
+        name=google_name,
+        email=google_email,
+        mobile="",
+        password_hash=None,
+        google_id=google_sub,
+        email_verified_via_google=True,
+        establishment_code=establishment_code,
+        establishment_name=establishment_name,
+        establishment_address=pending_signup.get("establishment_address") if role == "employer" else None,
+        coverage_date=coverage_date_value if role == "employer" else None,
+        agreed_to_terms=True,
+        status="pending"
+    )
+    db.add(req)
+    db.commit()
+
+    return RedirectResponse(url="/signup?submitted=1")
+
+
+# ── Public Signup (no auth required) ────────────────────────────────────────
 
 
 @app.post("/api/signup")
@@ -1101,6 +1261,7 @@ async def admin_list_signup_requests(
                 "name": r.name,
                 "email": r.email,
                 "mobile": r.mobile or "—",
+                "email_verified_via_google": r.email_verified_via_google,
                 "establishment_code": r.establishment_code,
                 "establishment_name": r.establishment_name,
                 "establishment_address": r.establishment_address,
@@ -1150,7 +1311,8 @@ async def admin_approve_signup_request(
         name=req.name,
         mobile=req.mobile or "",
         email=req.email,
-        password_hash=req.password_hash,  # already hashed at signup -- reused as-is, no reset step needed
+        password_hash=req.password_hash,  # already hashed at signup -- reused as-is, no reset step needed (null for Google-only accounts)
+        google_id=req.google_id if req.email_verified_via_google else None,
         role=req.role,
         max_establishments=1 if req.role == "employer" else None,
         is_active=True

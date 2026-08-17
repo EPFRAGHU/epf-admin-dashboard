@@ -22,7 +22,8 @@ class User(Base):
     name = Column(String(255), nullable=False)
     mobile = Column(String(50), nullable=True)
     email = Column(String(255), unique=True, nullable=False, index=True)
-    password_hash = Column(String(255), nullable=False)
+    password_hash = Column(String(255), nullable=True)  # null for Google-only accounts (no local password)
+    google_id = Column(String(255), nullable=True, unique=True, index=True)  # Google "sub" claim, once linked
     role = Column(String(50), nullable=False, default="consultant")  # 'superadmin', 'consultant', or 'employer'
     max_establishments = Column(Integer, nullable=True)  # Employer establishment cap; null = unlimited (always null for consultant/superadmin)
     custom_rate_per_employee = Column(Float, nullable=True)  # Nullable rate override (₹/emp)
@@ -175,7 +176,9 @@ class SignupRequest(Base):
     name = Column(String(255), nullable=False)
     email = Column(String(255), nullable=False, index=True)
     mobile = Column(String(50), nullable=True)
-    password_hash = Column(String(255), nullable=False)  # hashed immediately on submission -- plaintext never stored
+    password_hash = Column(String(255), nullable=True)  # hashed immediately on submission -- plaintext never stored; null if email_verified_via_google
+    google_id = Column(String(255), nullable=True)  # Google "sub" claim, if this request came from Google sign-in
+    email_verified_via_google = Column(Boolean, nullable=False, default=False)
     establishment_code = Column(String(100), nullable=True)  # employer only
     establishment_name = Column(String(255), nullable=True)
     establishment_address = Column(Text, nullable=True)

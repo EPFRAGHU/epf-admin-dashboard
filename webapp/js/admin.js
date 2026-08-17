@@ -1186,6 +1186,7 @@ const Admin = (() => {
                 <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap;">
                   ${roleBadgeHtml(r.role)}
                   ${signupStatusBadge(r.status)}
+                  ${r.email_verified_via_google ? `<span class="badge" style="font-size:10px; background:var(--bg2); border:1px solid var(--border);">🔵 via Google</span>` : ''}
                   <span style="font-size:11px; color:var(--text3);">Submitted ${r.submitted_at}</span>
                 </div>
                 <div style="font-weight:700; color:var(--text1); font-size:14px;">${App.esc(r.name)}</div>

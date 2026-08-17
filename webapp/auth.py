@@ -23,6 +23,8 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, password_hash: str) -> bool:
+    if not password_hash:
+        return False  # Google-only accounts have no local password to check against
     return check_password_hash(password_hash, password)
 
 
