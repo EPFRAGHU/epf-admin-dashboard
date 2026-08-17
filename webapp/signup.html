@@ -15,7 +15,6 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/css/style.css">
   <link rel="stylesheet" href="/css/epfo-app-theme.css">
-  <link rel="stylesheet" href="/css/google-signin.css">
   <style>
     .su-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
     @media (max-width: 560px) {
@@ -65,14 +64,6 @@
           <label for="su-agree" style="font-size:12px; color:var(--text2); line-height:1.5; cursor:pointer;">
             I agree to the <a href="/terms" target="_blank" rel="noopener" style="color:var(--primary);">Terms of Service</a> and <a href="/privacy" target="_blank" rel="noopener" style="color:var(--primary);">Privacy Policy</a>
           </label>
-        </div>
-
-        <div id="su-google-btn-wrap" style="margin-bottom:16px;"></div>
-
-        <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">
-          <div style="flex:1; height:1px; background:var(--card-border);"></div>
-          <span style="font-size:11px; color:var(--text3); text-transform:uppercase;">or continue with email</span>
-          <div style="flex:1; height:1px; background:var(--card-border);"></div>
         </div>
 
         <form id="signup-form" onsubmit="event.preventDefault(); Signup.submit();">
