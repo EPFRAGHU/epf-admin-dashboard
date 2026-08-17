@@ -347,6 +347,13 @@ const Admin = (() => {
     filterConsultants(searchEl ? searchEl.value : '');
   }
 
+  function establishmentAllocationText(c) {
+    if (c.role === 'employer') {
+      return c.max_establishments != null ? `${c.establishment_count} of ${c.max_establishments}` : `${c.establishment_count} of Unlimited`;
+    }
+    return `${c.establishment_count} (Unlimited)`;
+  }
+
   function roleBadgeHtml(role) {
     if (role === 'employer') {
       return `<span class="badge" style="background:rgba(245,158,11,0.12); color:var(--amber); font-weight:700; font-size:11px;">Employer</span>`;
@@ -385,8 +392,9 @@ const Admin = (() => {
         </td>
         <td style="text-align:center;">
           <button class="badge" style="cursor:pointer; border:1px solid var(--border); background:var(--bg2); color:var(--primary); font-weight:700; padding:3px 8px;" onclick="Admin.showConsultantEstablishments(${c.id})" title="View Establishments">
-            🏢 ${c.establishment_count} Establishments
+            🏢 ${establishmentAllocationText(c)}
           </button>
+          ${c.role === 'employer' ? `<button class="btn btn-ghost btn-sm" style="margin-left:4px; padding:2px 6px; font-size:11px;" onclick="Admin.showEditConsultantModal(${c.id})" title="Edit Limit">✏️ Edit Limit</button>` : ''}
         </td>
         <td style="text-align:center;">
           <span class="badge ${c.is_active ? 'low' : 'high'}" style="font-size:11px;">
@@ -799,6 +807,11 @@ const Admin = (() => {
           <label class="form-label" style="font-weight:600;">Mobile Number</label>
           <input type="tel" id="ac-mobile" class="form-input" placeholder="e.g. 9876543210">
         </div>
+        <div class="form-group" style="margin-bottom:12px; display:none;" id="au-limit-group">
+          <label class="form-label" style="font-weight:600;">No. of Establishments *</label>
+          <input type="number" step="1" min="1" id="ac-max-establishments" class="form-input" placeholder="e.g. 3">
+          <div style="font-size:11px; color:var(--text3); margin-top:3px;">Maximum establishments this employer is allowed to add. Can be changed later from their user row.</div>
+        </div>
         <div class="form-group" style="margin-bottom:12px;">
           <label class="form-label" style="font-weight:600;">Custom Fee Rate (₹/employee/month)</label>
           <input type="number" step="0.5" min="0" id="ac-rate" class="form-input" placeholder="Leave blank to use global default (₹10)">
@@ -830,6 +843,9 @@ const Admin = (() => {
     const nameLabel = document.getElementById('au-name-label');
     if (nameLabel) nameLabel.textContent = `Name of the ${roleLabel} *`;
 
+    const limitGroup = document.getElementById('au-limit-group');
+    if (limitGroup) limitGroup.style.display = isEmployer ? '' : 'none';
+
     const rateHint = document.getElementById('au-rate-hint');
     if (rateHint) rateHint.textContent = `Optional override applied to all establishments managed by this ${roleLabel.toLowerCase()}.`;
 
@@ -851,8 +867,18 @@ const Admin = (() => {
       return;
     }
 
+    let max_establishments = null;
+    if (role === 'employer') {
+      const limitVal = document.getElementById('ac-max-establishments').value.trim();
+      max_establishments = limitVal !== '' ? parseInt(limitVal, 10) : NaN;
+      if (!Number.isInteger(max_establishments) || max_establishments <= 0) {
+        App.toast('Enter a valid number of establishments (1 or more) for this employer.', 'error');
+        return;
+      }
+    }
+
     try {
-      const res = await App.post('/api/admin/users', { name, email, mobile, password, role, custom_rate_per_employee });
+      const res = await App.post('/api/admin/users', { name, email, mobile, password, role, max_establishments, custom_rate_per_employee });
       const roleLabel = res.user.role === 'employer' ? 'Employer' : 'Consultant';
       App.toast(`${roleLabel} "${res.user.name}" created successfully (S.No: ${res.user.serial_no})`);
       App.closeModal();
@@ -883,6 +909,13 @@ const Admin = (() => {
           <label class="form-label" style="font-weight:600;">Mobile Number</label>
           <input type="tel" id="ec-mobile" class="form-input" value="${App.esc(c.mobile !== '—' ? c.mobile : '')}">
         </div>
+        ${c.role === 'employer' ? `
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label" style="font-weight:600;">No. of Establishments *</label>
+          <input type="number" step="1" min="1" id="ec-max-establishments" class="form-input" value="${c.max_establishments != null ? c.max_establishments : ''}">
+          <div style="font-size:11px; color:var(--text3); margin-top:3px;">Currently using ${c.establishment_count || 0} of this limit. Increase it to let them add more establishments immediately.</div>
+        </div>
+        ` : ''}
         <div class="form-group" style="margin-bottom:12px;">
           <label class="form-label" style="font-weight:600;">Custom Fee Rate (₹/employee/month)</label>
           <input type="number" step="0.5" min="0" id="ec-rate" class="form-input" placeholder="Leave blank to use global default" value="${c.custom_rate_per_employee != null ? c.custom_rate_per_employee : ''}">
@@ -906,6 +939,7 @@ const Admin = (() => {
   }
 
   async function updateConsultant(id) {
+    const c = consultants.find(item => item.id === id);
     const name = document.getElementById('ec-name').value.trim();
     const email = document.getElementById('ec-email').value.trim();
     const mobile = document.getElementById('ec-mobile').value.trim();
@@ -921,6 +955,17 @@ const Admin = (() => {
 
     const payload = { name, email, mobile, is_active, custom_rate_per_employee };
     if (password) payload.password = password;
+
+    if (c && c.role === 'employer') {
+      const limitEl = document.getElementById('ec-max-establishments');
+      const limitVal = limitEl ? limitEl.value.trim() : '';
+      const max_establishments = limitVal !== '' ? parseInt(limitVal, 10) : NaN;
+      if (!Number.isInteger(max_establishments) || max_establishments <= 0) {
+        App.toast('Enter a valid number of establishments (1 or more) for this employer.', 'error');
+        return;
+      }
+      payload.max_establishments = max_establishments;
+    }
 
     try {
       await App.put(`/api/admin/users/${id}`, payload);

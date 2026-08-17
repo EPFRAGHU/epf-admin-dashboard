@@ -16,12 +16,36 @@ const MyEstablishments = (() => {
     }
   }
 
+  function limitInfo() {
+    const user = App.getCurrentUser();
+    const isEmployer = !!user && user.role === 'employer' && user.max_establishments != null;
+    const count = establishmentsList.length;
+    const max = isEmployer ? user.max_establishments : null;
+    return { isEmployer, count, max, atLimit: isEmployer && count >= max };
+  }
+
+  function addButtonHtml(extraStyle = '') {
+    const info = limitInfo();
+    if (info.atLimit) {
+      return `<button class="btn btn-primary" style="${extraStyle}" disabled title="You've reached your limit of ${info.max} establishment(s). Contact your administrator to increase this.">+ Add Establishment</button>`;
+    }
+    return `<button class="btn btn-primary" style="${extraStyle}" onclick="MyEstablishments.showAddModal()"><span>+ Add Establishment</span></button>`;
+  }
+
   async function render(container) {
     container.innerHTML = `<div class="page-loading"><div class="spinner"></div><p>Loading Establishments…</p></div>`;
 
     await loadEstablishments();
 
     const activeId = App.getCurrentEstablishmentId();
+    const info = limitInfo();
+
+    const limitBannerHtml = info.isEmployer ? `
+      <div style="margin-bottom:16px; display:flex; align-items:center; gap:10px; padding:10px 16px; background:${info.atLimit ? 'rgba(239,68,68,0.08)' : 'var(--bg2)'}; border:1px solid ${info.atLimit ? 'rgba(239,68,68,0.3)' : 'var(--border)'}; border-radius:var(--radius-sm); font-size:13px;">
+        <span style="font-weight:700; color:${info.atLimit ? 'var(--danger)' : 'var(--text1)'};">🏢 Establishment ${info.count} of ${info.max}</span>
+        ${info.atLimit ? `<span style="color:var(--danger); font-size:12px;">— Limit reached. Contact your administrator to increase this.</span>` : ''}
+      </div>
+    ` : '';
 
     container.innerHTML = `
       <div style="margin-bottom:24px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px;">
@@ -31,11 +55,11 @@ const MyEstablishments = (() => {
         </div>
         <div style="display:flex; gap:12px; align-items:center;">
           <input type="text" id="my-est-search" class="form-input sm" placeholder="Search establishments…" style="width:220px;" oninput="MyEstablishments.filter(this.value)">
-          <button class="btn btn-primary" onclick="MyEstablishments.showAddModal()">
-            <span>+ Add Establishment</span>
-          </button>
+          ${addButtonHtml()}
         </div>
       </div>
+
+      ${limitBannerHtml}
 
       <div id="my-est-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap:20px;">
         ${renderCards(establishmentsList, activeId)}
@@ -50,7 +74,7 @@ const MyEstablishments = (() => {
           <span style="font-size:48px; display:block; margin-bottom:12px;">🏢</span>
           <h3 style="margin:0; font-size:18px;">No Establishments Found</h3>
           <p style="color:var(--text2); margin:8px 0 18px 0; font-size:13px;">Create your first establishment to start managing employee records, wage entries, and Form 3A/6A reports.</p>
-          <button class="btn btn-primary" onclick="MyEstablishments.showAddModal()">+ Add Establishment</button>
+          ${addButtonHtml()}
         </div>
       `;
     }

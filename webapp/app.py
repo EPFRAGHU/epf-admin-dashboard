@@ -289,6 +289,7 @@ def _run_startup_migrations():
 
             with engine.connect() as conn:
                 _try_ddl(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_rate_per_employee FLOAT;")
+                _try_ddl(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS max_establishments INTEGER;")
                 _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN IF NOT EXISTS custom_rate_per_employee FLOAT;")
                 _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN IF NOT EXISTS advance_credit_balance FLOAT DEFAULT 0;")
                 # SQLite doesn't support "IF NOT EXISTS" on ADD COLUMN -- this is a
@@ -441,6 +442,7 @@ class UserCreateIn(BaseModel):
     email: str
     password: str
     role: str = "consultant"  # 'consultant' or 'employer'
+    max_establishments: Optional[int] = None  # required for role='employer'; ignored for 'consultant'
     custom_rate_per_employee: Optional[float] = None
 
 class UserUpdateIn(BaseModel):
@@ -449,6 +451,7 @@ class UserUpdateIn(BaseModel):
     email: Optional[str] = None
     password: Optional[str] = None
     custom_rate_per_employee: Optional[float] = None
+    max_establishments: Optional[int] = None  # only applied when the target user's role is 'employer'
     is_active: Optional[bool] = None
 
 class EstablishmentIn(BaseModel):
@@ -601,7 +604,8 @@ async def login(d: LoginIn, db: Session = Depends(get_db)):
             "name": user.name,
             "email": user.email,
             "role": user.role,
-            "mobile": user.mobile
+            "mobile": user.mobile,
+            "max_establishments": user.max_establishments
         }
     }
 
@@ -616,6 +620,7 @@ async def get_me(current_user: User = Depends(get_current_user)):
             "email": current_user.email,
             "role": current_user.role,
             "mobile": current_user.mobile,
+            "max_establishments": current_user.max_establishments,
             "created_at": current_user.created_at.strftime("%d-%m-%Y") if current_user.created_at else None
         }
     }
@@ -689,6 +694,7 @@ async def admin_list_users(
             "role": u.role,
             "custom_rate_per_employee": u.custom_rate_per_employee,
             "establishment_count": est_count,
+            "max_establishments": u.max_establishments,
             "is_active": u.is_active,
             "created_at": u.created_at.strftime("%d-%m-%Y") if u.created_at else "—"
         })
@@ -711,6 +717,13 @@ async def admin_create_user(
     if role not in ("consultant", "employer"):
         raise HTTPException(400, "Role must be 'consultant' or 'employer'")
 
+    max_establishments = None
+    if role == "employer":
+        if d.max_establishments is None or d.max_establishments <= 0:
+            raise HTTPException(400, "max_establishments is required for Employer accounts and must be a positive integer.")
+        max_establishments = d.max_establishments
+    # Consultants remain unlimited -- any max_establishments submitted for a consultant is ignored.
+
     # Next serial number
     max_serial = db.query(func.max(User.serial_no)).scalar() or 0
     next_serial = max_serial + 1
@@ -722,6 +735,7 @@ async def admin_create_user(
         email=email,
         password_hash=hash_password(d.password),
         role=role,
+        max_establishments=max_establishments,
         custom_rate_per_employee=d.custom_rate_per_employee,
         is_active=True
     )
@@ -731,8 +745,8 @@ async def admin_create_user(
 
     log_activity(
         db, admin.id, None, f"{role}_created",
-        f"Created new {role} account: {new_user.name} (S.No: {new_user.serial_no}, Email: {new_user.email})",
-        {"user_id": new_user.id, "serial_no": new_user.serial_no, "name": new_user.name, "email": new_user.email, "role": role, "custom_rate": new_user.custom_rate_per_employee}
+        f"Created new {role} account: {new_user.name} (S.No: {new_user.serial_no}, Email: {new_user.email})" + (f" — limit {max_establishments} establishment(s)" if max_establishments else ""),
+        {"user_id": new_user.id, "serial_no": new_user.serial_no, "name": new_user.name, "email": new_user.email, "role": role, "max_establishments": max_establishments, "custom_rate": new_user.custom_rate_per_employee}
     )
 
     return {
@@ -744,7 +758,8 @@ async def admin_create_user(
             "email": new_user.email,
             "mobile": new_user.mobile,
             "custom_rate_per_employee": new_user.custom_rate_per_employee,
-            "role": new_user.role
+            "role": new_user.role,
+            "max_establishments": new_user.max_establishments
         }
     }
 
@@ -780,6 +795,20 @@ async def admin_update_user(
                 db, admin.id, None, "rate_changed",
                 f"Updated {user.name}'s rate override to ₹{user.custom_rate_per_employee if user.custom_rate_per_employee else 'Default'}/emp",
                 {"user_id": user.id, "role": user.role, "old_rate": old_rate, "new_rate": user.custom_rate_per_employee, "scope": "user"}
+            )
+
+    if d.max_establishments is not None:
+        if user.role != "employer":
+            raise HTTPException(400, "max_establishments only applies to Employer accounts")
+        if d.max_establishments <= 0:
+            raise HTTPException(400, "max_establishments must be a positive integer")
+        old_limit = user.max_establishments
+        if old_limit != d.max_establishments:
+            user.max_establishments = d.max_establishments
+            log_activity(
+                db, admin.id, None, "establishment_limit_changed",
+                f"Updated {user.name}'s establishment limit from {old_limit if old_limit is not None else 'Unlimited'} to {d.max_establishments}",
+                {"user_id": user.id, "role": user.role, "old_limit": old_limit, "new_limit": d.max_establishments}
             )
 
     db.commit()
@@ -1661,6 +1690,11 @@ async def create_establishment(
     name = d.name.strip()
     if not code or not name:
         raise HTTPException(400, "Establishment Code and Name are required")
+
+    if current_user.role == "employer" and current_user.max_establishments is not None:
+        existing_count = db.query(Establishment).filter(Establishment.user_id == current_user.id).count()
+        if existing_count >= current_user.max_establishments:
+            raise HTTPException(403, f"You've reached your limit of {current_user.max_establishments} establishment(s). Contact your administrator to increase this.")
 
     p = Project()
     p.set_establishment(code, name, d.address.strip(), d.coverage_date.strip())
