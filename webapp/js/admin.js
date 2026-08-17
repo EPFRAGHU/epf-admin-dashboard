@@ -6,6 +6,8 @@ const Admin = (() => {
   let activeTab = 'overview'; // 'overview' | 'activity_log' | 'subscription_payments'
   let overviewData = null;
   let consultants = [];
+  let userRoleFilter = 'all'; // 'all' | 'consultant' | 'employer'
+  let addUserRole = 'consultant'; // role selected in the "Add User" modal tabs
   let currentSelectedConsultant = null;
   let currentSelectedEstablishment = null;
   let currentPaymentYear = '2026-27';
@@ -98,7 +100,9 @@ const Admin = (() => {
     await Promise.all([loadOverview(), loadConsultants()]);
 
     const ov = overviewData || {
-      total_consultants: consultants.length,
+      total_consultants: consultants.filter(c => c.role === 'consultant').length,
+      total_employers: consultants.filter(c => c.role === 'employer').length,
+      total_users: consultants.length,
       total_establishments: 0,
       total_employees: 0,
       payment_compliance_pct: 0,
@@ -111,12 +115,12 @@ const Admin = (() => {
         <div class="stat-card" style="background:var(--card); border:1px solid var(--card-border); border-radius:var(--radius); padding:20px; box-shadow:var(--shadow);">
           <div style="display:flex; justify-content:space-between; align-items:flex-start;">
             <div>
-              <div style="font-size:12px; color:var(--text3); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">Consultants</div>
-              <div style="font-size:28px; font-weight:800; color:var(--primary); margin-top:4px;">${ov.total_consultants}</div>
+              <div style="font-size:12px; color:var(--text3); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">Users</div>
+              <div style="font-size:28px; font-weight:800; color:var(--primary); margin-top:4px;">${ov.total_users != null ? ov.total_users : ov.total_consultants}</div>
             </div>
             <div style="background:rgba(99,102,241,0.1); padding:10px; border-radius:10px; font-size:20px;">👥</div>
           </div>
-          <div style="font-size:12px; color:var(--text2); margin-top:12px;">Registered PF Advisors</div>
+          <div style="font-size:12px; color:var(--text2); margin-top:12px;">${ov.total_consultants} Consultant(s) · ${ov.total_employers || 0} Employer(s)</div>
         </div>
 
         <div class="stat-card" style="background:var(--card); border:1px solid var(--card-border); border-radius:var(--radius); padding:20px; box-shadow:var(--shadow);">
@@ -156,7 +160,7 @@ const Admin = (() => {
       <!-- Navigation Tabs -->
       <div style="display:flex; gap:10px; margin-bottom:20px; border-bottom:1px solid var(--border); padding-bottom:12px;">
         <button class="btn ${activeTab === 'overview' ? 'btn-primary' : 'btn-ghost'}" style="font-weight:700;" onclick="Admin.switchTab('overview')">
-          👥 Consultants & Overview
+          👥 Users & Overview
         </button>
         <button class="btn ${activeTab === 'activity_log' ? 'btn-primary' : 'btn-ghost'}" style="font-weight:700;" onclick="Admin.switchTab('activity_log')">
           📜 Activity Log Feed
@@ -272,7 +276,10 @@ const Admin = (() => {
         return { icon: '💳', label: 'Payment Marked', color: '#ec4899', bg: 'rgba(236,72,153,0.1)', border: 'rgba(236,72,153,0.25)' };
       case 'consultant_created':
         return { icon: '👤', label: 'Consultant Created', color: '#8b5cf6', bg: 'rgba(139,92,246,0.1)', border: 'rgba(139,92,246,0.25)' };
+      case 'employer_created':
+        return { icon: '👤', label: 'Employer Created', color: '#8b5cf6', bg: 'rgba(139,92,246,0.1)', border: 'rgba(139,92,246,0.25)' };
       case 'consultant_login':
+      case 'employer_login':
       case 'superadmin_login':
         return { icon: '🔑', label: 'User Login', color: '#14b8a6', bg: 'rgba(20,184,166,0.1)', border: 'rgba(20,184,166,0.25)' };
       default:
@@ -285,16 +292,21 @@ const Admin = (() => {
       <div class="card" style="padding:0; overflow:hidden;">
         <div class="card-head" style="display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap; gap:12px;">
           <div>
-            <h3 style="margin:0; font-size:17px; font-weight:700;">PF Consultants Management</h3>
-            <p style="margin:2px 0 0 0; font-size:12px; color:var(--text2);">Manage consultant accounts, billing rates, credentials, and tracked establishments</p>
+            <h3 style="margin:0; font-size:17px; font-weight:700;">Users Management</h3>
+            <p style="margin:2px 0 0 0; font-size:12px; color:var(--text2);">Manage consultant and employer accounts, billing rates, credentials, and tracked establishments</p>
           </div>
           <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-            <input type="text" id="admin-consultant-search" class="form-input sm" placeholder="Search consultants…" style="width:180px;" oninput="Admin.filterConsultants(this.value)">
+            <select class="form-input sm" id="admin-user-role-filter" style="width:140px;" onchange="Admin.onUserRoleFilterChange(this.value)">
+              <option value="all" ${userRoleFilter === 'all' ? 'selected' : ''}>All Users</option>
+              <option value="consultant" ${userRoleFilter === 'consultant' ? 'selected' : ''}>Consultants</option>
+              <option value="employer" ${userRoleFilter === 'employer' ? 'selected' : ''}>Employers</option>
+            </select>
+            <input type="text" id="admin-consultant-search" class="form-input sm" placeholder="Search users…" style="width:180px;" oninput="Admin.filterConsultants(this.value)">
             <button class="btn btn-ghost btn-sm" onclick="Admin.showGlobalRateModal()" title="Configure Global Platform Subscription Rate">
               <span>⚙️ Global Rate</span>
             </button>
             <button class="btn btn-primary btn-sm" onclick="Admin.showAddConsultantModal()">
-              <span>+ Add Consultant</span>
+              <span>+ Add User</span>
             </button>
           </div>
         </div>
@@ -304,9 +316,10 @@ const Admin = (() => {
             <thead>
               <tr>
                 <th style="width:50px; text-align:center;">#</th>
-                <th>Consultant Name</th>
+                <th>Name</th>
                 <th>Email Address</th>
                 <th>Mobile</th>
+                <th style="text-align:center;">Role</th>
                 <th style="text-align:center;">Fee Rate</th>
                 <th style="text-align:center;">Establishments</th>
                 <th style="text-align:center;">Status</th>
@@ -315,7 +328,7 @@ const Admin = (() => {
               </tr>
             </thead>
             <tbody>
-              ${renderConsultantRows(consultants)}
+              ${renderConsultantRows(visibleUsers())}
             </tbody>
           </table>
         </div>
@@ -323,12 +336,30 @@ const Admin = (() => {
     `;
   }
 
+  function visibleUsers() {
+    if (userRoleFilter === 'all') return consultants;
+    return consultants.filter(c => c.role === userRoleFilter);
+  }
+
+  function onUserRoleFilterChange(val) {
+    userRoleFilter = val;
+    const searchEl = document.getElementById('admin-consultant-search');
+    filterConsultants(searchEl ? searchEl.value : '');
+  }
+
+  function roleBadgeHtml(role) {
+    if (role === 'employer') {
+      return `<span class="badge" style="background:rgba(245,158,11,0.12); color:var(--amber); font-weight:700; font-size:11px;">Employer</span>`;
+    }
+    return `<span class="badge" style="background:rgba(99,102,241,0.12); color:var(--primary); font-weight:700; font-size:11px;">Consultant</span>`;
+  }
+
   function renderConsultantRows(list) {
     if (!list || list.length === 0) {
       return `
         <tr>
-          <td colspan="9" style="text-align:center; padding:32px; color:var(--text3);">
-            No consultants found. Click "+ Add Consultant" to create the first account.
+          <td colspan="10" style="text-align:center; padding:32px; color:var(--text3);">
+            No users found. Click "+ Add User" to create the first account.
           </td>
         </tr>
       `;
@@ -344,6 +375,7 @@ const Admin = (() => {
           <span style="font-family:monospace; font-size:12px; color:var(--text2);">${App.esc(c.email)}</span>
         </td>
         <td>${c.mobile ? App.esc(c.mobile) : '<span style="color:var(--text3);">—</span>'}</td>
+        <td style="text-align:center;">${roleBadgeHtml(c.role)}</td>
         <td style="text-align:center;">
           ${c.custom_rate_per_employee ? `
             <span class="badge" style="background:rgba(99,102,241,0.1); color:var(--primary); font-weight:700; font-size:11px;">₹${c.custom_rate_per_employee}/emp</span>
@@ -367,10 +399,10 @@ const Admin = (() => {
             <button class="btn btn-ghost btn-sm" onclick="Admin.showConsultantEstablishments(${c.id})" title="View Establishments">
               📂 View
             </button>
-            <button class="btn btn-ghost btn-sm" onclick="Admin.showEditConsultantModal(${c.id})" title="Edit Consultant">
+            <button class="btn btn-ghost btn-sm" onclick="Admin.showEditConsultantModal(${c.id})" title="Edit User">
               ✏️ Edit
             </button>
-            <button class="btn btn-ghost btn-sm" style="color:var(--danger);" onclick="Admin.confirmDeleteConsultant(${c.id}, '${App.esc(c.name)}')" title="Delete Consultant">
+            <button class="btn btn-ghost btn-sm" style="color:var(--danger);" onclick="Admin.confirmDeleteConsultant(${c.id}, '${App.esc(c.name)}')" title="Delete User">
               🗑️
             </button>
           </div>
@@ -383,11 +415,12 @@ const Admin = (() => {
     const q = (query || '').toLowerCase().trim();
     const tbody = document.querySelector('#admin-consultants-table tbody');
     if (!tbody) return;
+    const base = visibleUsers();
     if (!q) {
-      tbody.innerHTML = renderConsultantRows(consultants);
+      tbody.innerHTML = renderConsultantRows(base);
       return;
     }
-    const filtered = consultants.filter(c => 
+    const filtered = base.filter(c =>
       (c.name && c.name.toLowerCase().includes(q)) ||
       (c.email && c.email.toLowerCase().includes(q)) ||
       (c.mobile && c.mobile.toLowerCase().includes(q)) ||
@@ -408,13 +441,13 @@ const Admin = (() => {
         <div class="card-head" style="display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap; gap:12px; background:var(--bg2);">
           <div>
             <h3 style="margin:0; font-size:17px; font-weight:700;">Global System Activity Log</h3>
-            <p style="margin:2px 0 0 0; font-size:12px; color:var(--text2);">Audit trail of events across all consultants, establishments, wages, challans, and payments</p>
+            <p style="margin:2px 0 0 0; font-size:12px; color:var(--text2);">Audit trail of events across all users, establishments, wages, challans, and payments</p>
           </div>
 
           <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-            <!-- Filter by Consultant -->
+            <!-- Filter by User -->
             <select class="form-input sm" id="act-filter-user" style="width:170px;" onchange="Admin.onActivityFilterChange()">
-              <option value="">All Consultants</option>
+              <option value="">All Users</option>
               ${consultantOptions}
             </select>
 
@@ -427,7 +460,9 @@ const Admin = (() => {
               <option value="challan_saved" ${filterAction === 'challan_saved' ? 'selected' : ''}>🏦 Challans Filed</option>
               <option value="payment_marked" ${filterAction === 'payment_marked' ? 'selected' : ''}>💳 Payments Marked</option>
               <option value="consultant_created" ${filterAction === 'consultant_created' ? 'selected' : ''}>👤 Consultant Created</option>
+              <option value="employer_created" ${filterAction === 'employer_created' ? 'selected' : ''}>👤 Employer Created</option>
               <option value="consultant_login" ${filterAction === 'consultant_login' ? 'selected' : ''}>🔑 Consultant Login</option>
+              <option value="employer_login" ${filterAction === 'employer_login' ? 'selected' : ''}>🔑 Employer Login</option>
             </select>
 
             <!-- Search input -->
@@ -471,7 +506,7 @@ const Admin = (() => {
           <thead>
             <tr>
               <th style="width:170px;">Date & Time</th>
-              <th style="width:180px;">Consultant / User</th>
+              <th style="width:180px;">User</th>
               <th style="width:200px;">Establishment</th>
               <th style="width:170px;">Action Type</th>
               <th>Activity Description & Details</th>
@@ -561,11 +596,11 @@ const Admin = (() => {
         <div class="card-head" style="display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap; gap:12px; background:var(--bg2);">
           <div>
             <h3 style="margin:0; font-size:17px; font-weight:700;">Subscription Payments — All Establishments</h3>
-            <p style="margin:2px 0 0 0; font-size:12px; color:var(--text2);">Real-time ledger of which consultant paid for which establishment, for which month, for how many employees.</p>
+            <p style="margin:2px 0 0 0; font-size:12px; color:var(--text2);">Real-time ledger of which user paid for which establishment, for which month, for how many employees.</p>
           </div>
           <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
             <select class="form-input sm" id="sp-filter-consultant" style="width:170px;" onchange="Admin.onSubPaymentsFilterChange()">
-              <option value="">All Consultants</option>
+              <option value="">All Users</option>
               ${consultantOptions}
             </select>
             <select class="form-input sm" id="sp-filter-fy" style="width:130px;" onchange="Admin.onSubPaymentsFilterChange()">
@@ -631,7 +666,7 @@ const Admin = (() => {
         <table class="table">
           <thead>
             <tr>
-              <th>Consultant</th>
+              <th>Account Holder</th>
               <th>Establishment</th>
               <th>Month</th>
               <th class="num">Employees</th>
@@ -715,7 +750,7 @@ const Admin = (() => {
             <div style="font-weight:700; color:var(--text1);">${App.esc(p.establishment_name)}</div>
             <div style="font-size:11px; color:var(--text3); font-family:monospace;">${App.esc(p.establishment_code)}</div>
           </div>
-          <div style="display:flex; justify-content:space-between;"><span style="color:var(--text2);">Consultant</span><strong>${App.esc(p.consultant_name || '—')} (${App.esc(p.consultant_email || '')})</strong></div>
+          <div style="display:flex; justify-content:space-between;"><span style="color:var(--text2);">Account Holder</span><strong>${App.esc(p.consultant_name || '—')} (${App.esc(p.consultant_email || '')})</strong></div>
           <div style="display:flex; justify-content:space-between;"><span style="color:var(--text2);">Financial Year</span><strong>${App.esc(p.financial_year)}</strong></div>
           <div style="display:flex; justify-content:space-between;"><span style="color:var(--text2);">Month</span><strong>${App.esc(p.display_name)}</strong></div>
           <div style="display:flex; justify-content:space-between;"><span style="color:var(--text2);">Employees Billed</span><strong>${p.employee_count}</strong></div>
@@ -743,12 +778,17 @@ const Admin = (() => {
     );
   }
 
-  /* ── Add / Edit Consultant Modal ─────────────────────────────── */
+  /* ── Add / Edit User Modal ─────────────────────────────── */
   function showAddConsultantModal() {
+    addUserRole = 'consultant';
     const bodyHtml = `
+      <div style="display:flex; gap:8px; margin-bottom:16px;">
+        <button type="button" id="au-tab-consultant" class="btn btn-primary btn-sm" style="flex:1;" onclick="Admin.setAddUserRole('consultant')">Consultant</button>
+        <button type="button" id="au-tab-employer" class="btn btn-ghost btn-sm" style="flex:1;" onclick="Admin.setAddUserRole('employer')">Employer</button>
+      </div>
       <form id="add-consultant-form" onsubmit="event.preventDefault(); Admin.saveNewConsultant();">
         <div class="form-group" style="margin-bottom:12px;">
-          <label class="form-label" style="font-weight:600;">Full Name *</label>
+          <label class="form-label" style="font-weight:600;" id="au-name-label">Name of the Consultant *</label>
           <input type="text" id="ac-name" class="form-input" placeholder="e.g. Ramesh Chandra Patnaik" required>
         </div>
         <div class="form-group" style="margin-bottom:12px;">
@@ -762,7 +802,7 @@ const Admin = (() => {
         <div class="form-group" style="margin-bottom:12px;">
           <label class="form-label" style="font-weight:600;">Custom Fee Rate (₹/employee/month)</label>
           <input type="number" step="0.5" min="0" id="ac-rate" class="form-input" placeholder="Leave blank to use global default (₹10)">
-          <div style="font-size:11px; color:var(--text3); margin-top:3px;">Optional override applied to all establishments managed by this consultant.</div>
+          <div style="font-size:11px; color:var(--text3); margin-top:3px;" id="au-rate-hint">Optional override applied to all establishments managed by this consultant.</div>
         </div>
         <div class="form-group" style="margin-bottom:16px;">
           <label class="form-label" style="font-weight:600;">Initial Password *</label>
@@ -772,9 +812,29 @@ const Admin = (() => {
     `;
     const footerHtml = `
       <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="Admin.saveNewConsultant()">Create Consultant</button>
+      <button class="btn btn-primary" id="au-submit-btn" onclick="Admin.saveNewConsultant()">Create Consultant</button>
     `;
-    App.openModal('Add New PF Consultant', bodyHtml, footerHtml);
+    App.openModal('Add New User', bodyHtml, footerHtml);
+  }
+
+  function setAddUserRole(role) {
+    addUserRole = role;
+    const isEmployer = role === 'employer';
+    const roleLabel = isEmployer ? 'Employer' : 'Consultant';
+
+    const tabConsultant = document.getElementById('au-tab-consultant');
+    const tabEmployer = document.getElementById('au-tab-employer');
+    if (tabConsultant) tabConsultant.className = `btn btn-sm ${isEmployer ? 'btn-ghost' : 'btn-primary'}`;
+    if (tabEmployer) tabEmployer.className = `btn btn-sm ${isEmployer ? 'btn-primary' : 'btn-ghost'}`;
+
+    const nameLabel = document.getElementById('au-name-label');
+    if (nameLabel) nameLabel.textContent = `Name of the ${roleLabel} *`;
+
+    const rateHint = document.getElementById('au-rate-hint');
+    if (rateHint) rateHint.textContent = `Optional override applied to all establishments managed by this ${roleLabel.toLowerCase()}.`;
+
+    const submitBtn = document.getElementById('au-submit-btn');
+    if (submitBtn) submitBtn.textContent = `Create ${roleLabel}`;
   }
 
   async function saveNewConsultant() {
@@ -784,6 +844,7 @@ const Admin = (() => {
     const rateVal = document.getElementById('ac-rate').value.trim();
     const custom_rate_per_employee = rateVal !== '' ? parseFloat(rateVal) : null;
     const password = document.getElementById('ac-password').value;
+    const role = addUserRole === 'employer' ? 'employer' : 'consultant';
 
     if (!name || !email || !password) {
       App.toast('Please fill in Name, Email, and Password.', 'error');
@@ -791,8 +852,9 @@ const Admin = (() => {
     }
 
     try {
-      const res = await App.post('/api/admin/users', { name, email, mobile, password, custom_rate_per_employee });
-      App.toast(`Consultant "${res.user.name}" created successfully (S.No: ${res.user.serial_no})`);
+      const res = await App.post('/api/admin/users', { name, email, mobile, password, role, custom_rate_per_employee });
+      const roleLabel = res.user.role === 'employer' ? 'Employer' : 'Consultant';
+      App.toast(`${roleLabel} "${res.user.name}" created successfully (S.No: ${res.user.serial_no})`);
       App.closeModal();
       const container = document.getElementById('content');
       render(container);
@@ -804,11 +866,13 @@ const Admin = (() => {
   function showEditConsultantModal(id) {
     const c = consultants.find(item => item.id === id);
     if (!c) return;
+    const roleLabel = c.role === 'employer' ? 'Employer' : 'Consultant';
 
     const bodyHtml = `
       <form id="edit-consultant-form" onsubmit="event.preventDefault(); Admin.updateConsultant(${id});">
+        <div style="margin-bottom:14px;">${roleBadgeHtml(c.role)}</div>
         <div class="form-group" style="margin-bottom:12px;">
-          <label class="form-label" style="font-weight:600;">Full Name *</label>
+          <label class="form-label" style="font-weight:600;">Name of the ${roleLabel} *</label>
           <input type="text" id="ec-name" class="form-input" value="${App.esc(c.name)}" required>
         </div>
         <div class="form-group" style="margin-bottom:12px;">
@@ -822,7 +886,7 @@ const Admin = (() => {
         <div class="form-group" style="margin-bottom:12px;">
           <label class="form-label" style="font-weight:600;">Custom Fee Rate (₹/employee/month)</label>
           <input type="number" step="0.5" min="0" id="ec-rate" class="form-input" placeholder="Leave blank to use global default" value="${c.custom_rate_per_employee != null ? c.custom_rate_per_employee : ''}">
-          <div style="font-size:11px; color:var(--text3); margin-top:3px;">Optional override applied to all establishments managed by this consultant.</div>
+          <div style="font-size:11px; color:var(--text3); margin-top:3px;">Optional override applied to all establishments managed by this ${roleLabel.toLowerCase()}.</div>
         </div>
         <div class="form-group" style="margin-bottom:12px;">
           <label class="form-label" style="font-weight:600;">Reset Password (Leave blank to keep existing)</label>
@@ -838,7 +902,7 @@ const Admin = (() => {
       <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="Admin.updateConsultant(${id})">Save Changes</button>
     `;
-    App.openModal(`Edit Consultant: ${App.esc(c.name)}`, bodyHtml, footerHtml);
+    App.openModal(`Edit ${roleLabel}: ${App.esc(c.name)}`, bodyHtml, footerHtml);
   }
 
   async function updateConsultant(id) {
@@ -860,7 +924,7 @@ const Admin = (() => {
 
     try {
       await App.put(`/api/admin/users/${id}`, payload);
-      App.toast('Consultant profile updated successfully');
+      App.toast('User profile updated successfully');
       App.closeModal();
       const container = document.getElementById('content');
       render(container);
@@ -870,10 +934,10 @@ const Admin = (() => {
   }
 
   function confirmDeleteConsultant(id, name) {
-    App.confirm(`Are you sure you want to delete consultant "<strong>${App.esc(name)}</strong>"?<br><br><span style="color:var(--text2); font-size:12px;">Note: A consultant cannot be deleted if they still have active establishments.</span>`, async () => {
+    App.confirm(`Are you sure you want to delete user "<strong>${App.esc(name)}</strong>"?<br><br><span style="color:var(--text2); font-size:12px;">Note: A user cannot be deleted if they still have active establishments.</span>`, async () => {
       try {
         await App.del(`/api/admin/users/${id}`);
-        App.toast(`Consultant deleted successfully`);
+        App.toast(`User deleted successfully`);
         const container = document.getElementById('content');
         render(container);
       } catch (e) {
@@ -890,7 +954,7 @@ const Admin = (() => {
     const container = document.getElementById('admin-main-container');
     if (!container) return;
 
-    container.innerHTML = `<div class="page-loading"><div class="spinner"></div><p>Loading Establishments & Consultant Activity…</p></div>`;
+    container.innerHTML = `<div class="page-loading"><div class="spinner"></div><p>Loading Establishments & User Activity…</p></div>`;
 
     try {
       const [res, actRes] = await Promise.all([
@@ -904,10 +968,10 @@ const Admin = (() => {
       container.innerHTML = `
         <div style="margin-bottom:16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
           <div style="display:flex; align-items:center; gap:12px;">
-            <button class="btn btn-ghost btn-sm" onclick="Admin.backToConsultantsList()">← Back to Consultants</button>
+            <button class="btn btn-ghost btn-sm" onclick="Admin.backToConsultantsList()">← Back to Users</button>
             <div>
               <h3 style="margin:0; font-size:18px; font-weight:700;">Establishments of ${App.esc(res.user.name)}</h3>
-              <div style="font-size:12px; color:var(--text2); margin-top:2px;">${App.esc(res.user.email)} · ${ests.length} Total Covered Establishment(s)</div>
+              <div style="font-size:12px; color:var(--text2); margin-top:2px;">${roleBadgeHtml(res.user.role)} ${App.esc(res.user.email)} · ${ests.length} Total Covered Establishment(s)</div>
             </div>
           </div>
         </div>
@@ -915,7 +979,7 @@ const Admin = (() => {
         <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap:16px; margin-bottom:24px;">
           ${ests.length === 0 ? `
             <div class="card" style="grid-column: 1 / -1; text-align:center; padding:36px; color:var(--text3);">
-              This consultant does not have any establishments registered yet.
+              This user does not have any establishments registered yet.
             </div>
           ` : ests.map(e => {
             let subBadge = '';
@@ -929,7 +993,7 @@ const Admin = (() => {
 
             const effectiveRateDisplay = e.custom_rate_per_employee 
               ? `₹${e.custom_rate_per_employee}/emp (Est Override)`
-              : (res.user.custom_rate_per_employee ? `₹${res.user.custom_rate_per_employee}/emp (Consultant Rate)` : `₹10/emp (Global Default)`);
+              : (res.user.custom_rate_per_employee ? `₹${res.user.custom_rate_per_employee}/emp (${res.user.role === 'employer' ? 'Employer' : 'Consultant'} Rate)` : `₹10/emp (Global Default)`);
 
             return `
               <div class="card" style="display:flex; flex-direction:column; justify-content:space-between; padding:18px; border:1px solid var(--card-border); border-radius:var(--radius); background:var(--card); box-shadow:var(--shadow);">
@@ -979,7 +1043,7 @@ const Admin = (() => {
           </div>
           <div style="padding:14px 20px;">
             ${userLogs.length === 0 ? `
-              <div style="text-align:center; color:var(--text3); font-size:12px; padding:12px;">No activity logged yet for this consultant.</div>
+              <div style="text-align:center; color:var(--text3); font-size:12px; padding:12px;">No activity logged yet for this user.</div>
             ` : `
               <div style="display:flex; flex-direction:column; gap:8px;">
                 ${userLogs.map(l => renderActivityRowCompact(l)).join('')}
@@ -991,7 +1055,7 @@ const Admin = (() => {
     } catch (e) {
       container.innerHTML = `
         <div class="card" style="text-align:center; padding:32px; color:var(--danger);">
-          Failed to load establishments for this consultant.
+          Failed to load establishments for this user.
           <br><button class="btn btn-ghost btn-sm" style="margin-top:12px;" onclick="Admin.backToConsultantsList()">← Back</button>
         </div>
       `;
@@ -1100,7 +1164,7 @@ const Admin = (() => {
               Establishment: <span style="color:var(--primary);">${App.esc(est.name)}</span> (${App.esc(est.code)})
             </div>
             <div style="font-size:12px; color:var(--text2); margin-top:2px;">
-              Consultant: <strong>${App.esc(con.name || 'Unassigned')}</strong> (${App.esc(con.email || '—')})
+              Account Holder: <strong>${App.esc(con.name || 'Unassigned')}</strong> (${App.esc(con.email || '—')})${con && con.role ? ` ${roleBadgeHtml(con.role)}` : ''}
             </div>
           </div>
           <div style="display:flex; align-items:center; gap:8px;">
@@ -1116,7 +1180,7 @@ const Admin = (() => {
           <span style="color:var(--text3); font-weight:600; text-transform:uppercase; font-size:10px;">Billing Rate:</span>
           <span style="color:var(--text2);">Global: <strong>₹${rates.global_default}</strong>/emp</span>
           <span style="color:var(--text3);">→</span>
-          <span style="color:${rates.consultant_override ? 'var(--primary)' : 'var(--text3)'};">Consultant Override: <strong>${rates.consultant_override ? '₹' + rates.consultant_override + '/emp' : 'None'}</strong></span>
+          <span style="color:${rates.consultant_override ? 'var(--primary)' : 'var(--text3)'};">Account Holder Override: <strong>${rates.consultant_override ? '₹' + rates.consultant_override + '/emp' : 'None'}</strong></span>
           <span style="color:var(--text3);">→</span>
           <span style="color:${rates.establishment_override ? 'var(--primary)' : 'var(--text3)'};">Est Override: <strong>${rates.establishment_override ? '₹' + rates.establishment_override + '/emp' : 'None'}</strong></span>
           <span style="color:var(--text3);">→</span>
@@ -1322,7 +1386,7 @@ const Admin = (() => {
         financial_year: fy, month
       });
       App.toast('Payment link generated!');
-      window.prompt('Share this Cashfree payment link with the consultant:', res.link_url);
+      window.prompt('Share this Cashfree payment link with the user:', res.link_url);
       await refreshSubscriptionGrid(estId, fy);
     } catch (e) {
       // Handled
@@ -1403,7 +1467,7 @@ const Admin = (() => {
             <span style="font-size:11px; color:var(--text2); word-break:break-all; flex:1;">${App.esc(res.link_url)}</span>
             <button class="btn btn-ghost btn-sm" onclick="navigator.clipboard.writeText('${res.link_url}'); App.toast('Link copied!');">📋 Copy Link</button>
           </div>
-          <div style="font-size:11px; color:var(--text3); margin-top:6px;">Share this link with the consultant. The balance updates automatically once Cashfree confirms payment.</div>
+          <div style="font-size:11px; color:var(--text3); margin-top:6px;">Share this link with the user. The balance updates automatically once Cashfree confirms payment.</div>
         `;
       }
       await refreshSubscriptionGrid(estId, currentSubscriptionYear);
@@ -1466,7 +1530,7 @@ const Admin = (() => {
             <input type="number" step="0.5" min="0" id="gr-rate" class="form-input" value="${currentRate}" required style="font-size:16px; font-weight:700;">
           </div>
           <div style="background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; font-size:12px; color:var(--text2);">
-            📌 <strong>Precedence Rule:</strong> Establishment Override &gt; Consultant Override &gt; Global Default (₹${currentRate}/emp).
+            📌 <strong>Precedence Rule:</strong> Establishment Override &gt; Account Holder Override &gt; Global Default (₹${currentRate}/emp).
           </div>
         </form>
       `;
@@ -1514,7 +1578,7 @@ const Admin = (() => {
         </div>
         <div class="form-group" style="margin-bottom:16px;">
           <label class="form-label" style="font-weight:600;">Custom Fee Rate Override (₹/emp/month)</label>
-          <input type="number" step="0.5" min="0" id="ee-rate" class="form-input" placeholder="Leave blank to use Consultant / Global rate" value="${currentRate != null ? currentRate : ''}">
+          <input type="number" step="0.5" min="0" id="ee-rate" class="form-input" placeholder="Leave blank to use Account Holder / Global rate" value="${currentRate != null ? currentRate : ''}">
           <div style="font-size:11px; color:var(--text3); margin-top:4px;">Setting a rate here takes highest precedence for this specific establishment only.</div>
         </div>
       </form>
@@ -1720,7 +1784,9 @@ const Admin = (() => {
     render,
     switchTab,
     filterConsultants,
+    onUserRoleFilterChange,
     showAddConsultantModal,
+    setAddUserRole,
     saveNewConsultant,
     showEditConsultantModal,
     updateConsultant,

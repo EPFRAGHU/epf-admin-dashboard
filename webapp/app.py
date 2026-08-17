@@ -440,6 +440,7 @@ class UserCreateIn(BaseModel):
     mobile: Optional[str] = ""
     email: str
     password: str
+    role: str = "consultant"  # 'consultant' or 'employer'
     custom_rate_per_employee: Optional[float] = None
 
 class UserUpdateIn(BaseModel):
@@ -587,7 +588,7 @@ async def login(d: LoginIn, db: Session = Depends(get_db)):
     token = create_access_token(user.id, user.email, user.role)
     log_activity(
         db, user.id, None,
-        "consultant_login" if user.role == "consultant" else "superadmin_login",
+        "superadmin_login" if user.role == "superadmin" else f"{user.role}_login",
         f"User logged in: {user.name} ({user.email})",
         {"role": user.role, "email": user.email}
     )
@@ -632,6 +633,7 @@ async def admin_overview(
     db: Session = Depends(get_db)
 ):
     total_consultants = db.query(User).filter(User.role == "consultant").count()
+    total_employers = db.query(User).filter(User.role == "employer").count()
     total_establishments = db.query(Establishment).count()
     
     # Total employees across all establishments
@@ -656,6 +658,8 @@ async def admin_overview(
 
     return {
         "total_consultants": total_consultants,
+        "total_employers": total_employers,
+        "total_users": total_consultants + total_employers,
         "total_establishments": total_establishments,
         "total_employees": total_employees,
         "payment_compliance_pct": compliance_pct,
@@ -665,10 +669,14 @@ async def admin_overview(
 
 @app.get("/api/admin/users")
 async def admin_list_users(
+    role: Optional[str] = Query(None),
     admin: User = Depends(get_superadmin),
     db: Session = Depends(get_db)
 ):
-    users = db.query(User).filter(User.role == "consultant").order_by(User.serial_no.asc()).all()
+    query = db.query(User).filter(User.role.in_(["consultant", "employer"]))
+    if role and role.lower() in ("consultant", "employer"):
+        query = query.filter(User.role == role.lower())
+    users = query.order_by(User.serial_no.asc()).all()
     rows = []
     for u in users:
         est_count = db.query(Establishment).filter(Establishment.user_id == u.id).count()
@@ -678,6 +686,7 @@ async def admin_list_users(
             "name": u.name,
             "mobile": u.mobile or "—",
             "email": u.email,
+            "role": u.role,
             "custom_rate_per_employee": u.custom_rate_per_employee,
             "establishment_count": est_count,
             "is_active": u.is_active,
@@ -698,6 +707,10 @@ async def admin_create_user(
     if db.query(User).filter(func.lower(User.email) == email).first():
         raise HTTPException(400, f"User with email '{email}' already exists")
 
+    role = (d.role or "consultant").strip().lower()
+    if role not in ("consultant", "employer"):
+        raise HTTPException(400, "Role must be 'consultant' or 'employer'")
+
     # Next serial number
     max_serial = db.query(func.max(User.serial_no)).scalar() or 0
     next_serial = max_serial + 1
@@ -708,7 +721,7 @@ async def admin_create_user(
         mobile=d.mobile.strip() if d.mobile else "",
         email=email,
         password_hash=hash_password(d.password),
-        role="consultant",
+        role=role,
         custom_rate_per_employee=d.custom_rate_per_employee,
         is_active=True
     )
@@ -717,9 +730,9 @@ async def admin_create_user(
     db.refresh(new_user)
 
     log_activity(
-        db, admin.id, None, "consultant_created",
-        f"Created new consultant account: {new_user.name} (S.No: {new_user.serial_no}, Email: {new_user.email})",
-        {"consultant_id": new_user.id, "serial_no": new_user.serial_no, "name": new_user.name, "email": new_user.email, "custom_rate": new_user.custom_rate_per_employee}
+        db, admin.id, None, f"{role}_created",
+        f"Created new {role} account: {new_user.name} (S.No: {new_user.serial_no}, Email: {new_user.email})",
+        {"user_id": new_user.id, "serial_no": new_user.serial_no, "name": new_user.name, "email": new_user.email, "role": role, "custom_rate": new_user.custom_rate_per_employee}
     )
 
     return {
@@ -765,8 +778,8 @@ async def admin_update_user(
         if old_rate != user.custom_rate_per_employee:
             log_activity(
                 db, admin.id, None, "rate_changed",
-                f"Updated consultant {user.name} rate override to ₹{user.custom_rate_per_employee if user.custom_rate_per_employee else 'Default'}/emp",
-                {"consultant_id": user.id, "old_rate": old_rate, "new_rate": user.custom_rate_per_employee, "scope": "consultant"}
+                f"Updated {user.name}'s rate override to ₹{user.custom_rate_per_employee if user.custom_rate_per_employee else 'Default'}/emp",
+                {"user_id": user.id, "role": user.role, "old_rate": old_rate, "new_rate": user.custom_rate_per_employee, "scope": "user"}
             )
 
     db.commit()
@@ -786,7 +799,7 @@ async def admin_delete_user(
     # Check if user has active establishments
     est_count = db.query(Establishment).filter(Establishment.user_id == user_id).count()
     if est_count > 0:
-        raise HTTPException(400, f"Cannot delete consultant because they have {est_count} establishment(s). Delete or reassign their establishments first.")
+        raise HTTPException(400, f"Cannot delete user because they have {est_count} establishment(s). Delete or reassign their establishments first.")
 
     db.delete(user)
     db.commit()
@@ -841,6 +854,7 @@ async def admin_user_establishments(
             "id": user.id,
             "name": user.name,
             "email": user.email,
+            "role": user.role,
             "custom_rate_per_employee": user.custom_rate_per_employee
         }
     }
@@ -952,6 +966,7 @@ async def admin_get_establishment_subscription_fees(
             "id": consultant.id if consultant else None,
             "name": consultant.name if consultant else "",
             "email": consultant.email if consultant else "",
+            "role": consultant.role if consultant else None,
             "custom_rate": consultant.custom_rate_per_employee if consultant else None
         },
         "rates": {

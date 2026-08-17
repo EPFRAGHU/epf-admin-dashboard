@@ -661,7 +661,9 @@ const App = (() => {
 
       const roleBadge = isSuperadmin()
         ? `<span class="badge" style="background:rgba(99,102,241,0.15); color:var(--primary); font-weight:700; font-size:10px;">👑 SUPERADMIN</span>`
-        : `<span class="badge low" style="font-size:10px;">👤 CONSULTANT</span>`;
+        : (user && user.role === 'employer'
+          ? `<span class="badge low" style="font-size:10px;">👤 EMPLOYER</span>`
+          : `<span class="badge low" style="font-size:10px;">👤 CONSULTANT</span>`);
 
       tr.innerHTML = `
         <div style="display:flex; align-items:center;">
