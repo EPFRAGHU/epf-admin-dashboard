@@ -322,13 +322,14 @@ function showMasterImportModal() {
   const body = `
     <div style="margin-bottom:16px">
       <p style="color:var(--text2); font-size:13px; line-height:1.5">
-        Upload an Excel file (project_data.xlsx) to bulk import or update the Employee Master.
+        Upload an Excel (.xlsx/.xls) or CSV file — including a CSV exported directly from the EPFO portal — to bulk import or update the Employee Master.
         The file should contain columns like: <strong>Member ID, Name, Father's Name, Date of Birth, Sex, Date of Joining, Date of Exit, Reason of Leaving, UAN No., SL</strong>.
+        Rows matching an existing employee by either UAN or Member ID are skipped automatically.
       </p>
     </div>
     <div class="form-group">
-      <label class="form-label">Excel File</label>
-      <input type="file" id="master-import-file" accept=".xlsx,.xls" class="form-input">
+      <label class="form-label">Excel or CSV File</label>
+      <input type="file" id="master-import-file" accept=".xlsx,.xls,.csv" class="form-input">
     </div>
   `;
   const footer = `
@@ -346,10 +347,8 @@ async function runMasterImport() {
   formData.append('file', fileInput.files[0]);
   
   try {
-    const res = await fetch('/api/employees/import', { method: 'POST', body: formData });
-    if (!res.ok) throw new Error('Import failed');
-    const data = await res.json();
-    
+    const data = await App.api('/api/master/import', { method: 'POST', body: formData });
+
     let msg = `Successfully imported ${data.imported} employee records.`;
     if (data.skipped && data.skipped > 0) {
       msg += ` Skipped ${data.skipped} existing records.`;
@@ -366,6 +365,6 @@ async function runMasterImport() {
     App.closeModal();
     App.navigate('employees');
   } catch (e) {
-    App.toast(e.message, 'error');
+    // App.api() already surfaces a toast on failure
   }
 }
