@@ -814,7 +814,7 @@ const Admin = (() => {
       <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
       <button class="btn btn-primary" id="au-submit-btn" onclick="Admin.saveNewConsultant()">Create Consultant</button>
     `;
-    App.openModal('Add New User', bodyHtml, footerHtml);
+    App.openModal('Add New User', bodyHtml, footerHtml, false, true);
   }
 
   function setAddUserRole(role) {
@@ -902,7 +902,7 @@ const Admin = (() => {
       <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="Admin.updateConsultant(${id})">Save Changes</button>
     `;
-    App.openModal(`Edit ${roleLabel}: ${App.esc(c.name)}`, bodyHtml, footerHtml);
+    App.openModal(`Edit ${roleLabel}: ${App.esc(c.name)}`, bodyHtml, footerHtml, false, true);
   }
 
   async function updateConsultant(id) {

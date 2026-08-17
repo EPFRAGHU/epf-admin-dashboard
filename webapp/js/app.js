@@ -434,18 +434,18 @@ const App = (() => {
   }
 
   /* ── Modal ───────────────────────────────────────────────────── */
-  function openModal(title, bodyHtml, footerHtml = '', wide = false) {
+  function openModal(title, bodyHtml, footerHtml = '', wide = false, hideEstablishment = false) {
     const modal = document.getElementById('modal');
     const overlay = document.getElementById('modal-overlay');
     if (!modal || !overlay) return;
 
     modal.className = `modal${wide ? ' wide' : ''}`;
-    
-    const estHtml = (currentEstablishment.name || currentEstablishment.code) 
+
+    const estHtml = (!hideEstablishment && (currentEstablishment.name || currentEstablishment.code))
       ? `<div style="font-size: 13px; color: var(--text2); margin-top: 4px; display:flex; align-items:center; gap:6px;">
-           <span style="font-weight: 600; color: var(--primary);">${esc(currentEstablishment.name)}</span> 
+           <span style="font-weight: 600; color: var(--primary);">${esc(currentEstablishment.name)}</span>
            ${currentEstablishment.code ? `<span class="badge" style="font-size:10px">${esc(currentEstablishment.code)}</span>` : ''}
-         </div>` 
+         </div>`
       : '';
 
     modal.innerHTML = `
