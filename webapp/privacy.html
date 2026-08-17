@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Policy — EPF Admin Dashboard</title>
+  <script>
+    (function() {
+      const saved = localStorage.getItem('epf_theme');
+      const theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/epfo-app-theme.css">
+  <style>
+    body { background: var(--bg); min-height: 100vh; padding: 40px 20px; }
+    .legal-wrap { max-width: 720px; margin: 0 auto; }
+    .legal-wrap h1 { font-size: 24px; font-weight: 800; color: var(--text1); margin: 0 0 4px 0; }
+    .legal-wrap .meta { font-size: 12px; color: var(--text3); margin-bottom: 24px; }
+    .legal-wrap h2 { font-size: 15px; font-weight: 700; color: var(--text1); margin: 24px 0 8px 0; }
+    .legal-wrap p { font-size: 13px; color: var(--text2); line-height: 1.6; margin: 0 0 10px 0; }
+    .legal-wrap .placeholder-note { background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); border-radius: var(--radius-sm); padding: 12px 16px; font-size: 12px; color: var(--text1); margin-bottom: 24px; }
+  </style>
+</head>
+<body>
+  <div class="legal-wrap">
+    <a href="/signup" style="font-size:12px; color:var(--primary); text-decoration:none;">← Back to Sign Up</a>
+    <h1 style="margin-top:16px;">Privacy Policy</h1>
+    <div class="meta">Placeholder document — replace with your reviewed Privacy Policy before going live.</div>
+
+    <div class="placeholder-note">⚠️ This is generic scaffolding text, not legal advice. Have counsel review and replace this page before this signup flow is used with real prospective customers.</div>
+
+    <h2>1. What We Collect</h2>
+    <p>At signup, we collect your name, email address, mobile number, and (for Employer accounts) establishment details you provide. Your password is hashed immediately and never stored or transmitted in plain text.</p>
+
+    <h2>2. Employee Data</h2>
+    <p>Once approved, any employee master, wage, and statutory filing data you enter is stored to enable EPF compliance reporting for your establishment(s) and is not shared with other accounts on the platform.</p>
+
+    <h2>3. Review Process</h2>
+    <p>Signup requests are reviewed manually by a platform administrator before an account is activated. Rejected requests do not result in an account being created.</p>
+
+    <h2>4. Data Retention</h2>
+    <p>Establishment and employee records are retained for as long as your account remains active, consistent with applicable statutory record-keeping requirements.</p>
+
+    <h2>5. Contact</h2>
+    <p>For questions about how your data is handled, contact your platform administrator.</p>
+  </div>
+</body>
+</html>

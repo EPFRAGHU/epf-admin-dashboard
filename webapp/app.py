@@ -28,7 +28,7 @@ from sqlalchemy.sql import func
 from .database import (
     SessionLocal, engine, get_db, Base,
     User, Establishment, Payment, SubscriptionFee, AdvanceCreditLedger, ActivityLog, ProjectData, Setting, DATABASE_URL,
-    FeatureFlag, RolePermission, UserPermissionOverride
+    FeatureFlag, RolePermission, UserPermissionOverride, SignupRequest
 )
 
 # Auth helpers and dependencies
@@ -548,6 +548,22 @@ async def index():
     return (WEB / "index.html").read_text(encoding="utf-8")
 
 
+# ── Public Signup / Terms / Privacy Pages (no auth required) ───────────────
+@app.get("/signup", response_class=HTMLResponse)
+async def signup_page():
+    return (WEB / "signup.html").read_text(encoding="utf-8")
+
+
+@app.get("/terms", response_class=HTMLResponse)
+async def terms_page():
+    return (WEB / "terms.html").read_text(encoding="utf-8")
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+async def privacy_page():
+    return (WEB / "privacy.html").read_text(encoding="utf-8")
+
+
 # ── Schemas ────────────────────────────────────────────────────────────────
 class LoginIn(BaseModel):
     email: str
@@ -582,6 +598,21 @@ class EstablishmentIn(BaseModel):
 
 class TrialUpdateIn(BaseModel):
     trial_ends_on: Optional[str] = None  # "YYYY-MM-DD", or null/omitted to clear the trial
+
+class SignupIn(BaseModel):
+    role: str  # 'employer' or 'consultant'
+    name: str
+    email: str
+    mobile: str = ""
+    password: str
+    agreed_to_terms: bool = False
+    establishment_code: Optional[str] = None
+    establishment_name: Optional[str] = None
+    establishment_address: str = ""
+    coverage_date: str = ""
+
+class SignupRejectIn(BaseModel):
+    rejection_reason: Optional[str] = None
 
 class DefaultRateIn(BaseModel):
     default_rate: float
@@ -768,6 +799,77 @@ async def logout():
     return {"ok": True, "message": "Logged out successfully"}
 
 
+# ── Public Signup (no auth required) ────────────────────────────────────────
+DUPLICATE_ESTABLISHMENT_MESSAGE = "This establishment has already been registered on our platform. If you believe this is an error, please contact support."
+
+
+@app.post("/api/signup")
+async def public_signup(d: SignupIn, db: Session = Depends(get_db)):
+    role = (d.role or "").strip().lower()
+    if role not in ("consultant", "employer"):
+        raise HTTPException(400, "Role must be 'consultant' or 'employer'")
+
+    if not d.agreed_to_terms:
+        raise HTTPException(400, "You must agree to the Terms of Service and Privacy Policy to sign up.")
+
+    name = d.name.strip()
+    email = d.email.strip().lower()
+    if not name or not email:
+        raise HTTPException(400, "Name and Email are required")
+    if not d.password or len(d.password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+
+    if db.query(User).filter(func.lower(User.email) == email).first():
+        raise HTTPException(400, "An account with this email already exists. Please log in instead.")
+    if db.query(SignupRequest).filter(func.lower(SignupRequest.email) == email, SignupRequest.status == "pending").first():
+        raise HTTPException(400, "A signup request with this email is already pending review.")
+
+    establishment_code = None
+    establishment_name = None
+    if role == "employer":
+        establishment_code = (d.establishment_code or "").strip().upper()
+        establishment_name = (d.establishment_name or "").strip()
+        if not establishment_code or not establishment_name:
+            raise HTTPException(400, "Establishment Code and Name are required for an Employer signup")
+
+        code_taken = (
+            db.query(Establishment).filter(func.upper(Establishment.code) == establishment_code).first()
+            or db.query(SignupRequest).filter(
+                func.upper(SignupRequest.establishment_code) == establishment_code,
+                SignupRequest.status == "pending"
+            ).first()
+        )
+        if code_taken:
+            raise HTTPException(400, DUPLICATE_ESTABLISHMENT_MESSAGE)
+
+    # The signup form's date picker submits "YYYY-MM-DD"; the rest of the app stores
+    # coverage_date as a "DD-MM-YYYY" display string, so normalize it here.
+    coverage_date_value = (d.coverage_date or "").strip()
+    if role == "employer" and coverage_date_value:
+        try:
+            coverage_date_value = datetime.strptime(coverage_date_value, "%Y-%m-%d").strftime("%d-%m-%Y")
+        except ValueError:
+            pass  # already in another format (or malformed) -- store as submitted rather than reject
+
+    req = SignupRequest(
+        role=role,
+        name=name,
+        email=email,
+        mobile=(d.mobile or "").strip(),
+        password_hash=hash_password(d.password),
+        establishment_code=establishment_code,
+        establishment_name=establishment_name,
+        establishment_address=(d.establishment_address or "").strip() if role == "employer" else None,
+        coverage_date=coverage_date_value if role == "employer" else None,
+        agreed_to_terms=True,
+        status="pending"
+    )
+    db.add(req)
+    db.commit()
+
+    return {"ok": True, "message": "Your request has been submitted and is pending approval."}
+
+
 # ── Superadmin Endpoints (/api/admin/...) ──────────────────────────────────
 @app.get("/api/admin/overview")
 async def admin_overview(
@@ -797,6 +899,7 @@ async def admin_overview(
     ).count()
 
     compliance_pct = round((paid_payments / total_expected_payments * 100), 1) if total_expected_payments > 0 else 100.0
+    pending_signups = db.query(SignupRequest).filter(SignupRequest.status == "pending").count()
 
     return {
         "total_consultants": total_consultants,
@@ -805,7 +908,8 @@ async def admin_overview(
         "total_establishments": total_establishments,
         "total_employees": total_employees,
         "payment_compliance_pct": compliance_pct,
-        "current_financial_year": current_fy
+        "current_financial_year": current_fy,
+        "pending_signups": pending_signups
     }
 
 
@@ -969,6 +1073,153 @@ async def admin_delete_user(
 
     db.delete(user)
     db.commit()
+    return {"ok": True}
+
+
+# ── Signup Request Approval Queue (superadmin) ──────────────────────────────
+@app.get("/api/admin/signup-requests")
+async def admin_list_signup_requests(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    query = db.query(SignupRequest)
+    if status_filter and status_filter.lower() != "all":
+        query = query.filter(SignupRequest.status == status_filter.lower())
+    rows = query.all()
+    # Pending first, then most-recently-submitted first within each status.
+    rows.sort(key=lambda r: (0 if r.status == "pending" else 1, -(r.submitted_at.timestamp() if r.submitted_at else 0)))
+
+    reviewer_ids = list({r.reviewed_by for r in rows if r.reviewed_by})
+    reviewers_map = {u.id: u for u in db.query(User).filter(User.id.in_(reviewer_ids)).all()} if reviewer_ids else {}
+
+    return {
+        "requests": [
+            {
+                "id": r.id,
+                "role": r.role,
+                "name": r.name,
+                "email": r.email,
+                "mobile": r.mobile or "—",
+                "establishment_code": r.establishment_code,
+                "establishment_name": r.establishment_name,
+                "establishment_address": r.establishment_address,
+                "coverage_date": r.coverage_date,
+                "status": r.status,
+                "submitted_at": r.submitted_at.strftime("%d-%m-%Y %I:%M %p") if r.submitted_at else "—",
+                "reviewed_at": r.reviewed_at.strftime("%d-%m-%Y %I:%M %p") if r.reviewed_at else None,
+                "reviewed_by": reviewers_map[r.reviewed_by].name if r.reviewed_by in reviewers_map else None,
+                "rejection_reason": r.rejection_reason
+            }
+            for r in rows
+        ],
+        "pending_count": db.query(SignupRequest).filter(SignupRequest.status == "pending").count()
+    }
+
+
+@app.post("/api/admin/signup-requests/{request_id}/approve")
+async def admin_approve_signup_request(
+    request_id: int,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    req = db.query(SignupRequest).filter(SignupRequest.id == request_id).first()
+    if not req:
+        raise HTTPException(404, "Signup request not found")
+    if req.status != "pending":
+        raise HTTPException(400, f"This request has already been {req.status}.")
+
+    if db.query(User).filter(func.lower(User.email) == req.email.lower()).first():
+        raise HTTPException(400, f"An account with email '{req.email}' already exists — cannot approve this request.")
+
+    if req.role == "employer":
+        # Re-check for a duplicate establishment code at approval time too -- another
+        # pending request for the same code may have been approved first.
+        existing_est = db.query(Establishment).filter(func.upper(Establishment.code) == (req.establishment_code or "").upper()).first()
+        if existing_est:
+            raise HTTPException(
+                409,
+                f"Establishment code '{req.establishment_code}' was already approved for another request "
+                f"(now belongs to an existing establishment). Reject this request instead, or resolve the "
+                f"conflict manually before approving."
+            )
+
+    max_serial = db.query(func.max(User.serial_no)).scalar() or 0
+    new_user = User(
+        serial_no=max_serial + 1,
+        name=req.name,
+        mobile=req.mobile or "",
+        email=req.email,
+        password_hash=req.password_hash,  # already hashed at signup -- reused as-is, no reset step needed
+        role=req.role,
+        max_establishments=1 if req.role == "employer" else None,
+        is_active=True
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    new_est_id = None
+    if req.role == "employer":
+        p = Project()
+        p.set_establishment(req.establishment_code, req.establishment_name, req.establishment_address or "", req.coverage_date or "")
+        new_est = Establishment(
+            user_id=new_user.id,
+            code=req.establishment_code,
+            name=req.establishment_name,
+            address=req.establishment_address or "",
+            coverage_date=req.coverage_date or "",
+            data=json.dumps(p.to_dict(), ensure_ascii=False)
+        )
+        db.add(new_est)
+        db.commit()
+        db.refresh(new_est)
+        new_est_id = new_est.id
+        log_activity(
+            db, admin.id, new_est.id, "establishment_created",
+            f"Added establishment {new_est.code} — {new_est.name} (via approved signup)",
+            {"code": new_est.code, "name": new_est.name, "owner_user_id": new_user.id}
+        )
+
+    req.status = "approved"
+    req.reviewed_at = datetime.utcnow()
+    req.reviewed_by = admin.id
+    db.commit()
+
+    log_activity(
+        db, admin.id, new_est_id, "signup_approved",
+        f"Approved {req.role} signup for {req.name} ({req.email})",
+        {"request_id": req.id, "role": req.role, "email": req.email, "user_id": new_user.id}
+    )
+
+    return {"ok": True, "user_id": new_user.id, "establishment_id": new_est_id}
+
+
+@app.post("/api/admin/signup-requests/{request_id}/reject")
+async def admin_reject_signup_request(
+    request_id: int,
+    d: SignupRejectIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    req = db.query(SignupRequest).filter(SignupRequest.id == request_id).first()
+    if not req:
+        raise HTTPException(404, "Signup request not found")
+    if req.status != "pending":
+        raise HTTPException(400, f"This request has already been {req.status}.")
+
+    req.status = "rejected"
+    req.reviewed_at = datetime.utcnow()
+    req.reviewed_by = admin.id
+    req.rejection_reason = (d.rejection_reason or "").strip() or None
+    db.commit()
+
+    log_activity(
+        db, admin.id, None, "signup_rejected",
+        f"Rejected {req.role} signup for {req.name} ({req.email})" + (f" — Reason: {req.rejection_reason}" if req.rejection_reason else ""),
+        {"request_id": req.id, "role": req.role, "email": req.email, "rejection_reason": req.rejection_reason}
+    )
+
     return {"ok": True}
 
 

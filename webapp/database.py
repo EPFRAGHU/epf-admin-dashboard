@@ -168,6 +168,28 @@ class UserPermissionOverride(Base):
     user = relationship("User")
 
 
+class SignupRequest(Base):
+    __tablename__ = "signup_requests"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    role = Column(String(50), nullable=False)  # 'employer' or 'consultant'
+    name = Column(String(255), nullable=False)
+    email = Column(String(255), nullable=False, index=True)
+    mobile = Column(String(50), nullable=True)
+    password_hash = Column(String(255), nullable=False)  # hashed immediately on submission -- plaintext never stored
+    establishment_code = Column(String(100), nullable=True)  # employer only
+    establishment_name = Column(String(255), nullable=True)
+    establishment_address = Column(Text, nullable=True)
+    coverage_date = Column(String(50), nullable=True)
+    agreed_to_terms = Column(Boolean, nullable=False, default=False)
+    status = Column(String(20), nullable=False, default="pending", index=True)  # 'pending' | 'approved' | 'rejected'
+    submitted_at = Column(DateTime(timezone=True), server_default=func.now())
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+
+    reviewer = relationship("User")
+
+
 SessionLocal = None
 engine = None
 

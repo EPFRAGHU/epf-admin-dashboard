@@ -46,6 +46,10 @@ const Admin = (() => {
   let permissionActions = [];
   let rolePermsDirty = false;
 
+  // Signup Requests state
+  let signupRequests = [];
+  let signupStatusFilter = 'pending';
+
   const PERMISSION_ACTIONS_FALLBACK = [
     'employee.add', 'employee.edit', 'employee.delete',
     'establishment.add', 'establishment.edit', 'establishment.delete',
@@ -187,12 +191,27 @@ const Admin = (() => {
           </div>
           <div style="font-size:12px; color:var(--text2); margin-top:12px;">FY ${ov.current_financial_year} Paid Compliance</div>
         </div>
+
+        <div class="stat-card" style="background:var(--card); border:1px solid ${ov.pending_signups > 0 ? 'rgba(245,158,11,0.4)' : 'var(--card-border)'}; border-radius:var(--radius); padding:20px; box-shadow:var(--shadow); cursor:pointer;" onclick="Admin.switchTab('signup_requests')">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+            <div>
+              <div style="font-size:12px; color:var(--text3); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">Pending Signups</div>
+              <div style="font-size:28px; font-weight:800; color:${ov.pending_signups > 0 ? 'var(--amber)' : 'var(--text1)'}; margin-top:4px;">${ov.pending_signups || 0}</div>
+            </div>
+            <div style="background:rgba(245,158,11,0.1); padding:10px; border-radius:10px; font-size:20px;">📝</div>
+          </div>
+          <div style="font-size:12px; color:var(--text2); margin-top:12px;">Awaiting Your Review</div>
+        </div>
       </div>
 
       <!-- Navigation Tabs -->
-      <div style="display:flex; gap:10px; margin-bottom:20px; border-bottom:1px solid var(--border); padding-bottom:12px;">
+      <div style="display:flex; gap:10px; margin-bottom:20px; border-bottom:1px solid var(--border); padding-bottom:12px; flex-wrap:wrap;">
         <button class="btn ${activeTab === 'overview' ? 'btn-primary' : 'btn-ghost'}" style="font-weight:700;" onclick="Admin.switchTab('overview')">
           👥 Users & Overview
+        </button>
+        <button class="btn ${activeTab === 'signup_requests' ? 'btn-primary' : 'btn-ghost'}" style="font-weight:700; position:relative;" onclick="Admin.switchTab('signup_requests')">
+          📝 Signup Requests
+          ${ov.pending_signups > 0 ? `<span class="badge high" style="margin-left:6px; font-size:10px; font-weight:800;">${ov.pending_signups}</span>` : ''}
         </button>
         <button class="btn ${activeTab === 'activity_log' ? 'btn-primary' : 'btn-ghost'}" style="font-weight:700;" onclick="Admin.switchTab('activity_log')">
           📜 Activity Log Feed
@@ -207,12 +226,14 @@ const Admin = (() => {
 
       <!-- Main Admin Content Container -->
       <div id="admin-main-container">
-        ${activeTab === 'overview' ? renderOverviewTab() : activeTab === 'activity_log' ? renderActivityLogTabHtml() : activeTab === 'subscription_payments' ? renderSubscriptionPaymentsTabHtml() : renderPermissionsTabHtml()}
+        ${activeTab === 'overview' ? renderOverviewTab() : activeTab === 'signup_requests' ? renderSignupRequestsTabHtml() : activeTab === 'activity_log' ? renderActivityLogTabHtml() : activeTab === 'subscription_payments' ? renderSubscriptionPaymentsTabHtml() : renderPermissionsTabHtml()}
       </div>
     `;
 
     if (activeTab === 'overview') {
       loadRecentActivityWidget();
+    } else if (activeTab === 'signup_requests') {
+      loadSignupRequestsTab();
     } else if (activeTab === 'activity_log') {
       loadFullActivityLogTable();
     } else if (activeTab === 'subscription_payments') {
@@ -323,6 +344,10 @@ const Admin = (() => {
       case 'trial_extended':
       case 'trial_ended':
         return { icon: '🎁', label: actionType === 'trial_ended' ? 'Trial Ended' : actionType === 'trial_extended' ? 'Trial Changed' : 'Trial Started', color: '#3b82f6', bg: 'rgba(59,130,246,0.1)', border: 'rgba(59,130,246,0.25)' };
+      case 'signup_approved':
+        return { icon: '📝', label: 'Signup Approved', color: 'var(--green)', bg: 'rgba(16,185,129,0.1)', border: 'rgba(16,185,129,0.25)' };
+      case 'signup_rejected':
+        return { icon: '📝', label: 'Signup Rejected', color: 'var(--danger)', bg: 'rgba(239,68,68,0.1)', border: 'rgba(239,68,68,0.25)' };
       default:
         return { icon: '📌', label: actionType || 'Activity', color: 'var(--text2)', bg: 'var(--bg2)', border: 'var(--border)' };
     }
@@ -1093,6 +1118,144 @@ const Admin = (() => {
       await App.del(`/api/admin/users/${userId}/permission-overrides/${overrideId}`);
       App.toast('Override removed — user falls back to role default');
       loadUserPermissionOverrides(userId);
+    } catch (e) {
+      // Handled
+    }
+  }
+
+  /* ── Tab: Signup Requests ────────────────────────────────────────── */
+  function renderSignupRequestsTabHtml() {
+    return `
+      <div class="card" style="padding:0; overflow:hidden;">
+        <div class="card-head" style="display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap; gap:12px;">
+          <div>
+            <h3 style="margin:0; font-size:17px; font-weight:700;">Signup Requests</h3>
+            <p style="margin:2px 0 0 0; font-size:12px; color:var(--text2);">Self-service Consultant/Employer account requests awaiting review</p>
+          </div>
+          <select class="form-input sm" id="sr-status-filter" style="width:160px;" onchange="Admin.onSignupStatusFilterChange(this.value)">
+            <option value="pending" ${signupStatusFilter === 'pending' ? 'selected' : ''}>Pending</option>
+            <option value="approved" ${signupStatusFilter === 'approved' ? 'selected' : ''}>Approved</option>
+            <option value="rejected" ${signupStatusFilter === 'rejected' ? 'selected' : ''}>Rejected</option>
+            <option value="all" ${signupStatusFilter === 'all' ? 'selected' : ''}>All</option>
+          </select>
+        </div>
+        <div id="signup-requests-body">
+          <div class="page-loading" style="padding:32px;"><div class="spinner"></div><p>Loading signup requests…</p></div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadSignupRequestsTab() {
+    const el = document.getElementById('signup-requests-body');
+    if (!el) return;
+    try {
+      const res = await App.get(`/api/admin/signup-requests?status=${encodeURIComponent(signupStatusFilter)}`);
+      signupRequests = res.requests || [];
+    } catch (e) {
+      signupRequests = [];
+    }
+    renderSignupRequestsBody();
+  }
+
+  function onSignupStatusFilterChange(val) {
+    signupStatusFilter = val;
+    loadSignupRequestsTab();
+  }
+
+  function signupStatusBadge(status) {
+    if (status === 'pending') return `<span class="badge mid" style="font-size:11px; font-weight:700;">Pending</span>`;
+    if (status === 'approved') return `<span class="badge low" style="font-size:11px; font-weight:700;">✓ Approved</span>`;
+    return `<span class="badge high" style="font-size:11px; font-weight:700;">✗ Rejected</span>`;
+  }
+
+  function renderSignupRequestsBody() {
+    const el = document.getElementById('signup-requests-body');
+    if (!el) return;
+    if (signupRequests.length === 0) {
+      el.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text3);">No ${signupStatusFilter === 'all' ? '' : signupStatusFilter + ' '}signup requests.</div>`;
+      return;
+    }
+
+    el.innerHTML = `
+      <div style="display:flex; flex-direction:column; gap:12px; padding:16px 20px;">
+        ${signupRequests.map(r => `
+          <div class="card" style="padding:16px 18px; border:1px solid var(--card-border);">
+            <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap;">
+              <div style="flex:1; min-width:240px;">
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap;">
+                  ${roleBadgeHtml(r.role)}
+                  ${signupStatusBadge(r.status)}
+                  <span style="font-size:11px; color:var(--text3);">Submitted ${r.submitted_at}</span>
+                </div>
+                <div style="font-weight:700; color:var(--text1); font-size:14px;">${App.esc(r.name)}</div>
+                <div style="font-size:12px; color:var(--text2); font-family:monospace;">${App.esc(r.email)} · ${App.esc(r.mobile)}</div>
+                ${r.role === 'employer' ? `
+                  <div style="margin-top:8px; padding:8px 10px; background:var(--bg2); border-radius:var(--radius-sm); border:1px solid var(--border); font-size:12px;">
+                    <div><strong>${App.esc(r.establishment_name || '—')}</strong> <span class="badge" style="font-family:monospace; font-size:10px;">${App.esc(r.establishment_code || '—')}</span></div>
+                    <div style="color:var(--text2); margin-top:2px;">${App.esc(r.establishment_address || 'No address provided')}${r.coverage_date ? ` · Coverage: ${App.esc(r.coverage_date)}` : ''}</div>
+                  </div>
+                ` : ''}
+                ${r.status !== 'pending' ? `
+                  <div style="font-size:11px; color:var(--text3); margin-top:8px;">
+                    ${r.status === 'approved' ? 'Approved' : 'Rejected'} ${r.reviewed_at || ''} ${r.reviewed_by ? `by ${App.esc(r.reviewed_by)}` : ''}
+                    ${r.rejection_reason ? `<br>Reason: ${App.esc(r.rejection_reason)}` : ''}
+                  </div>
+                ` : ''}
+              </div>
+              ${r.status === 'pending' ? `
+                <div style="display:flex; gap:8px; flex-shrink:0;">
+                  <button class="btn btn-primary btn-sm" onclick="Admin.approveSignupRequest(${r.id})">✓ Approve</button>
+                  <button class="btn btn-ghost btn-sm" style="color:var(--danger);" onclick="Admin.confirmRejectSignupRequest(${r.id}, '${App.esc(r.name)}')">✗ Reject</button>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  async function approveSignupRequest(requestId) {
+    App.confirm(
+      `Approve this signup request? This creates the account (and establishment, for an Employer) immediately, and they'll be able to log in right away.`,
+      async () => {
+        try {
+          await App.post(`/api/admin/signup-requests/${requestId}/approve`, {});
+          App.toast('Signup request approved — account created');
+          const container = document.getElementById('content');
+          if (container) render(container);
+        } catch (e) {
+          // Handled — includes the duplicate-establishment-code 409 message
+        }
+      }
+    );
+  }
+
+  function confirmRejectSignupRequest(requestId, name) {
+    const bodyHtml = `
+      <div style="font-size:13px; color:var(--text2); margin-bottom:12px;">Reject the signup request from <strong>${App.esc(name)}</strong>?</div>
+      <div class="form-group">
+        <label class="form-label" style="font-weight:600;">Reason (optional, shown in the request's history)</label>
+        <textarea id="sr-reject-reason" class="form-input" rows="2" placeholder="e.g. Establishment code could not be verified"></textarea>
+      </div>
+    `;
+    const footerHtml = `
+      <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
+      <button class="btn btn-primary" style="background:var(--danger); border-color:var(--danger);" onclick="Admin.rejectSignupRequest(${requestId})">Reject Request</button>
+    `;
+    App.openModal('Reject Signup Request', bodyHtml, footerHtml, false, true);
+  }
+
+  async function rejectSignupRequest(requestId) {
+    const reasonEl = document.getElementById('sr-reject-reason');
+    const rejection_reason = reasonEl ? reasonEl.value.trim() : '';
+    try {
+      await App.post(`/api/admin/signup-requests/${requestId}/reject`, { rejection_reason });
+      App.toast('Signup request rejected');
+      App.closeModal();
+      const container = document.getElementById('content');
+      if (container) render(container);
     } catch (e) {
       // Handled
     }
@@ -2297,6 +2460,10 @@ const Admin = (() => {
     clearTrial,
     showAddEstablishmentForUserModal,
     saveNewEstablishmentForUser,
+    onSignupStatusFilterChange,
+    approveSignupRequest,
+    confirmRejectSignupRequest,
+    rejectSignupRequest,
     openSubscriptionModal,
     changeSubscriptionYear,
     onSubscriptionFieldChange,

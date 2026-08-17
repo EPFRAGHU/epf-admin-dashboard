@@ -708,6 +708,10 @@ const App = (() => {
               <span>Sign In</span>
             </button>
           </form>
+
+          <div style="text-align:center; margin-top:20px;">
+            <a href="/signup" style="font-size:12px; color:var(--text3); text-decoration:none;">New Consultant or Employer? Request access</a>
+          </div>
         </div>
       </div>
     `;
