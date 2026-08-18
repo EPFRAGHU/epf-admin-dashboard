@@ -1,6 +1,6 @@
 import pytest
 from webapp.auth import verify_password
-from webapp.database import User, Establishment, SubscriptionFee
+from webapp.database import User, Establishment, SubscriptionFee, AdvanceCreditLedger
 
 
 def test_tenant_isolation_establishments(consultant_a, consultant_b):
@@ -363,3 +363,233 @@ def test_superadmin_bypasses_download_gate_via_role_not_payment_status(superadmi
     assert res.status_code == 200
     res = superadmin_session.get("/api/reports/2026-27/ecr")
     assert res.status_code == 200
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Task B security audit: IDOR sweep across every establishment-scoped
+# resource type. Branch/Division/Unit/Employee/Wages/Remittances all live
+# inside the single Establishment.data JSON blob and are only ever resolved
+# from within the caller's own in-memory Project via get_active_establishment
+# -- so the only way to attempt IDOR against them is to spoof the resolved
+# establishment itself (X-Establishment-Id header / est_id query param)
+# while authenticated as the wrong consultant. These tests confirm that
+# spoofing is blocked at the get_active_establishment choke point, before
+# any per-resource id is even looked at.
+# ─────────────────────────────────────────────────────────────────────────
+
+def _create_est(consultant, code, name):
+    res = consultant.post("/api/establishments", json={"code": code, "name": name})
+    assert res.status_code == 200, res.text
+    return res.json()["establishment"]["id"]
+
+
+def test_org_structure_idor_branch_division_unit(consultant_a, consultant_b):
+    """Consultant A creates a Branch/Division/Unit hierarchy; Consultant B, targeting
+    A's establishment directly via a spoofed X-Establishment-Id header, must be
+    blocked (403) on every read/write/delete -- for the branch itself and for the
+    division/unit nested under it."""
+    est_a = _create_est(consultant_a, "IDORORG0000A", "IDOR Org Structure Co")
+    consultant_a.set_establishment(est_a)
+
+    res = consultant_a.post("/api/org-structure/branches", json={"name": "HQ Branch"})
+    assert res.status_code == 200
+    branch_id = res.json()["branches"][-1]["id"]
+
+    res = consultant_a.post("/api/org-structure/divisions", json={"name": "Ops Division", "branch_id": branch_id})
+    assert res.status_code == 200
+    division_id = res.json()["divisions"][-1]["id"]
+
+    res = consultant_a.post("/api/org-structure/units", json={"name": "Support Unit", "division_id": division_id})
+    assert res.status_code == 200
+    unit_id = res.json()["units"][-1]["id"]
+
+    _create_est(consultant_b, "IDORORG0000B", "IDOR Org Structure Co B")
+    spoof_headers = {"X-Establishment-Id": str(est_a)}
+
+    # Reads
+    assert consultant_b.get("/api/org-structure", headers=spoof_headers).status_code == 403
+
+    # Writes / renames
+    assert consultant_b.put(f"/api/org-structure/branches/{branch_id}", json={"name": "Hijacked"}, headers=spoof_headers).status_code == 403
+    assert consultant_b.put(f"/api/org-structure/divisions/{division_id}", json={"name": "Hijacked"}, headers=spoof_headers).status_code == 403
+    assert consultant_b.put(f"/api/org-structure/units/{unit_id}", json={"name": "Hijacked"}, headers=spoof_headers).status_code == 403
+
+    # Deletes
+    assert consultant_b.delete(f"/api/org-structure/units/{unit_id}", headers=spoof_headers).status_code == 403
+    assert consultant_b.delete(f"/api/org-structure/divisions/{division_id}", headers=spoof_headers).status_code == 403
+    assert consultant_b.delete(f"/api/org-structure/branches/{branch_id}", headers=spoof_headers).status_code == 403
+
+    # Confirm nothing was actually touched
+    org = consultant_a.get("/api/org-structure").json()
+    assert any(b["id"] == branch_id and b["name"] == "HQ Branch" for b in org["branches"])
+    assert any(d["id"] == division_id and d["name"] == "Ops Division" for d in org["divisions"])
+    assert any(u["id"] == unit_id and u["name"] == "Support Unit" for u in org["units"])
+
+
+def test_employee_idor(consultant_a, consultant_b):
+    """Consultant B cannot GET/PUT/DELETE Consultant A's employee master data by
+    spoofing A's establishment id."""
+    est_a = _create_est(consultant_a, "IDOREMP0000A", "IDOR Employee Co")
+    consultant_a.set_establishment(est_a)
+    res = consultant_a.post("/api/employees", json={"member_id": "IDE0001", "name": "Target Employee", "uan": "100777700001"})
+    assert res.status_code == 200
+
+    _create_est(consultant_b, "IDOREMP0000B", "IDOR Employee Co B")
+    spoof_headers = {"X-Establishment-Id": str(est_a)}
+
+    assert consultant_b.get("/api/employees", headers=spoof_headers).status_code == 403
+    res = consultant_b.put("/api/employees/IDE0001", json={"member_id": "IDE0001", "name": "Hijacked", "uan": "100777700001"}, headers=spoof_headers)
+    assert res.status_code == 403
+    assert consultant_b.delete("/api/employees/IDE0001", headers=spoof_headers).status_code == 403
+
+    # Employee survives untouched under A
+    emps = consultant_a.get("/api/employees").json()["employees"]
+    assert any(e["member_id"] == "IDE0001" and e["name"] == "Target Employee" for e in emps)
+
+
+def test_remittance_idor(consultant_a, consultant_b):
+    """Consultant B cannot read or overwrite Consultant A's Form 12A remittance rows
+    by spoofing A's establishment id."""
+    est_a = _create_est(consultant_a, "IDORREM0000A", "IDOR Remittance Co")
+    consultant_a.set_establishment(est_a)
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    res = consultant_a.post("/api/years/2026-27/remittances/bulk", json={
+        "remittances": [{"month_label": "Apr", "trrn": "TRRN_A_SECRET", "crrn": "", "credit_date": ""}]
+    })
+    assert res.status_code == 200
+
+    _create_est(consultant_b, "IDORREM0000B", "IDOR Remittance Co B")
+    spoof_headers = {"X-Establishment-Id": str(est_a)}
+
+    res = consultant_b.get("/api/years/2026-27/remittances", headers=spoof_headers)
+    assert res.status_code == 403
+    assert "TRRN_A_SECRET" not in res.text
+
+    res = consultant_b.post("/api/years/2026-27/remittances/bulk", json={
+        "remittances": [{"month_label": "Apr", "trrn": "HIJACKED_TRRN", "crrn": "", "credit_date": ""}]
+    }, headers=spoof_headers)
+    assert res.status_code == 403
+
+
+def test_subscription_fee_idor(consultant_a, consultant_b, test_db):
+    """Consultant B cannot view or act on Consultant A's SubscriptionFee row -- neither
+    by spoofing A's establishment on the consultant self-serve endpoints, nor via the
+    superadmin-only per-establishment endpoints (which must reject a non-superadmin
+    outright regardless of whose establishment is targeted)."""
+    est_a = _create_est(consultant_a, "IDORFEE0000A", "IDOR Fee Co")
+    consultant_a.set_establishment(est_a)
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "IDF0001", "name": "Fee Employee", "uan": "100777700099"})
+    consultant_a.post("/api/years/2026-27/wages", json={"member_id": "IDF0001", "wages": [15000.0] + [0.0] * 11})
+
+    fee_row = SubscriptionFee(
+        establishment_id=est_a, financial_year="2026-27", month="Apr",
+        employee_count=1, rate_applied=10.0, amount_due=10.0,
+        is_paid=False, paid_date="", payment_reference="", notes=""
+    )
+    test_db.add(fee_row)
+    test_db.commit()
+
+    _create_est(consultant_b, "IDORFEE0000B", "IDOR Fee Co B")
+    spoof_headers = {"X-Establishment-Id": str(est_a)}
+
+    # Consultant self-serve endpoint, spoofed establishment -> blocked before the fee row is ever looked at
+    res = consultant_b.get("/api/establishment/subscription-fees/month-detail?year=2026-27&month=Apr", headers=spoof_headers)
+    assert res.status_code == 403
+
+    # Superadmin-only per-establishment endpoint targeted by a mere consultant -> flat 403, ownership irrelevant
+    res = consultant_b.get(f"/api/admin/establishments/{est_a}/subscription-fees")
+    assert res.status_code == 403
+
+
+def test_advance_credit_ledger_idor(consultant_a, consultant_b, test_db):
+    """Consultant B cannot refresh or view Consultant A's AdvanceCreditLedger row by
+    spoofing A's establishment id on the consultant self-serve endpoint."""
+    est_a = _create_est(consultant_a, "IDORADV0000A", "IDOR Advance Co")
+    consultant_a.set_establishment(est_a)
+
+    ledger_row = AdvanceCreditLedger(
+        establishment_id=est_a, entry_type="topup", amount=500.0,
+        status="pending", cashfree_order_id="adv_idor_test_order"
+    )
+    test_db.add(ledger_row)
+    test_db.commit()
+
+    _create_est(consultant_b, "IDORADV0000B", "IDOR Advance Co B")
+    spoof_headers = {"X-Establishment-Id": str(est_a)}
+
+    res = consultant_b.post("/api/establishment/advance-credit/refresh-status", json={"order_id": "adv_idor_test_order"}, headers=spoof_headers)
+    assert res.status_code == 403
+
+    # Superadmin-only per-establishment ledger endpoint -- flat 403 for a consultant regardless of target
+    res = consultant_b.post(f"/api/admin/establishments/{est_a}/advance-credit/{ledger_row.id}/refresh-status", json={})
+    assert res.status_code == 403
+
+
+def test_signup_does_not_leak_other_pending_requests(client):
+    """POST /api/signup's response must never surface any other pending signup
+    request's data -- only a generic ack for the caller's own submission, even when
+    a duplicate-email/duplicate-establishment-code rejection path is hit."""
+    res1 = client.post("/api/signup", json={
+        "role": "employer", "name": "First Applicant", "email": "first.applicant@idortest.com",
+        "password": "Password@123", "agreed_to_terms": True,
+        "establishment_code": "IDORSIGNUP001", "establishment_name": "First Applicant Co",
+    })
+    assert res1.status_code == 200
+    body1 = res1.json()
+    assert set(body1.keys()) <= {"ok", "message"}
+
+    # Second applicant tries the same establishment code -- rejected, but the error
+    # must be a generic duplicate message, not a leak of the first applicant's details.
+    res2 = client.post("/api/signup", json={
+        "role": "employer", "name": "Second Applicant", "email": "second.applicant@idortest.com",
+        "password": "Password@123", "agreed_to_terms": True,
+        "establishment_code": "IDORSIGNUP001", "establishment_name": "Second Applicant Co",
+    })
+    assert res2.status_code == 400
+    assert "First Applicant" not in res2.text
+    assert "first.applicant@idortest.com" not in res2.text
+
+
+def test_admin_signup_requests_is_superadmin_only(consultant_a, superadmin_session, client):
+    """GET /api/admin/signup-requests (which returns every pending applicant's name,
+    email, mobile, and establishment details) must be genuinely superadmin-only."""
+    client.post("/api/signup", json={
+        "role": "consultant", "name": "Gate Check Applicant", "email": "gatecheck@idortest.com",
+        "password": "Password@123", "agreed_to_terms": True,
+    })
+
+    res = consultant_a.get("/api/admin/signup-requests")
+    assert res.status_code == 403
+    assert "Gate Check Applicant" not in res.text
+
+    res = client.get("/api/admin/signup-requests")
+    assert res.status_code == 401
+
+    res = superadmin_session.get("/api/admin/signup-requests")
+    assert res.status_code == 200
+    assert any(r["name"] == "Gate Check Applicant" for r in res.json()["requests"])
+
+
+def test_rate_override_never_leaks_via_establishment_list(consultant_a, consultant_b, superadmin_session, test_db):
+    """custom_rate_per_employee is billing-sensitive; GET /api/establishments (the
+    list endpoint) must never include it for a non-superadmin caller, and it must
+    never surface Consultant A's rate override to Consultant B."""
+    est_a = _create_est(consultant_a, "IDORRATE0000A", "IDOR Rate Co")
+    est_row = test_db.query(Establishment).filter(Establishment.id == est_a).first()
+    est_row.custom_rate_per_employee = 42.0
+    test_db.commit()
+
+    listing = consultant_a.get("/api/establishments").json()["establishments"]
+    for row in listing:
+        assert "custom_rate_per_employee" not in row
+
+    _create_est(consultant_b, "IDORRATE0000B", "IDOR Rate Co B")
+    listing_b = consultant_b.get("/api/establishments").json()["establishments"]
+    for row in listing_b:
+        assert "custom_rate_per_employee" not in row
+
+    # Superadmin's cross-tenant establishment list is allowed to see it -- it's the
+    # billing admin, and the rate is scoped to the specific establishment row.
+    admin_listing = superadmin_session.get(f"/api/admin/users/{consultant_a.user_id}/establishments").json()
+    assert any(e["id"] == est_a and e.get("custom_rate_per_employee") == 42.0 for e in admin_listing["establishments"])
