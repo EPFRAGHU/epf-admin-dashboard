@@ -471,8 +471,13 @@ const App = (() => {
   /* ── Confirm ─────────────────────────────────────────────────── */
   function confirm(msg, onYes) {
     openModal('Confirm', `<p style="margin-bottom:8px">${msg}</p>`,
-      `<button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
-       <button class="btn btn-danger" onclick="(${onYes.toString()})(); App.closeModal();">Yes, Proceed</button>`);
+      `<button class="btn btn-ghost" id="confirm-cancel-btn">Cancel</button>
+       <button class="btn btn-danger" id="confirm-yes-btn">Yes, Proceed</button>`,
+      false, true);
+    const yesBtn = document.getElementById('confirm-yes-btn');
+    const cancelBtn = document.getElementById('confirm-cancel-btn');
+    if (cancelBtn) cancelBtn.onclick = () => closeModal();
+    if (yesBtn) yesBtn.onclick = () => { onYes(); closeModal(); };
   }
 
   /* ── Routing ─────────────────────────────────────────────────── */
