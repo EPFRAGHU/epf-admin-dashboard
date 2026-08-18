@@ -14,7 +14,7 @@ import calendar
 import requests
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Query, Header, Request, status
@@ -202,6 +202,21 @@ def resolve_rate(db: Session, establishment: Establishment, user: Optional[User]
             pass
     return 10.0
 
+def resolve_billing_mode(db: Session, establishment: Establishment, consultant: Optional[User] = None) -> Tuple[str, Optional[float]]:
+    """Resolve (billing_mode, flat_fee_amount): Establishment explicit override > Consultant
+    default > global fallback ('per_employee', tiered/custom rate resolved separately via
+    resolve_rate()). An explicit non-null establishment.billing_mode always wins outright --
+    even 'per_employee' with no flat_fee_amount counts as a deliberate override and must NOT
+    fall through to the consultant's default, since that's how a specific establishment stays
+    an intentional exception to a later consultant-level change."""
+    if establishment.billing_mode is not None:
+        return establishment.billing_mode, establishment.flat_fee_amount
+    if consultant is None and establishment.user_id:
+        consultant = db.query(User).filter(User.id == establishment.user_id).first()
+    if consultant and consultant.default_billing_mode is not None:
+        return consultant.default_billing_mode, consultant.default_flat_fee_per_establishment
+    return "per_employee", None
+
 def apply_advance_credit_if_available(db: Session, est_obj: Establishment, fee_row: SubscriptionFee):
     """If the establishment has enough prepaid advance credit to cover this newly-billed,
     still-unpaid month, auto-mark it paid and deduct the credit. Never applies partially --
@@ -213,6 +228,7 @@ def apply_advance_credit_if_available(db: Session, est_obj: Establishment, fee_r
         return
 
     fee_row.is_paid = True
+    fee_row.payment_status = "paid"
     fee_row.payment_reference = "Applied from advance credit"
     est_obj.advance_credit_balance = round(balance - fee_row.amount_due, 2)
     db.flush()  # ensure fee_row.id is assigned before we reference it as a FK below
@@ -249,15 +265,18 @@ def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project
 
     billing_mode governs HOW amount_due is computed, nothing else -- enforcement
     (download-locking, Cashfree, advance credit, trials) is identical either way.
-    resolve_rate()'s tiered-rate lookup is only run for 'per_employee' establishments;
-    there's no rate to resolve in flat-fee mode. A still-unpaid row always live-adopts
-    the establishment's CURRENT billing_mode/rate/amount on every sync (these are the
-    "future months"). A PAID row is historical and frozen: it remembers the mode it was
-    actually billed under (its own billing_mode, not the establishment's current one) and
-    its amount_due is never rewritten by a later mode switch -- only employee_count is
-    refreshed, for reporting/visibility."""
-    mode = est_obj.billing_mode or "per_employee"
-    flat_amount = round(float(est_obj.flat_fee_amount), 2) if (mode == "flat_fee" and est_obj.flat_fee_amount) else 0.0
+    resolve_billing_mode() resolves the inheritance chain (explicit establishment override >
+    consultant's default_billing_mode > global 'per_employee' fallback) fresh on every sync,
+    so a consultant-level default change takes effect for every inheriting establishment's
+    NEXT sync with zero per-establishment configuration. resolve_rate()'s tiered-rate lookup
+    is only run when the resolved mode is 'per_employee'; there's no rate to resolve in
+    flat-fee mode. A still-unpaid row always live-adopts the CURRENTLY resolved
+    mode/rate/amount on every sync (these are the "future months"). A PAID row is historical
+    and frozen: it remembers the mode it was actually billed under (its own billing_mode, not
+    a re-resolved one) and its amount_due is never rewritten by a later mode switch -- only
+    employee_count is refreshed, for reporting/visibility."""
+    mode, resolved_flat_amount = resolve_billing_mode(db, est_obj)
+    flat_amount = round(float(resolved_flat_amount), 2) if (mode == "flat_fee" and resolved_flat_amount) else 0.0
     rate = resolve_rate(db, est_obj) if mode == "per_employee" else None
 
     year_record = project.years.get(year_key)
@@ -432,6 +451,31 @@ def _run_startup_migrations():
                 _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN IF NOT EXISTS flat_fee_amount FLOAT;")
                 _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS billing_mode VARCHAR(20) DEFAULT 'per_employee';")
                 _try_ddl(conn, "ALTER TABLE subscription_fees ALTER COLUMN rate_applied DROP NOT NULL;")
+                # billing_mode becomes nullable so null can mean "inherit from consultant".
+                # This does NOT touch existing rows' stored values -- every establishment
+                # created before this migration already has an explicit 'per_employee' or
+                # 'flat_fee' value written to it, and DROP NOT NULL never rewrites data.
+                # Only establishments created AFTER this migration, with no billing_mode
+                # passed at creation, will actually end up null/inheriting.
+                _try_ddl(conn, "ALTER TABLE establishments ALTER COLUMN billing_mode DROP NOT NULL;")
+                _try_ddl(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS default_billing_mode VARCHAR(20);")
+                _try_ddl(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS default_flat_fee_per_establishment FLOAT;")
+                # UPI payment path columns on subscription_fees
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS payment_status VARCHAR(30) DEFAULT 'unpaid';")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS submitted_utr VARCHAR(255);")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS submitted_by INTEGER REFERENCES users(id) ON DELETE SET NULL;")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ;")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS verified_by INTEGER REFERENCES users(id) ON DELETE SET NULL;")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS rejection_reason TEXT;")
+                # SQLite fallbacks (no IF NOT EXISTS, _try_ddl tolerates duplicate-column errors)
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN payment_status VARCHAR(30) DEFAULT 'unpaid';")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN submitted_utr VARCHAR(255);")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN submitted_by INTEGER;")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN submitted_at TIMESTAMP;")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN verified_by INTEGER;")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN verified_at TIMESTAMP;")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN rejection_reason TEXT;")
         except Exception as e:
             print(f"  [WARN] DDL check error: {e}")
 
@@ -578,6 +622,17 @@ def _run_startup_migrations():
             db.commit()
             print(f"  [OK] Seeded {perms_added} role permission row(s)")
 
+        # 6. Seed UPI Settings (idempotent)
+        upi_id_setting = db.query(Setting).filter(Setting.key == "upi_id").first()
+        if not upi_id_setting:
+            db.add(Setting(key="upi_id", value=""))
+        upi_name_setting = db.query(Setting).filter(Setting.key == "upi_name").first()
+        if not upi_name_setting:
+            db.add(Setting(key="upi_name", value=""))
+        qr_setting = db.query(Setting).filter(Setting.key == "upi_qr_code").first()
+        if not qr_setting:
+            db.add(Setting(key="upi_qr_code", value=""))
+        db.commit()
 
 @app.on_event("startup")
 def on_startup():
@@ -642,8 +697,12 @@ class TrialUpdateIn(BaseModel):
     trial_ends_on: Optional[str] = None  # "YYYY-MM-DD", or null/omitted to clear the trial
 
 class BillingModeUpdateIn(BaseModel):
-    billing_mode: str  # 'per_employee' or 'flat_fee'
+    billing_mode: str  # 'per_employee', 'flat_fee', or 'inherit' (clears the establishment's own override back to null)
     flat_fee_amount: Optional[float] = None  # required (>0) when billing_mode='flat_fee'; ignored otherwise
+
+class ConsultantDefaultBillingIn(BaseModel):
+    default_billing_mode: Optional[str] = None  # 'per_employee' | 'flat_fee' | null (clears consultant-level default)
+    default_flat_fee_per_establishment: Optional[float] = None  # ₹/month; required (>0) when default_billing_mode='flat_fee'
 
 class SignupIn(BaseModel):
     role: str  # 'employer' or 'consultant'
@@ -708,6 +767,21 @@ class PaymentUpdateItem(BaseModel):
 class PaymentsSaveIn(BaseModel):
     financial_year: str
     payments: List[PaymentUpdateItem]
+
+# UPI Payment Path Schemas
+class SubmitUTRIn(BaseModel):
+    utr: str
+
+class ApprovePaymentIn(BaseModel):
+    pass  # no body needed; superadmin is implicit
+
+class RejectPaymentIn(BaseModel):
+    rejection_reason: str
+
+class UPISettingsIn(BaseModel):
+    upi_id: Optional[str] = None
+    upi_name: Optional[str] = None
+    qr_code_data: Optional[str] = None  # raw UPI QR string; if provided, upi_id/upi_name are extracted
 
 class EmployeeIn(BaseModel):
     member_id: str
@@ -1177,6 +1251,60 @@ async def admin_update_user(
     return {"ok": True}
 
 
+@app.put("/api/admin/users/{user_id}/default-billing")
+async def admin_set_consultant_default_billing(
+    user_id: int,
+    d: ConsultantDefaultBillingIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Set (or clear) a Consultant's default billing mode that auto-applies to all
+    their establishments that have no explicit billing_mode override of their own.
+    Superadmin-only. Only valid for Consultant accounts."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    if user.role != "consultant":
+        raise HTTPException(400, "default_billing_mode can only be set on Consultant accounts")
+
+    new_mode = (d.default_billing_mode or "").strip() or None
+    if new_mode and new_mode not in ("per_employee", "flat_fee"):
+        raise HTTPException(400, "default_billing_mode must be 'per_employee', 'flat_fee', or null/omitted to clear")
+
+    flat_amount: Optional[float] = None
+    if new_mode == "flat_fee":
+        if d.default_flat_fee_per_establishment is None or d.default_flat_fee_per_establishment <= 0:
+            raise HTTPException(400, "default_flat_fee_per_establishment must be a positive number when default_billing_mode='flat_fee'")
+        flat_amount = round(float(d.default_flat_fee_per_establishment), 2)
+
+    old_mode = user.default_billing_mode
+    old_flat = user.default_flat_fee_per_establishment
+
+    user.default_billing_mode = new_mode
+    user.default_flat_fee_per_establishment = flat_amount
+    db.commit()
+
+    def _fmt(mode, flat):
+        if mode == "flat_fee":
+            return f"Flat ₹{flat}/establishment"
+        if mode == "per_employee":
+            return "Per Employee (tiered)"
+        return "None (no consultant-level default)"
+
+    log_activity(
+        db, admin.id, None, "consultant_default_billing_changed",
+        f"Updated {user.name}'s default billing: {_fmt(old_mode, old_flat)} → {_fmt(new_mode, flat_amount)}",
+        {"user_id": user.id, "old_mode": old_mode, "old_flat": old_flat,
+         "new_mode": new_mode, "new_flat": flat_amount}
+    )
+
+    return {
+        "ok": True,
+        "default_billing_mode": user.default_billing_mode,
+        "default_flat_fee_per_establishment": user.default_flat_fee_per_establishment
+    }
+
+
 @app.delete("/api/admin/users/{user_id}")
 async def admin_delete_user(
     user_id: int,
@@ -1374,6 +1502,7 @@ async def admin_user_establishments(
             except Exception:
                 pass
         unpaid = get_unpaid_months_for_year(db, est, p, "2026-27")
+        resolved_mode, resolved_flat = resolve_billing_mode(db, est, user)
 
         rows.append({
             "id": est.id,
@@ -1382,8 +1511,11 @@ async def admin_user_establishments(
             "address": est.address or "—",
             "coverage_date": est.coverage_date or "—",
             "custom_rate_per_employee": est.custom_rate_per_employee,
-            "billing_mode": est.billing_mode or "per_employee",
-            "flat_fee_amount": est.flat_fee_amount,
+            "billing_mode": resolved_mode,
+            "flat_fee_amount": resolved_flat,
+            "billing_mode_explicit": est.billing_mode is not None,
+            "billing_mode_own": est.billing_mode,
+            "flat_fee_amount_own": est.flat_fee_amount,
             "employee_count": emp_count,
             "unpaid_subscription_months": unpaid,
             "has_overdue_subscription": len(unpaid) > 0,
@@ -1400,7 +1532,9 @@ async def admin_user_establishments(
             "name": user.name,
             "email": user.email,
             "role": user.role,
-            "custom_rate_per_employee": user.custom_rate_per_employee
+            "custom_rate_per_employee": user.custom_rate_per_employee,
+            "default_billing_mode": user.default_billing_mode,
+            "default_flat_fee_per_establishment": user.default_flat_fee_per_establishment
         }
     }
 
@@ -1439,6 +1573,75 @@ async def admin_set_default_rate(
         {"old_rate": old_rate, "new_rate": d.default_rate, "scope": "global"}
     )
     return {"ok": True, "default_rate": d.default_rate}
+
+
+# ── UPI Settings ──────────────────────────────────────────────────────────────
+@app.get("/api/admin/settings/upi")
+async def admin_get_upi_settings(
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    upi_id = db.query(Setting).filter(Setting.key == "upi_id").first()
+    upi_name = db.query(Setting).filter(Setting.key == "upi_name").first()
+    qr_code = db.query(Setting).filter(Setting.key == "upi_qr_code").first()
+    return {
+        "upi_id": upi_id.value if upi_id else "",
+        "upi_name": upi_name.value if upi_name else "",
+        "qr_code_data": qr_code.value if qr_code else "",
+    }
+
+
+@app.put("/api/admin/settings/upi")
+async def admin_set_upi_settings(
+    d: UPISettingsIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    # If QR code provided, extract UPI ID and name from it
+    upi_id_val = d.upi_id
+    upi_name_val = d.upi_name
+    qr_val = d.qr_code_data
+    
+    if d.qr_code_data and not (d.upi_id and d.upi_name):
+        # Parse UPI QR string: upi://pay?pa=upi_id&pn=upi_name&...
+        try:
+            from urllib.parse import urlparse, parse_qs
+            parsed = urlparse(d.qr_code_data)
+            params = parse_qs(parsed.query)
+            if "pa" in params:
+                upi_id_val = params["pa"][0]
+            if "pn" in params:
+                upi_name_val = params["pn"][0]
+        except Exception:
+            pass  # If parsing fails, use provided values
+    
+    # Update/insert settings
+    for key, val in [("upi_id", upi_id_val), ("upi_name", upi_name_val), ("upi_qr_code", qr_val)]:
+        setting = db.query(Setting).filter(Setting.key == key).first()
+        if not setting:
+            setting = Setting(key=key, value=val or "")
+            db.add(setting)
+        else:
+            setting.value = val or ""
+    
+    db.commit()
+    return {"ok": True, "upi_id": upi_id_val, "upi_name": upi_name_val, "qr_code_data": qr_val}
+
+
+@app.get("/api/upi-settings")
+async def get_upi_settings_for_payer(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Read-only UPI display info for consultants/employers submitting a manual payment."""
+    upi_id = db.query(Setting).filter(Setting.key == "upi_id").first()
+    upi_name = db.query(Setting).filter(Setting.key == "upi_name").first()
+    qr_code = db.query(Setting).filter(Setting.key == "upi_qr_code").first()
+    return {
+        "upi_id": upi_id.value if upi_id else "",
+        "upi_name": upi_name.value if upi_name else "",
+        "qr_code_data": qr_code.value if qr_code else "",
+    }
 
 
 # ── Permissions & Feature Flags (superadmin-managed, no code changes needed) ──
@@ -1622,7 +1825,8 @@ async def admin_get_establishment_subscription_fees(
 
     default_setting = db.query(Setting).filter(Setting.key == "default_rate_per_employee").first()
     default_rate = float(default_setting.value) if default_setting and default_setting.value else 10.0
-    billing_mode = est.billing_mode or "per_employee"
+    billing_mode, resolved_flat_amount = resolve_billing_mode(db, est, consultant)
+    billing_mode_explicit = est.billing_mode is not None
     # No "rate per employee" concept exists in flat-fee mode -- skip resolve_rate() entirely
     # rather than compute a figure that would just be confusing and unused.
     effective_rate = resolve_rate(db, est, consultant) if billing_mode == "per_employee" else None
@@ -1645,7 +1849,7 @@ async def admin_get_establishment_subscription_fees(
         overdue = is_month_overdue(year, i) and emp_count > 0 and (not f_obj or not f_obj.is_paid)
 
         row_mode = (f_obj.billing_mode if f_obj else billing_mode) or "per_employee"
-        amount_due = f_obj.amount_due if f_obj else (est.flat_fee_amount if billing_mode == "flat_fee" else round(emp_count * (effective_rate or 0), 2))
+        amount_due = f_obj.amount_due if f_obj else (resolved_flat_amount if billing_mode == "flat_fee" else round(emp_count * (effective_rate or 0), 2))
         billing_display = f"₹{amount_due}/month flat rate" if row_mode == "flat_fee" else f"₹{f_obj.rate_applied if f_obj else effective_rate}/employee"
 
         months_data.append({
@@ -1673,7 +1877,10 @@ async def admin_get_establishment_subscription_fees(
             "name": est.name,
             "custom_rate": est.custom_rate_per_employee,
             "billing_mode": billing_mode,
-            "flat_fee_amount": est.flat_fee_amount,
+            "flat_fee_amount": resolved_flat_amount,
+            "billing_mode_explicit": billing_mode_explicit,
+            "billing_mode_own": est.billing_mode,
+            "flat_fee_amount_own": est.flat_fee_amount,
             "trial_ends_on": est.trial_ends_on.isoformat() if est.trial_ends_on else None,
             "is_in_trial": is_establishment_in_trial(est),
             "trial_days_left": get_trial_days_left(est)
@@ -1683,7 +1890,9 @@ async def admin_get_establishment_subscription_fees(
             "name": consultant.name if consultant else "",
             "email": consultant.email if consultant else "",
             "role": consultant.role if consultant else None,
-            "custom_rate": consultant.custom_rate_per_employee if consultant else None
+            "custom_rate": consultant.custom_rate_per_employee if consultant else None,
+            "default_billing_mode": consultant.default_billing_mode if consultant else None,
+            "default_flat_fee_per_establishment": consultant.default_flat_fee_per_establishment if consultant else None
         },
         "rates": {
             "global_default": default_rate,
@@ -1751,7 +1960,9 @@ async def admin_update_establishment_trial(
     }
 
 
-def _describe_billing_mode(mode: str, flat_amount: Optional[float]) -> str:
+def _describe_billing_mode(mode: Optional[str], flat_amount: Optional[float]) -> str:
+    if mode is None:
+        return "Inherit (consultant's default, or global default if none set)"
     if mode == "flat_fee":
         return f"Flat ₹{flat_amount}/month"
     return "Per Employee (tiered/custom rate)"
@@ -1764,18 +1975,20 @@ async def admin_update_establishment_billing_mode(
     admin: User = Depends(get_superadmin),
     db: Session = Depends(get_db)
 ):
-    """Switch an establishment between per-employee (tiered/custom rate) and flat-fee
-    billing -- a superadmin-only decision, never reachable from any Consultant/Employer
-    endpoint. Only affects FUTURE (still-unpaid) SubscriptionFee months; already-paid
-    rows remember their own billing_mode and stay frozen at whatever amount was correct
-    when they were billed (see sync_subscription_fees_for_year)."""
+    """Switch an establishment between per-employee (tiered/custom rate), flat-fee billing,
+    or 'inherit' (clears the establishment's own override so it resumes following its
+    consultant's default_billing_mode, or the global default if the consultant has none set)
+    -- a superadmin-only decision, never reachable from any Consultant/Employer endpoint.
+    Only affects FUTURE (still-unpaid) SubscriptionFee months; already-paid rows remember
+    their own billing_mode and stay frozen at whatever amount was correct when they were
+    billed (see sync_subscription_fees_for_year)."""
     est = db.query(Establishment).filter(Establishment.id == est_id).first()
     if not est:
         raise HTTPException(404, "Establishment not found")
 
     mode = (d.billing_mode or "").strip()
-    if mode not in ("per_employee", "flat_fee"):
-        raise HTTPException(400, "billing_mode must be 'per_employee' or 'flat_fee'")
+    if mode not in ("per_employee", "flat_fee", "inherit"):
+        raise HTTPException(400, "billing_mode must be 'per_employee', 'flat_fee', or 'inherit'")
 
     flat_amount = None
     if mode == "flat_fee":
@@ -1783,27 +1996,32 @@ async def admin_update_establishment_billing_mode(
             raise HTTPException(400, "flat_fee_amount must be a positive number for flat_fee billing mode")
         flat_amount = round(float(d.flat_fee_amount), 2)
 
-    old_mode = est.billing_mode or "per_employee"
+    new_mode_raw = None if mode == "inherit" else mode  # 'inherit' is stored as null, not a literal mode
+    old_mode_raw = est.billing_mode
     old_amount = est.flat_fee_amount
 
-    if old_mode == mode and old_amount == flat_amount:
-        return {"ok": True, "billing_mode": est.billing_mode, "flat_fee_amount": est.flat_fee_amount}
+    if old_mode_raw == new_mode_raw and old_amount == flat_amount:
+        resolved_mode, resolved_flat = resolve_billing_mode(db, est)
+        return {"ok": True, "billing_mode": est.billing_mode, "flat_fee_amount": est.flat_fee_amount,
+                "is_explicit": est.billing_mode is not None, "effective_billing_mode": resolved_mode, "effective_flat_fee_amount": resolved_flat}
 
-    est.billing_mode = mode
+    est.billing_mode = new_mode_raw
     est.flat_fee_amount = flat_amount
     db.commit()
 
     log_activity(
         db, admin.id, est.id, "billing_mode_changed",
         f"Changed billing mode for {est.name} ({est.code}): "
-        f"{_describe_billing_mode(old_mode, old_amount)} → {_describe_billing_mode(mode, flat_amount)}",
+        f"{_describe_billing_mode(old_mode_raw, old_amount)} → {_describe_billing_mode(new_mode_raw, flat_amount)}",
         {
-            "old_billing_mode": old_mode, "old_flat_fee_amount": old_amount,
-            "new_billing_mode": mode, "new_flat_fee_amount": flat_amount
+            "old_billing_mode": old_mode_raw, "old_flat_fee_amount": old_amount,
+            "new_billing_mode": new_mode_raw, "new_flat_fee_amount": flat_amount
         }
     )
 
-    return {"ok": True, "billing_mode": est.billing_mode, "flat_fee_amount": est.flat_fee_amount}
+    resolved_mode, resolved_flat = resolve_billing_mode(db, est)
+    return {"ok": True, "billing_mode": est.billing_mode, "flat_fee_amount": est.flat_fee_amount,
+            "is_explicit": est.billing_mode is not None, "effective_billing_mode": resolved_mode, "effective_flat_fee_amount": resolved_flat}
 
 
 @app.post("/api/admin/establishments/{est_id}/subscription-fees")
@@ -1830,6 +2048,7 @@ async def admin_save_establishment_subscription_fees(
             if not f_obj.is_paid and item.is_paid:
                 newly_paid.append(item.month)
             f_obj.is_paid = item.is_paid
+            f_obj.payment_status = "paid" if item.is_paid else "unpaid"
             f_obj.paid_date = item.paid_date or ""
             f_obj.payment_reference = item.payment_reference or ""
             f_obj.notes = item.notes or ""
@@ -1839,6 +2058,7 @@ async def admin_save_establishment_subscription_fees(
                 financial_year=fy,
                 month=item.month,
                 is_paid=item.is_paid,
+                payment_status="paid" if item.is_paid else "unpaid",
                 paid_date=item.paid_date or "",
                 payment_reference=item.payment_reference or "",
                 notes=item.notes or ""
@@ -1865,6 +2085,7 @@ def _confirm_subscription_fee_paid(db: Session, fee_row: SubscriptionFee, paymen
     if fee_row.is_paid:
         return
     fee_row.is_paid = True
+    fee_row.payment_status = "paid"
     fee_row.payment_reference = payment_ref
     fee_row.paid_date = date.today().strftime("%d-%m-%Y")
     db.commit()
@@ -1980,6 +2201,190 @@ async def admin_refresh_subscription_fee_status(
         _confirm_subscription_fee_paid(db, fee_row, payment_ref=str(status_resp.get("cf_link_id") or fee_row.cashfree_order_id))
 
     return {"ok": True, "is_paid": fee_row.is_paid}
+
+
+# ── UPI Payment Path Endpoints ────────────────────────────────────────────────
+# These allow consultants/employers to submit UTR for manual UPI payments,
+# and superadmin to approve/reject those submissions.
+
+@app.post("/api/subscription-fees/{fee_id}/submit-utr")
+async def submit_utr(
+    fee_id: int,
+    d: SubmitUTRIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Consultant or Employer submits UTR for a subscription fee payment."""
+    fee = db.query(SubscriptionFee).filter(SubscriptionFee.id == fee_id).first()
+    if not fee:
+        raise HTTPException(404, "Subscription fee not found")
+
+    est = db.query(Establishment).filter(Establishment.id == fee.establishment_id).first()
+    if not est:
+        raise HTTPException(404, "Establishment not found")
+
+    if current_user.role != "superadmin" and est.user_id != current_user.id:
+        raise HTTPException(403, "Not authorized for this establishment")
+
+    if fee.payment_status == "paid":
+        raise HTTPException(400, "This fee is already paid")
+
+    utr = d.utr.strip()
+    if not utr:
+        raise HTTPException(400, "UTR cannot be empty")
+
+    fee.payment_status = "pending_verification"
+    fee.submitted_utr = utr
+    fee.submitted_by = current_user.id
+    fee.submitted_at = datetime.now(timezone.utc)
+    fee.rejection_reason = None
+    db.commit()
+
+    log_activity(
+        db, current_user.id, est.id, "utr_submitted",
+        f"UTR submitted for {fee.month} {fee.financial_year} — {est.name} ({est.code}): {utr}",
+        {"financial_year": fee.financial_year, "month": fee.month, "utr": utr}
+    )
+
+    return {"ok": True, "payment_status": "pending_verification"}
+
+
+@app.get("/api/admin/payment-verifications")
+async def payment_verifications(
+    status: str = Query("pending_verification"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Superadmin lists subscription fees awaiting UTR verification."""
+    query = db.query(SubscriptionFee)
+
+    if status == "pending_verification":
+        query = query.filter(SubscriptionFee.payment_status == "pending_verification")
+    elif status == "paid":
+        query = query.filter(SubscriptionFee.payment_status == "paid")
+    elif status == "unpaid":
+        query = query.filter(SubscriptionFee.payment_status == "unpaid")
+
+    total = query.count()
+    offset = (page - 1) * limit
+
+    rows = query.order_by(
+        SubscriptionFee.submitted_at.desc().nullslast(),
+        SubscriptionFee.id.desc()
+    ).offset(offset).limit(limit).all()
+
+    est_ids = list({r.establishment_id for r in rows})
+    ests_map = {e.id: e for e in db.query(Establishment).filter(Establishment.id.in_(est_ids)).all()} if est_ids else {}
+
+    submitted_by_ids = list({r.submitted_by for r in rows if r.submitted_by})
+    submitted_map = {u.id: u for u in db.query(User).filter(User.id.in_(submitted_by_ids)).all()} if submitted_by_ids else {}
+
+    verified_by_ids = list({r.verified_by for r in rows if r.verified_by})
+    verified_map = {u.id: u for u in db.query(User).filter(User.id.in_(verified_by_ids)).all()} if verified_by_ids else {}
+
+    items = []
+    for r in rows:
+        est = ests_map.get(r.establishment_id)
+        submitted_by_user = submitted_map.get(r.submitted_by) if r.submitted_by else None
+        verified_by_user = verified_map.get(r.verified_by) if r.verified_by else None
+
+        yf = r.financial_year.split("-")[0]
+        yt = str(int(yf) + 1)
+        cal_yr = calendar_year_for_month(r.month, yf, yt)
+        display_name = f"{MONTH_FULL.get(r.month.upper(), r.month)} {cal_yr}"
+
+        items.append({
+            "id": r.id,
+            "establishment_id": r.establishment_id,
+            "establishment_code": est.code if est else "",
+            "establishment_name": est.name if est else "",
+            "financial_year": r.financial_year,
+            "month": r.month,
+            "display_name": display_name,
+            "amount_due": r.amount_due,
+            "payment_status": r.payment_status,
+            "submitted_utr": r.submitted_utr or "",
+            "submitted_by": r.submitted_by,
+            "submitted_by_name": submitted_by_user.name if submitted_by_user else "",
+            "submitted_by_email": submitted_by_user.email if submitted_by_user else "",
+            "submitted_at": r.submitted_at.isoformat() if r.submitted_at else "",
+            "verified_by": r.verified_by,
+            "verified_by_name": verified_by_user.name if verified_by_user else "",
+            "verified_at": r.verified_at.isoformat() if r.verified_at else "",
+            "rejection_reason": r.rejection_reason or "",
+        })
+
+    return {"items": items, "total": total, "page": page, "limit": limit}
+
+
+@app.post("/api/admin/payment-verifications/{fee_id}/approve")
+async def approve_payment(
+    fee_id: int,
+    d: ApprovePaymentIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Superadmin approves a UTR submission, marking the fee as paid."""
+    fee = db.query(SubscriptionFee).filter(SubscriptionFee.id == fee_id).first()
+    if not fee:
+        raise HTTPException(404, "Subscription fee not found")
+
+    if fee.payment_status != "pending_verification":
+        raise HTTPException(400, "Only pending_verification fees can be approved")
+
+    fee.payment_status = "paid"
+    fee.is_paid = True
+    fee.verified_by = admin.id
+    fee.verified_at = datetime.now(timezone.utc)
+    fee.payment_reference = fee.submitted_utr
+    fee.paid_date = date.today().strftime("%d-%m-%Y")
+    db.commit()
+
+    est = db.query(Establishment).filter(Establishment.id == fee.establishment_id).first()
+    log_activity(
+        db, admin.id, fee.establishment_id, "utr_approved",
+        f"Approved UTR payment for {fee.month} {fee.financial_year} — {est.name if est else ''}: {fee.submitted_utr}",
+        {"financial_year": fee.financial_year, "month": fee.month, "utr": fee.submitted_utr}
+    )
+
+    return {"ok": True, "payment_status": "paid"}
+
+
+@app.post("/api/admin/payment-verifications/{fee_id}/reject")
+async def reject_payment(
+    fee_id: int,
+    d: RejectPaymentIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Superadmin rejects a UTR submission with a reason."""
+    fee = db.query(SubscriptionFee).filter(SubscriptionFee.id == fee_id).first()
+    if not fee:
+        raise HTTPException(404, "Subscription fee not found")
+
+    if fee.payment_status != "pending_verification":
+        raise HTTPException(400, "Only pending_verification fees can be rejected")
+
+    reason = d.rejection_reason.strip()
+    if not reason:
+        raise HTTPException(400, "Rejection reason is required")
+
+    fee.payment_status = "unpaid"
+    fee.rejection_reason = reason
+    fee.verified_by = admin.id
+    fee.verified_at = datetime.now(timezone.utc)
+    db.commit()
+
+    est = db.query(Establishment).filter(Establishment.id == fee.establishment_id).first()
+    log_activity(
+        db, admin.id, fee.establishment_id, "utr_rejected",
+        f"Rejected UTR for {fee.month} {fee.financial_year} — {est.name if est else ''}: {reason}",
+        {"financial_year": fee.financial_year, "month": fee.month, "utr": fee.submitted_utr, "reason": reason}
+    )
+
+    return {"ok": True, "payment_status": "unpaid", "rejection_reason": reason}
 
 
 # ── Advance Subscription Credit Endpoints ──────────────────────────────────
@@ -2932,6 +3337,14 @@ def _subscription_payment_dict(f: SubscriptionFee, est: Establishment, consultan
         "cashfree_order_id": f.cashfree_order_id or "",
         "notes": f.notes or "",
         "source": source,
+        # UPI payment path fields
+        "payment_status": f.payment_status or "unpaid",
+        "submitted_utr": f.submitted_utr or "",
+        "submitted_by": f.submitted_by,
+        "submitted_at": f.submitted_at.isoformat() if f.submitted_at else "",
+        "verified_by": f.verified_by,
+        "verified_at": f.verified_at.isoformat() if f.verified_at else "",
+        "rejection_reason": f.rejection_reason or "",
     }
 
 
@@ -3013,6 +3426,7 @@ async def get_establishment_fee_month_detail(
 
     row_mode = fee_row.billing_mode or "per_employee"
     return {
+        "fee_id": fee_row.id,
         "month": fee_row.month,
         "financial_year": fee_row.financial_year,
         "display_name": display_name,
@@ -3023,6 +3437,9 @@ async def get_establishment_fee_month_detail(
         "billing_display": _billing_display(row_mode, fee_row.rate_applied, fee_row.amount_due),
         "is_paid": fee_row.is_paid,
         "is_overdue": overdue and not fee_row.is_paid,
+        "payment_status": fee_row.payment_status or "unpaid",
+        "submitted_utr": fee_row.submitted_utr or "",
+        "rejection_reason": fee_row.rejection_reason or "",
     }
 
 

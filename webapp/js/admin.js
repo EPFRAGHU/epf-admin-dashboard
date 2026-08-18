@@ -50,6 +50,16 @@ const Admin = (() => {
   let signupRequests = [];
   let signupStatusFilter = 'pending';
 
+  // UPI Settings state
+  let upiSettings = { upi_id: '', upi_name: '', qr_code_data: '' };
+
+  // Payment Verifications state
+  let paymentVerifications = [];
+  let paymentVerPage = 1;
+  let paymentVerLimit = 20;
+  let paymentVerTotal = 0;
+  let paymentVerFilterStatus = 'pending_verification';
+
   const PERMISSION_ACTIONS_FALLBACK = [
     'employee.add', 'employee.edit', 'employee.delete',
     'establishment.add', 'establishment.edit', 'establishment.delete',
@@ -219,6 +229,13 @@ const Admin = (() => {
         <button class="btn ${activeTab === 'subscription_payments' ? 'btn-primary' : 'btn-ghost'}" style="font-weight:700;" onclick="Admin.switchTab('subscription_payments')">
           💳 Subscription Payments
         </button>
+        <button class="btn ${activeTab === 'payment_verifications' ? 'btn-primary' : 'btn-ghost'}" style="font-weight:700; position:relative;" onclick="Admin.switchTab('payment_verifications')">
+          ✅ Payment Verifications
+          ${paymentVerFilterStatus === 'pending_verification' && paymentVerTotal > 0 ? `<span class="badge high" style="margin-left:6px; font-size:10px; font-weight:800;">${paymentVerTotal}</span>` : ''}
+        </button>
+        <button class="btn ${activeTab === 'upi_settings' ? 'btn-primary' : 'btn-ghost'}" style="font-weight:700;" onclick="Admin.switchTab('upi_settings')">
+          🏦 UPI Settings
+        </button>
         <button class="btn ${activeTab === 'permissions' ? 'btn-primary' : 'btn-ghost'}" style="font-weight:700;" onclick="Admin.switchTab('permissions')">
           🔐 Permissions & Features
         </button>
@@ -226,7 +243,7 @@ const Admin = (() => {
 
       <!-- Main Admin Content Container -->
       <div id="admin-main-container">
-        ${activeTab === 'overview' ? renderOverviewTab() : activeTab === 'signup_requests' ? renderSignupRequestsTabHtml() : activeTab === 'activity_log' ? renderActivityLogTabHtml() : activeTab === 'subscription_payments' ? renderSubscriptionPaymentsTabHtml() : renderPermissionsTabHtml()}
+        ${activeTab === 'overview' ? renderOverviewTab() : activeTab === 'signup_requests' ? renderSignupRequestsTabHtml() : activeTab === 'activity_log' ? renderActivityLogTabHtml() : activeTab === 'subscription_payments' ? renderSubscriptionPaymentsTabHtml() : activeTab === 'payment_verifications' ? renderPaymentVerificationsTabHtml() : activeTab === 'upi_settings' ? renderUPISettingsTabHtml() : renderPermissionsTabHtml()}
       </div>
     `;
 
@@ -238,6 +255,10 @@ const Admin = (() => {
       loadFullActivityLogTable();
     } else if (activeTab === 'subscription_payments') {
       loadSubscriptionPaymentsTable();
+    } else if (activeTab === 'payment_verifications') {
+      loadPaymentVerificationsTable();
+    } else if (activeTab === 'upi_settings') {
+      loadUPISettings();
     } else if (activeTab === 'permissions') {
       loadPermissionsTab();
     }
@@ -865,6 +886,227 @@ const Admin = (() => {
     );
   }
 
+  /* ── Tab: Payment Verifications (manual UPI/UTR) ──────────────────── */
+  function renderPaymentVerificationsTabHtml() {
+    const statusOptions = [
+      ['pending_verification', 'Pending Verification'],
+      ['paid', 'Approved (Paid)'],
+      ['unpaid', 'Rejected / Unpaid'],
+      ['all', 'All'],
+    ].map(([val, label]) => `<option value="${val}" ${paymentVerFilterStatus === val ? 'selected' : ''}>${label}</option>`).join('');
+
+    return `
+      <div class="card" style="padding:0; overflow:hidden;">
+        <div class="card-head" style="display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid var(--border); flex-wrap:wrap; gap:12px; background:var(--bg2);">
+          <div>
+            <h3 style="margin:0; font-size:17px; font-weight:700;">Payment Verifications — Manual UPI</h3>
+            <p style="margin:2px 0 0 0; font-size:12px; color:var(--text2);">UTR submissions from consultants/employers paying via UPI instead of Cashfree.</p>
+          </div>
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <select class="form-input sm" id="pv-filter-status" style="width:190px;" onchange="Admin.onPaymentVerFilterChange()">
+              ${statusOptions}
+            </select>
+          </div>
+        </div>
+        <div id="admin-paymentver-table-container">
+          <div class="page-loading" style="padding:40px;"><div class="spinner"></div><p>Loading payment verifications…</p></div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadPaymentVerificationsTable(page = 1) {
+    paymentVerPage = page;
+    const container = document.getElementById('admin-paymentver-table-container');
+    if (!container) return;
+    container.innerHTML = `<div class="page-loading" style="padding:32px;"><div class="spinner"></div><p>Loading page ${page}…</p></div>`;
+
+    try {
+      const res = await App.get(`/api/admin/payment-verifications?status=${encodeURIComponent(paymentVerFilterStatus)}&page=${page}&limit=${paymentVerLimit}`);
+      paymentVerifications = res.items || [];
+      paymentVerTotal = res.total || 0;
+    } catch (e) {
+      paymentVerifications = [];
+      paymentVerTotal = 0;
+    }
+
+    if (paymentVerifications.length === 0) {
+      container.innerHTML = `
+        <div style="text-align:center; padding:48px 20px; color:var(--text3);">
+          <span style="font-size:36px; display:block; margin-bottom:8px;">✅</span>
+          <strong>No payment verifications here.</strong>
+          <p style="margin:4px 0 0 0; font-size:12px;">Nothing matches the selected filter.</p>
+        </div>
+      `;
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Establishment</th>
+              <th>Month</th>
+              <th class="num">Amount</th>
+              <th>UTR</th>
+              <th>Submitted By</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${paymentVerifications.map(v => `
+              <tr>
+                <td>
+                  <div style="font-weight:600; color:var(--primary); font-size:13px;">${App.esc(v.establishment_name)}</div>
+                  <div style="font-size:10px; color:var(--text2); font-family:monospace;">${App.esc(v.establishment_code)}</div>
+                </td>
+                <td>
+                  <strong>${App.esc(v.display_name)}</strong>
+                  <div style="font-size:10px; color:var(--text3);">FY ${App.esc(v.financial_year)}</div>
+                </td>
+                <td class="num" style="font-weight:700; color:var(--primary);">₹${App.fmt(v.amount_due)}</td>
+                <td><span style="font-family:monospace; font-size:12px;">${App.esc(v.submitted_utr || '—')}</span></td>
+                <td>
+                  <div style="font-size:12px; color:var(--text1);">${App.esc(v.submitted_by_name || '—')}</div>
+                  <div style="font-size:10px; color:var(--text3);">${App.esc(v.submitted_at ? v.submitted_at.slice(0, 10) : '')}</div>
+                </td>
+                <td>${paymentVerStatusBadge(v)}</td>
+                <td>
+                  ${v.payment_status === 'pending_verification' ? `
+                    <div style="display:flex; gap:6px;">
+                      <button class="btn btn-primary btn-sm" style="background:var(--green); border-color:var(--green);" onclick="Admin.approvePaymentVerification(${v.id})">Approve</button>
+                      <button class="btn btn-ghost btn-sm" style="color:var(--danger);" onclick="Admin.confirmRejectPaymentVerification(${v.id})">Reject</button>
+                    </div>
+                  ` : v.rejection_reason ? `<span style="font-size:11px; color:var(--text3);" title="${App.esc(v.rejection_reason)}">Reason: ${App.esc(v.rejection_reason)}</span>` : '—'}
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+      ${App.renderPagination(paymentVerTotal, paymentVerPage, paymentVerLimit, 'Admin.goToPaymentVerPage')}
+    `;
+  }
+
+  function paymentVerStatusBadge(v) {
+    if (v.payment_status === 'paid') return '<span class="badge low" style="font-size:10px; font-weight:700;">✓ Paid</span>';
+    if (v.payment_status === 'pending_verification') return '<span class="badge mid" style="font-size:10px; font-weight:700;">⏳ Pending</span>';
+    return '<span class="badge high" style="font-size:10px; font-weight:700;">✗ Unpaid</span>';
+  }
+
+  function goToPaymentVerPage(page) {
+    loadPaymentVerificationsTable(page);
+  }
+
+  function onPaymentVerFilterChange() {
+    const sel = document.getElementById('pv-filter-status');
+    if (sel) paymentVerFilterStatus = sel.value;
+    loadPaymentVerificationsTable(1);
+  }
+
+  async function approvePaymentVerification(feeId) {
+    App.confirm(
+      'Approve this UTR and mark the fee as paid?',
+      async () => {
+        try {
+          await App.post(`/api/admin/payment-verifications/${feeId}/approve`, {});
+          App.toast('Payment approved');
+          loadPaymentVerificationsTable(paymentVerPage);
+        } catch (e) {
+          // Handled
+        }
+      }
+    );
+  }
+
+  function confirmRejectPaymentVerification(feeId) {
+    const bodyHtml = `
+      <div style="font-size:13px; color:var(--text2); margin-bottom:12px;">Reject this UTR submission? The fee will go back to Unpaid so the payer can resubmit.</div>
+      <div class="form-group">
+        <label class="form-label" style="font-weight:600;">Reason (shown to the payer)</label>
+        <textarea id="pv-reject-reason" class="form-input" rows="2" placeholder="e.g. UTR does not match any received UPI transaction"></textarea>
+      </div>
+    `;
+    const footerHtml = `
+      <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
+      <button class="btn btn-primary" style="background:var(--danger); border-color:var(--danger);" onclick="Admin.rejectPaymentVerification(${feeId})">Reject Payment</button>
+    `;
+    App.openModal('Reject UTR Submission', bodyHtml, footerHtml, false, true);
+  }
+
+  async function rejectPaymentVerification(feeId) {
+    const reasonEl = document.getElementById('pv-reject-reason');
+    const rejection_reason = reasonEl ? reasonEl.value.trim() : '';
+    if (!rejection_reason) {
+      App.toast('A rejection reason is required', 'error');
+      return;
+    }
+    try {
+      await App.post(`/api/admin/payment-verifications/${feeId}/reject`, { rejection_reason });
+      App.toast('Payment rejected');
+      App.closeModal();
+      loadPaymentVerificationsTable(paymentVerPage);
+    } catch (e) {
+      // Handled
+    }
+  }
+
+  /* ── Tab: UPI Settings ─────────────────────────────────────────── */
+  function renderUPISettingsTabHtml() {
+    return `
+      <div class="card" style="padding:0; overflow:hidden; max-width:560px;">
+        <div class="card-head" style="padding:16px 20px; border-bottom:1px solid var(--border); background:var(--bg2);">
+          <h3 style="margin:0; font-size:17px; font-weight:700;">UPI Settings</h3>
+          <p style="margin:2px 0 0 0; font-size:12px; color:var(--text2);">Shown to consultants/employers when they choose to pay a subscription fee via UPI instead of Cashfree.</p>
+        </div>
+        <div id="admin-upi-settings-body" style="padding:16px 20px;">
+          <div class="page-loading" style="padding:20px;"><div class="spinner"></div><p>Loading UPI settings…</p></div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadUPISettings() {
+    const body = document.getElementById('admin-upi-settings-body');
+    if (!body) return;
+    try {
+      upiSettings = await App.get('/api/admin/settings/upi');
+    } catch (e) {
+      upiSettings = { upi_id: '', upi_name: '', qr_code_data: '' };
+    }
+    body.innerHTML = `
+      <div class="form-group" style="margin-bottom:14px;">
+        <label class="form-label" style="font-weight:600;">UPI ID</label>
+        <input type="text" id="upi-id-input" class="form-input" placeholder="e.g. epfservices@okhdfcbank" value="${App.esc(upiSettings.upi_id)}">
+      </div>
+      <div class="form-group" style="margin-bottom:14px;">
+        <label class="form-label" style="font-weight:600;">Payee Name</label>
+        <input type="text" id="upi-name-input" class="form-input" placeholder="e.g. EPF Services Pvt Ltd" value="${App.esc(upiSettings.upi_name)}">
+      </div>
+      <div class="form-group" style="margin-bottom:14px;">
+        <label class="form-label" style="font-weight:600;">UPI QR String (optional)</label>
+        <textarea id="upi-qr-input" class="form-input" rows="2" placeholder="upi://pay?pa=...&pn=...">${App.esc(upiSettings.qr_code_data)}</textarea>
+        <p style="margin:4px 0 0 0; font-size:11px; color:var(--text3);">If pasted, UPI ID and Payee Name above are auto-extracted on save when left blank.</p>
+      </div>
+      <button class="btn btn-primary" onclick="Admin.saveUPISettings()">💾 Save UPI Settings</button>
+    `;
+  }
+
+  async function saveUPISettings() {
+    const upi_id = (document.getElementById('upi-id-input') || {}).value || '';
+    const upi_name = (document.getElementById('upi-name-input') || {}).value || '';
+    const qr_code_data = (document.getElementById('upi-qr-input') || {}).value || '';
+    try {
+      await App.put('/api/admin/settings/upi', { upi_id, upi_name, qr_code_data });
+      App.toast('UPI settings saved');
+      loadUPISettings();
+    } catch (e) {
+      // Handled
+    }
+  }
+
   /* ── Tab 4: Permissions & Features ──────────────────────────────── */
   function renderPermissionsTabHtml() {
     return `
@@ -1397,6 +1639,30 @@ const Admin = (() => {
           <input type="number" step="0.5" min="0" id="ec-rate" class="form-input" placeholder="Leave blank to use global default" value="${c.custom_rate_per_employee != null ? c.custom_rate_per_employee : ''}">
           <div style="font-size:11px; color:var(--text3); margin-top:3px;">Optional override applied to all establishments managed by this ${roleLabel.toLowerCase()}.</div>
         </div>
+        ${c.role === 'consultant' ? `
+        <div style="margin-bottom:14px; padding:12px 14px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-sm);">
+          <div style="font-weight:700; font-size:13px; color:var(--text1); margin-bottom:6px;">Default Billing for New/Unset Establishments</div>
+          <div style="font-size:11px; color:var(--text3); margin-bottom:10px;">Applies automatically to any establishment under this consultant that has no explicit billing override of its own. Existing establishments with an explicit override are unaffected.</div>
+          <div style="display:flex; gap:8px; margin-bottom:10px;">
+            <button type="button" id="ec-dbm-none" class="btn ${!c.default_billing_mode ? 'btn-primary' : 'btn-ghost'} btn-sm" style="flex:1;" onclick="Admin.setConsultantDefaultBillingChoice('none')">No Default</button>
+            <button type="button" id="ec-dbm-per_employee" class="btn ${c.default_billing_mode === 'per_employee' ? 'btn-primary' : 'btn-ghost'} btn-sm" style="flex:1;" onclick="Admin.setConsultantDefaultBillingChoice('per_employee')">Per Employee</button>
+            <button type="button" id="ec-dbm-flat_fee" class="btn ${c.default_billing_mode === 'flat_fee' ? 'btn-primary' : 'btn-ghost'} btn-sm" style="flex:1;" onclick="Admin.setConsultantDefaultBillingChoice('flat_fee')">Flat Fee</button>
+          </div>
+          <div id="ec-dbm-none-note" style="display:${!c.default_billing_mode ? 'block' : 'none'}; font-size:11px; color:var(--text3); padding:8px 10px; background:var(--card); border:1px solid var(--card-border); border-radius:var(--radius-sm);">
+            No consultant-level default set. Each establishment will use the global per-employee tiered rate unless individually overridden.
+          </div>
+          <div id="ec-dbm-per-note" style="display:${c.default_billing_mode === 'per_employee' ? 'block' : 'none'}; font-size:11px; color:var(--text3); padding:8px 10px; background:var(--card); border:1px solid var(--card-border); border-radius:var(--radius-sm);">
+            All unset establishments under this consultant will use per-employee tiered/custom-rate billing.
+          </div>
+          <div id="ec-dbm-flat-fields" style="display:${c.default_billing_mode === 'flat_fee' ? 'block' : 'none'};">
+            <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">
+              ${[200, 300, 400, 500].map(p => `<button type="button" class="btn btn-ghost btn-sm" onclick="Admin.pickConsultantFlatFeePreset(${p})">₹${p}</button>`).join('')}
+            </div>
+            <input type="number" step="1" min="1" id="ec-dbm-flat-amount" class="form-input" placeholder="Custom amount, e.g. 350" value="${c.default_billing_mode === 'flat_fee' && c.default_flat_fee_per_establishment != null ? c.default_flat_fee_per_establishment : ''}">
+            <div style="font-size:11px; color:var(--text3); margin-top:4px;">₹/establishment/month. Charged flat regardless of headcount for all unset establishments.</div>
+          </div>
+        </div>
+        ` : ''}
         <div class="form-group" style="margin-bottom:12px;">
           <label class="form-label" style="font-weight:600;">Reset Password (Leave blank to keep existing)</label>
           <input type="password" id="ec-password" class="form-input" placeholder="Enter new password if changing">
@@ -1445,6 +1711,33 @@ const Admin = (() => {
 
     try {
       await App.put(`/api/admin/users/${id}`, payload);
+
+      // Save consultant-level default billing (consultant role only)
+      if (c && c.role === 'consultant') {
+        const noneBtn = document.getElementById('ec-dbm-none');
+        const perBtn = document.getElementById('ec-dbm-per_employee');
+        const flatBtn = document.getElementById('ec-dbm-flat_fee');
+        if (noneBtn || perBtn || flatBtn) {
+          let chosenMode = null;
+          if (perBtn && perBtn.className.includes('btn-primary')) chosenMode = 'per_employee';
+          else if (flatBtn && flatBtn.className.includes('btn-primary')) chosenMode = 'flat_fee';
+          // null = no default (noneBtn selected)
+
+          let dbmPayload = { default_billing_mode: chosenMode, default_flat_fee_per_establishment: null };
+          if (chosenMode === 'flat_fee') {
+            const amountInput = document.getElementById('ec-dbm-flat-amount');
+            const val = amountInput ? amountInput.value.trim() : '';
+            const flat = val === '' ? NaN : parseFloat(val);
+            if (!Number.isFinite(flat) || flat <= 0) {
+              App.toast('Enter a valid flat fee amount for the consultant default.', 'error');
+              return;
+            }
+            dbmPayload.default_flat_fee_per_establishment = flat;
+          }
+          await App.put(`/api/admin/users/${id}/default-billing`, dbmPayload);
+        }
+      }
+
       App.toast('User profile updated successfully');
       App.closeModal();
       const container = document.getElementById('content');
@@ -1452,6 +1745,27 @@ const Admin = (() => {
     } catch (e) {
       // Handled
     }
+  }
+
+  function setConsultantDefaultBillingChoice(mode) {
+    const noneBtn = document.getElementById('ec-dbm-none');
+    const perBtn = document.getElementById('ec-dbm-per_employee');
+    const flatBtn = document.getElementById('ec-dbm-flat_fee');
+    const noneNote = document.getElementById('ec-dbm-none-note');
+    const perNote = document.getElementById('ec-dbm-per-note');
+    const flatFields = document.getElementById('ec-dbm-flat-fields');
+    if (!noneBtn && !perBtn && !flatBtn) return;
+    if (noneBtn) noneBtn.className = `btn ${mode === 'none' ? 'btn-primary' : 'btn-ghost'} btn-sm`;
+    if (perBtn) perBtn.className = `btn ${mode === 'per_employee' ? 'btn-primary' : 'btn-ghost'} btn-sm`;
+    if (flatBtn) flatBtn.className = `btn ${mode === 'flat_fee' ? 'btn-primary' : 'btn-ghost'} btn-sm`;
+    if (noneNote) noneNote.style.display = mode === 'none' ? 'block' : 'none';
+    if (perNote) perNote.style.display = mode === 'per_employee' ? 'block' : 'none';
+    if (flatFields) flatFields.style.display = mode === 'flat_fee' ? 'block' : 'none';
+  }
+
+  function pickConsultantFlatFeePreset(amount) {
+    const input = document.getElementById('ec-dbm-flat-amount');
+    if (input) input.value = amount;
   }
 
   function confirmDeleteConsultant(id, name) {
@@ -1520,9 +1834,11 @@ const Admin = (() => {
               : (res.user.custom_rate_per_employee ? `₹${res.user.custom_rate_per_employee}/emp (${res.user.role === 'employer' ? 'Employer' : 'Consultant'} Rate)` : `₹10/emp (Global Default)`);
 
             const isFlat = e.billing_mode === 'flat_fee';
+            const isExplicit = e.billing_mode_explicit;
+            const inheritTag = !isExplicit ? ` <span style="font-size:9px; opacity:0.75;">(inherited)</span>` : ` <span style="font-size:9px; opacity:0.75;">(override)</span>`;
             const billingBadge = isFlat
-              ? `<span class="badge" style="font-size:10px; font-weight:700; background:rgba(245,158,11,0.15); color:#b45309;">Flat ₹${e.flat_fee_amount != null ? e.flat_fee_amount : '—'}</span>`
-              : (e.custom_rate_per_employee ? `<span class="badge" style="font-size:10px; font-weight:700; background:rgba(99,102,241,0.1); color:var(--primary);">Custom ₹${e.custom_rate_per_employee}/emp</span>` : `<span class="badge" style="font-size:10px; font-weight:600; color:var(--text3);">Tiered</span>`);
+              ? `<span class="badge" style="font-size:10px; font-weight:700; background:rgba(245,158,11,0.15); color:#b45309;" title="${isExplicit ? 'Explicitly set for this establishment' : 'Inherited from consultant default'}">Flat ₹${e.flat_fee_amount != null ? e.flat_fee_amount : '—'}${inheritTag}</span>`
+              : (e.custom_rate_per_employee ? `<span class="badge" style="font-size:10px; font-weight:700; background:rgba(99,102,241,0.1); color:var(--primary);">Custom ₹${e.custom_rate_per_employee}/emp</span>` : `<span class="badge" style="font-size:10px; font-weight:600; color:var(--text3);">Tiered${!isExplicit && res.user.default_billing_mode === 'per_employee' ? inheritTag : ''}</span>`);
 
             return `
               <div class="card" style="display:flex; flex-direction:column; justify-content:space-between; padding:18px; border:1px solid var(--card-border); border-radius:var(--radius); background:var(--card); box-shadow:var(--shadow);">
@@ -1540,10 +1856,10 @@ const Admin = (() => {
 
                   <div style="font-size:11px; color:var(--text3); margin-bottom:4px;">Coverage Date: <strong>${App.esc(e.coverage_date || '—')}</strong></div>
                   <div style="font-size:11px; color:var(--text2); margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
-                    <span>Billing: <strong>${isFlat ? `Flat ₹${e.flat_fee_amount != null ? e.flat_fee_amount : '—'}/month` : effectiveRateDisplay}</strong></span>
+                    <span>Billing: <strong>${isFlat ? `Flat ₹${e.flat_fee_amount != null ? e.flat_fee_amount : '—'}/month${!isExplicit ? ` <span style="color:var(--text3); font-weight:400;">(inherited from ${App.esc(res.user.name)}'s default)</span>` : ` <span style="color:var(--text3); font-weight:400;">(explicitly set)</span>`}` : effectiveRateDisplay}</strong></span>
                     <div style="display:flex; gap:4px;">
                       ${!isFlat ? `<button class="btn btn-ghost btn-sm" style="padding:2px 6px; font-size:11px;" onclick="Admin.showEditEstablishmentModal(${e.id}, '${App.esc(e.name)}', '${App.esc(e.code)}', ${e.custom_rate_per_employee != null ? e.custom_rate_per_employee : 'null'})" title="Override Rate for this Establishment">✏️ Edit Rate</button>` : ''}
-                      <button class="btn btn-ghost btn-sm" style="padding:2px 6px; font-size:11px;" onclick="Admin.showManageBillingModal(${e.id}, '${App.esc(e.name)}', '${App.esc(e.code)}', '${e.billing_mode || 'per_employee'}', ${e.flat_fee_amount != null ? e.flat_fee_amount : 'null'})" title="Switch between Per Employee and Flat Fee billing">⚙️ Manage Billing</button>
+                      <button class="btn btn-ghost btn-sm" style="padding:2px 6px; font-size:11px;" onclick="Admin.showManageBillingModal(${e.id}, '${App.esc(e.name)}', '${App.esc(e.code)}', '${e.billing_mode_own || ''}', ${e.flat_fee_amount_own != null ? e.flat_fee_amount_own : 'null'}, ${e.billing_mode_explicit}, '${App.esc(res.user.name)}', '${res.user.default_billing_mode || ''}', ${res.user.default_flat_fee_per_establishment != null ? res.user.default_flat_fee_per_establishment : 'null'})" title="Switch between Per Employee and Flat Fee billing">⚙️ Manage Billing</button>
                     </div>
                   </div>
                   <div style="font-size:11px; color:var(--text2); margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
@@ -2288,20 +2604,66 @@ const Admin = (() => {
     if (input) input.value = amount;
   }
 
-  function showManageBillingModal(estId, estName, estCode, currentMode, currentFlatAmount) {
+  function showManageBillingModal(estId, estName, estCode, ownMode, ownFlatAmount, isExplicit, consultantName, consultantDefaultMode, consultantDefaultFlat) {
+    // ownMode = establishment's own raw billing_mode ('' / null = inheriting)
+    // isExplicit = boolean: does this establishment have its own override?
+    const displayMode = ownMode || 'per_employee';  // for the form toggle UI starting state
+    const displayFlat = ownFlatAmount;
+
+    let inheritanceBannerHtml = '';
+    if (!isExplicit && consultantName) {
+      const consultantDefault = consultantDefaultMode === 'flat_fee'
+        ? `Flat ₹${consultantDefaultFlat != null ? consultantDefaultFlat : '—'}/establishment`
+        : consultantDefaultMode === 'per_employee'
+          ? 'Per Employee (tiered)'
+          : 'None (global tiered rate)';
+      inheritanceBannerHtml = `
+        <div style="margin-bottom:12px; padding:10px 12px; background:rgba(99,102,241,0.06); border:1px solid rgba(99,102,241,0.2); border-radius:var(--radius-sm); font-size:12px;">
+          <div style="font-weight:700; color:var(--primary); margin-bottom:3px;">Currently inheriting from consultant default</div>
+          <div style="color:var(--text2);">Consultant <strong>${App.esc(consultantName)}</strong> has default: <strong>${App.esc(consultantDefault)}</strong></div>
+          <div style="color:var(--text3); margin-top:4px;">Set an explicit mode below to override for this establishment only, or keep as-is to stay inherited.</div>
+        </div>`;
+    } else if (isExplicit) {
+      inheritanceBannerHtml = `
+        <div style="margin-bottom:12px; padding:10px 12px; background:rgba(245,158,11,0.07); border:1px solid rgba(245,158,11,0.25); border-radius:var(--radius-sm); font-size:12px;">
+          <div style="font-weight:700; color:#b45309; margin-bottom:3px;">Explicitly overridden for this establishment</div>
+          <div style="color:var(--text2);">This establishment has its own billing mode that ignores ${consultantName ? `${App.esc(consultantName)}'s consultant default` : 'the consultant default'}.</div>
+        </div>`;
+    }
+
     const bodyHtml = `
       <form id="manage-billing-form" onsubmit="event.preventDefault(); Admin.saveBillingMode(${estId});">
-        ${billingModeFormHtml(currentMode, currentFlatAmount)}
+        ${inheritanceBannerHtml}
+        ${billingModeFormHtml(ownMode ? displayMode : 'per_employee', displayFlat)}
         <div style="font-size:11px; color:var(--text3); margin-top:6px;">
           Switching modes only affects future (still-unpaid) months — already-billed/paid months keep the amount they were actually charged.
         </div>
       </form>
     `;
+    const resetBtn = (isExplicit && consultantName)
+      ? `<button class="btn btn-ghost" style="color:var(--text2); margin-right:auto;" onclick="Admin.resetBillingToInherit(${estId}, '${App.esc(consultantName)}')">↩ Reset to Consultant Default</button>`
+      : '';
     const footerHtml = `
+      ${resetBtn}
       <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="Admin.saveBillingMode(${estId})">Save Billing Mode</button>
     `;
     App.openModal(`Manage Billing Mode: ${App.esc(estName)}`, bodyHtml, footerHtml);
+  }
+
+  async function resetBillingToInherit(estId, consultantName) {
+    App.confirm(`Reset this establishment's billing mode back to inherit from <strong>${App.esc(consultantName)}</strong>'s consultant default?<br><br><span style="font-size:12px; color:var(--text2);">The establishment's own explicit override will be cleared. Future fees will be calculated from the consultant's default going forward.</span>`, async () => {
+      try {
+        await App.put(`/api/admin/establishments/${estId}/billing-mode`, { billing_mode: 'inherit', flat_fee_amount: null });
+        App.toast('Billing reset — establishment now inherits from consultant default');
+        App.closeModal();
+        if (currentSelectedConsultant) {
+          showConsultantEstablishments(currentSelectedConsultant.id);
+        }
+      } catch (e) {
+        // Handled
+      }
+    });
   }
 
   async function saveBillingMode(estId) {
@@ -2598,6 +2960,9 @@ const Admin = (() => {
     setBillingModeChoice,
     pickFlatFeePreset,
     saveBillingMode,
+    resetBillingToInherit,
+    setConsultantDefaultBillingChoice,
+    pickConsultantFlatFeePreset,
     showAddEstablishmentForUserModal,
     saveNewEstablishmentForUser,
     onSignupStatusFilterChange,
@@ -2631,6 +2996,12 @@ const Admin = (() => {
     debounceSubPaymentsSearch,
     resetSubPaymentsFilters,
     showSubPaymentDetail,
+    goToPaymentVerPage,
+    onPaymentVerFilterChange,
+    approvePaymentVerification,
+    confirmRejectPaymentVerification,
+    rejectPaymentVerification,
+    saveUPISettings,
     onFeatureFlagToggle,
     onRolePermissionToggle,
     confirmSaveRolePermissions,

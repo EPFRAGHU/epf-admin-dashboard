@@ -27,6 +27,8 @@ class User(Base):
     role = Column(String(50), nullable=False, default="consultant")  # 'superadmin', 'consultant', or 'employer'
     max_establishments = Column(Integer, nullable=True)  # Employer establishment cap; null = unlimited (always null for consultant/superadmin)
     custom_rate_per_employee = Column(Float, nullable=True)  # Nullable rate override (₹/emp)
+    default_billing_mode = Column(String(20), nullable=True)  # 'per_employee' | 'flat_fee' | null (no consultant-level default). Consultant role only; superadmin-set only.
+    default_flat_fee_per_establishment = Column(Float, nullable=True)  # ₹/month, only meaningful when default_billing_mode='flat_fee'
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -45,8 +47,8 @@ class Establishment(Base):
     custom_rate_per_employee = Column(Float, nullable=True)  # Nullable rate override (₹/emp)
     advance_credit_balance = Column(Float, nullable=False, default=0.0)  # Prepaid subscription credit (₹), auto-applied to future months
     trial_ends_on = Column(Date, nullable=True)  # Null = no trial (normal enforcement). Superadmin-set only.
-    billing_mode = Column(String(20), nullable=False, default="per_employee")  # 'per_employee' | 'flat_fee'. Superadmin-set only.
-    flat_fee_amount = Column(Float, nullable=True)  # ₹/month, only meaningful when billing_mode='flat_fee'
+    billing_mode = Column(String(20), nullable=True)  # 'per_employee' | 'flat_fee' | null. Null means "inherit consultant's default_billing_mode, or global default if consultant has none set." Superadmin-set only. See resolve_billing_mode().
+    flat_fee_amount = Column(Float, nullable=True)  # ₹/month, only meaningful when billing_mode='flat_fee'. Null when inheriting.
     data = Column(Text, nullable=False, default="{}")  # Serialized Project JSON
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -74,6 +76,10 @@ class Payment(Base):
 
 class SubscriptionFee(Base):
     __tablename__ = "subscription_fees"
+    # payment_status: 'unpaid' | 'pending_verification' | 'paid'
+    # submitted_utr / submitted_by / submitted_at — set on POST submit-utr
+    # verified_by / verified_at — set on approve
+    # rejection_reason — set on reject, cleared on resubmit
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     establishment_id = Column(Integer, ForeignKey("establishments.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -89,6 +95,13 @@ class SubscriptionFee(Base):
     notes = Column(Text, nullable=True)
     cashfree_order_id = Column(String(120), nullable=True, index=True)  # Cashfree Payment Link's link_id ("sub_..."), while a link is outstanding
     cashfree_payment_link_url = Column(Text, nullable=True)
+    payment_status = Column(String(30), nullable=False, default="unpaid")  # 'unpaid' | 'pending_verification' | 'paid'
+    submitted_utr = Column(String(255), nullable=True)   # UTR entered by the consultant/employer
+    submitted_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    submitted_at = Column(DateTime(timezone=True), nullable=True)
+    verified_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    rejection_reason = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

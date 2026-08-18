@@ -6,7 +6,7 @@ Welcome to the **EPF Admin Dashboard & Statutory Management System** repository.
 
 ## 📌 Table of Contents
 1. [Overview & Architecture](#overview--architecture)
-2. [Chronological Version Progression (v1.0.0 → v1.6.0)](#chronological-version-progression-v100--v160)
+2. [Chronological Version Progression (v1.0.0 → v1.8.0)](#chronological-version-progression-v100--v180)
 3. [Key Modules & Capabilities](#key-modules--capabilities)
    - [1. Establishment Management](#1-establishment-management)
    - [2. Employee Master & UAN Validation](#2-employee-master--uan-validation)
@@ -16,11 +16,13 @@ Welcome to the **EPF Admin Dashboard & Statutory Management System** repository.
    - [6. Statutory Reports & Direct PDF Generation](#6-statutory-reports--direct-pdf-generation)
    - [7. EPFO v3.0 ECR File Generator](#7-epfo-v30-ecr-file-generator)
    - [8. Employee Wage History Report](#8-employee-wage-history-report)
-4. [Statutory Calculation Rules & Formulas](#statutory-calculation-rules--formulas)
-5. [UI / UX Design & Left Sidebar Version Tracker](#ui--ux-design--left-sidebar-version-tracker)
-6. [Technology Stack & System Requirements](#technology-stack--system-requirements)
-7. [Installation & Deployment](#installation--deployment)
-8. [Changelog & Conversation Record](#changelog--conversation-record)
+   - [9. Consultant Default Billing Inheritance](#9-consultant-default-billing-inheritance)
+4. [Billing Mode Resolution Logic](#billing-mode-resolution-logic)
+5. [Statutory Calculation Rules & Formulas](#statutory-calculation-rules--formulas)
+6. [UI / UX Design & Left Sidebar Version Tracker](#ui--ux-design--left-sidebar-version-tracker)
+7. [Technology Stack & System Requirements](#technology-stack--system-requirements)
+8. [Installation & Deployment](#installation--deployment)
+9. [Git Auto-Sync Protocol](#git-auto-sync-protocol)
 
 ---
 
@@ -29,132 +31,147 @@ Welcome to the **EPF Admin Dashboard & Statutory Management System** repository.
 The **EPF Admin Dashboard** is a cloud-ready, full-stack statutory compliance platform tailored for Indian Employees' Provident Fund (EPFO) compliance. It processes multi-year establishment data, calculates statutory contributions across Pre-1997 and Post-1997 schemes, and renders official, pixel-perfect government returns (Form 3A, Form 6A, Form 12A, Form 9, Form 5, Form 10, and ECR v3.0).
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                   Web UI (Vanilla JS & CSS)                 │
-│  - Dashboard & Charts   - Employee Master  - Wage Grid      │
-│  - Challans (Form 12A)  - Reports & PDFs   - Version Modal  │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ HTTP / JSON API
-┌──────────────────────────────▼──────────────────────────────┐
-│                    FastAPI Server Backend                   │
-│                     (webapp/app.py v1.6.0)                  │
-└──────────────┬───────────────────────────────┬──────────────┘
-               │                               │
-┌──────────────▼──────────────┐ ┌──────────────▼──────────────┐
-│     EPF Statutory Engine    │ │   Direct ReportLab Engine   │
-│       (epf_engine.py)       │ │  - Form 3A, 6A, 12A, 9, 5   │
-│ - Pre/Post 1997 Rules       │ │  - ECR v3.0 Text Generator  │
-│ - Zero-wage filtering       │ │  - Wage History PDF         │
-│ - Whole Rupee Integer Math  │ └─────────────────────────────┘
-└──────────────┬──────────────┘
-               │
-┌──────────────▼──────────────────────────────────────────────┐
-│                     Persistence Layer                       │
-│ - Supabase / PostgreSQL (Render Cloud Deployment)           │
-│ - Local JSON Project Files (*.epfproj.json fallback)        │
-└─────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------+
+|                   Web UI (Vanilla JS & CSS)                 |
+|  - Dashboard & Charts   - Employee Master  - Wage Grid      |
+|  - Challans (Form 12A)  - Reports & PDFs   - Version Modal  |
+|  - Admin Panel (Superadmin) -- Consultant & Billing Mgmt    |
++------------------------------+------------------------------+
+                               | HTTP / JSON API
++------------------------------v------------------------------+
+|                    FastAPI Server Backend                   |
+|                     (webapp/app.py v1.8.0)                  |
++--------------+-------------------------------+--------------+
+               |                               |
++--------------v--------------+ +--------------v--------------+
+|     EPF Statutory Engine    | |   Direct ReportLab Engine   |
+|       (epf_engine.py)       | |  - Form 3A, 6A, 12A, 9, 5   |
+| - Pre/Post 1997 Rules       | |  - ECR v3.0 Text Generator  |
+| - Zero-wage filtering       | |  - Wage History PDF         |
+| - Whole Rupee Integer Math  | +-----------------------------+
++--------------+--------------+
+               |
++--------------v--------------------------------------------------+
+|              Billing & Subscription Layer                       |
+| - resolve_billing_mode(): est -> consultant default -> global   |
+| - Consultant default_billing_mode / default_flat_fee cols       |
+| - Establishment billing_mode nullable (null = inherit)          |
+| - Cashfree Payment Links, Advance Credits, Webhooks             |
++--------------+--------------------------------------------------+
+               |
++--------------v--------------------------------------------------+
+|                     Persistence Layer                           |
+| - Supabase / PostgreSQL (Render Cloud Deployment)               |
+| - Local JSON Project Files (*.epfproj.json fallback)            |
++-----------------------------------------------------------------+
 ```
 
 ---
 
-## ⏱️ Chronological Version Progression (v1.0.0 → v1.7.0)
+## ⏱️ Chronological Version Progression (v1.0.0 → v1.8.0)
 
-| Version | Date & Time (IST) | Status / Badge | Major Milestones & Highlights |
+| Version | Date (IST) | Status | Major Milestones |
 | :--- | :--- | :--- | :--- |
-| **v1.7.0** | **15-08-2026 23:50** | **Present / Latest** | **Software Subscription Billing, Cashfree Payments & Statutory Calc Fixes**<br>• Fixed A/C 1 (EPF) miscalculation on the Challans page that double-subtracted the EPS/pension share, and an A/C 22 (EDLI Admin) bug that applied the pre-2017 ₹200 minimum charge to post-2017 months where the rate is legally 0%.<br>• Added Gross/EPF/EPS/EDLI wage breakdown columns to the Challans Remittance Entries table, sourced from the same calculation path as the Dashboard so the two pages can never drift apart.<br>• New per-establishment, per-month Software Subscription Fee tracker (separate from EPF statutory payments) with 3-tier rate resolution (establishment override → consultant override → global default), download-gating on unpaid/overdue months, and a superadmin Subscription Payments ledger across all consultants.<br>• Advance Credit system: consultants can prepay a lump sum that auto-applies to future months' fees as wage data arrives, with its own ledger and consultant-facing Subscription History page (per establishment, showing paid months and top-ups with full Cashfree payment details).<br>• Real Cashfree Payment Links integration for both per-month subscription fees and advance-credit top-ups — webhook-confirmed with signature verification, plus a `return_url` flow that brings the consultant back into the app with a live payment-status check after checkout.<br>• Employee Wage History report redesigned to show a full EE/ER/EPS contribution breakdown per month (not just gross wages), grouped per financial year, with a matching server-side ReportLab PDF export (repeating page headers, page numbers, and correct multi-page pagination that never splits a year's figures across a page break).<br>• Global default subscription rate lowered from ₹20 to ₹10 per employee/month. |
-| **v1.6.0** | 14-08-2026 04:47 | Stable | **Zero-Wage Auto-Filter, Rupee Integer Formatting & Live Version Tracking**<br>• Form 3A & Form 6A automatically filter out 0 total wage employees from statutory reports without altering PDF grid integrity.<br>• Wages and statutory contributions strictly rendered and saved as whole rupee integers with zero decimal artifacts (`.0` removed).<br>• Live Version Progression tracking in the left side panel with complete chronological timeline from project start to present time.<br>• Requirements & dependencies synced for Render cloud deployment with ReportLab & Pandas native acceleration. |
-| **v1.5.0** | 14-08-2026 02:55 | High Performance | **Direct ReportLab Native PDF Engine & EPFO v3.0 ECR Generator**<br>• High-speed native ReportLab PDF generator replacing external LibreOffice and pywin32 desktop dependencies.<br>• Form 3A, Form 6A, Form 12A, Form 9, Form 5, and Form 10 exact statutory pixel-perfect table layouts with A4 landscape auto-wrap.<br>• Integrated ECR text file generator conforming strictly to EPFO v3.0 format with Higher EPF split.<br>• Form 12A Grand Total row span, TRRN/CRRN proximity formatting, and tight vertical spacing. |
-| **v1.4.0** | 13-08-2026 23:55 | Major Feature | **Statutory Forms Compliance & Form 12A Challan Remittances**<br>• Multi-challan remittance support with 12-month static Form 12A Challan Management Grid.<br>• Auto-calculation for Account 2 (Admin Charges), Account 21 (EDLI), and Account 22 (EDLI Admin Charges).<br>• Repeating establishment headers on Form 9 and Form 6A with dynamic page footers and landscape fitting.<br>• Light theme UI styling propagated across all dashboard views, modals, and tables. |
-| **v1.3.0** | 13-08-2026 11:56 | Feature Update | **Employee Wage History & Multi-Year Tabular Analytics**<br>• Comprehensive Employee Wage History report with year-wise tabular data across all financial years.<br>• Direct Print-to-PDF functionality with custom establishment header and clean tabular formatting.<br>• Individual Employee 📄 3A instant card download from Wage Entry.<br>• Higher EPF (EE and ER) contribution split support and dynamic wage ceiling handling. |
-| **v1.2.0** | 13-08-2026 01:26 | Major Feature | **Monthly Wage Grid & Interactive Dashboards**<br>• Monthly bulk wage entry modal with previous month auto-copying and NCP work-days calculation.<br>• Interactive Month-wise Dashboard summaries, charts, and statutory distribution breakdowns.<br>• Global pagination across large employee datasets and superannuation age 58 tracking.<br>• Dynamic month selection defaulting to previous calendar month with March fallback. |
-| **v1.1.0** | 12-08-2026 09:15 | Feature Update | **Multi-Sheet Excel Importer & Mandatory 12-Digit UAN**<br>• Bulk import multi-year Excel spreadsheets simultaneously with automatic financial year creation.<br>• Automatic Employee Master extraction and population (DOB, DOJ, DOE, Father Name, Gender).<br>• Mandatory 12-digit UAN validation and member ID establishment code verification.<br>• Robust file path checking on first save to prevent project data corruption. |
-| **v1.0.0** | 11-08-2026 23:12 | Project Inception | **Project Inception & Core Statutory Engine**<br>• Initial repository setup and cloud-ready FastAPI backend architecture.<br>• Core EPF statutory computation engine supporting Pre-1997 and Post-1997 contribution rules.<br>• Multi-establishment database management with PostgreSQL/Supabase and local JSON fallback synchronization.<br>• Standard Form 3A and Form 6A annual return generation foundations. |
+| **v1.8.0** | **18-08-2026** | **Present** | **Consultant-Level Default Billing Inheritance Layer** — `User.default_billing_mode` + `User.default_flat_fee_per_establishment` columns on consultant accounts; `Establishment.billing_mode` nullable (`null` = inherit, existing explicit values preserved); central `resolve_billing_mode()` helper (est → consultant default → global tiered); `PUT /api/admin/users/{user_id}/default-billing` endpoint (superadmin-only, validates mode, ActivityLog old→new); `billing_mode='inherit'` accepted on establishment endpoint to clear override; consultant edit modal adds 3-way toggle (No Default / Per Employee / Flat Fee) with ₹200/₹300/₹400/₹500 presets + custom input; establishment cards show `(inherited)` vs `(override)` badge; Manage Billing Modal shows blue/amber banners + "↩ Reset to Consultant Default" footer button; `GET /api/admin/users/{user_id}/establishments` enriched with `billing_mode_explicit`, `billing_mode_own`, `flat_fee_amount_own` per establishment and `default_billing_mode` / `default_flat_fee_per_establishment` on the `user` object. |
+| **v1.7.0** | 15-08-2026 | Stable | **Subscription Billing, Cashfree Payments & Calc Fixes** — Fixed A/C 1 double-subtracted EPS share and A/C 22 post-2017 ₹200 minimum bug; Gross/EPF/EPS/EDLI breakdown columns in Challan Remittance table; per-establishment per-month Software Subscription Fee tracker with 3-tier rate resolution and download-gating; Advance Credit prepay system with consultant-facing Subscription History; Cashfree Payment Links (webhook-confirmed, signature-verified); Wage History redesigned with EE/ER/EPS per month + ReportLab PDF export; global default rate ₹10/employee/month. |
+| **v1.6.0** | 14-08-2026 | Stable | **Zero-Wage Filter, Integer Formatting & Version Tracking** — Form 3A/6A auto-filter 0-wage employees; all contributions as whole rupees; live Version Progression card in sidebar with interactive history modal. |
+| **v1.5.0** | 14-08-2026 | High Perf | **Native ReportLab PDF Engine & ECR v3.0** — Replaces LibreOffice/pywin32; Form 3A/6A/12A/9/5/10 statutory layouts; ECR v3.0 text generator. |
+| **v1.4.0** | 13-08-2026 | Major | **Form 12A Challan Remittances** — Multi-challan support; A/C 2/21/22 auto-calc; repeating headers on Form 9 & 6A; light theme. |
+| **v1.3.0** | 13-08-2026 | Update | **Employee Wage History** — Cross-year report; Print-to-PDF; Higher EPF split. |
+| **v1.2.0** | 13-08-2026 | Major | **Monthly Wage Grid & Dashboards** — Bulk entry modal; previous month copy; NCP; charts; pagination. |
+| **v1.1.0** | 12-08-2026 | Update | **Excel Importer & UAN Validation** — Multi-year Excel import; Employee Master auto-extraction; 12-digit UAN validation. |
+| **v1.0.0** | 11-08-2026 | Inception | **Core Statutory Engine** — FastAPI backend; Pre/Post 1997 EPF computation; PostgreSQL + JSON persistence; Form 3A/6A foundations. |
 
 ---
 
 ## ⚙️ Key Modules & Capabilities
 
 ### 1. Establishment Management
-- Create, modify, switch, and back up multiple establishments.
-- Supports Establishment Name, Establishment Code, Address, Extension / Sub-code, and Scheme Selection.
-- Cloud persistence via Supabase PostgreSQL, synchronized with local JSON backups.
+- Create, modify, switch, and back up multiple establishments (Name, Code, Address, Extension/Sub-code, Scheme).
+- Cloud persistence via Supabase PostgreSQL + local JSON backup.
+- Per-establishment billing mode: `per_employee` (tiered), `flat_fee` (₹/month fixed), or `null` to inherit from consultant default.
 
 ### 2. Employee Master & UAN Validation
-- Centralized Employee Master maintaining:
-  - Full Name, Father's / Husband's Name, Gender, Date of Birth (DOB).
-  - Date of Joining (DOJ), Date of Exit (DOE), Reason for Leaving.
-  - Member ID / PF Account Number and **Mandatory 12-Digit Universal Account Number (UAN)**.
-- Superannuation tracking (identifies members reaching Age 58 to cease EPS contributions as per EPFO statutory guidelines).
+- Full Name, Father's/Husband's Name, Gender, DOB, DOJ, DOE, Reason for Leaving, Member ID, **mandatory 12-digit UAN**.
+- Superannuation tracking (age 58 — cease EPS as per EPFO guidelines).
 
 ### 3. Financial Years & Ceiling Rules
-- Flexible financial year configuration (e.g. 2024-2025, 2025-2026).
-- Statutory wage ceilings automatically applied according to historical EPF limits:
-  - ₹15,000 ceiling (Post-01/09/2014)
-  - ₹6,500 ceiling (01/06/2001 to 31/08/2014)
-  - ₹5,000 ceiling (01/10/1997 to 31/05/2001)
+- Flexible financial year config. Statutory wage ceilings auto-applied:
+  - ₹15,000 (post 01/09/2014)
+  - ₹6,500 (01/06/2001 – 31/08/2014)
+  - ₹5,000 (01/10/1997 – 31/05/2001)
 
 ### 4. Monthly Wage Entry & NCP Tracking
-- Tabular wage entry with 12 months (March to February / April to March sequence).
-- Auto-calculation of:
-  - EPF Wages, EPS Wages, EDLI Wages.
-  - Employee Contribution (12%).
-  - Employer EPS Contribution (8.33% up to ceiling).
-  - Employer EPF Contribution (Balance 3.67% or full contribution if exempt/over-age).
-  - Higher EPF Voluntary Employee and Employer splits.
-  - Non-Contributory Period (NCP Days) and Refund of Advances.
-- Instant "Copy from Previous Month" and "Add Employee by UAN" features.
+- 12-month tabular entry. Auto-calculates EPF/EPS/EDLI wages, EE/ER contributions, Higher EPF voluntary splits, NCP Days, Refund of Advances.
+- "Copy from Previous Month" and "Add Employee by UAN" helpers.
 
 ### 5. Challan Remittances & Form 12A Grid
-- Static 12-month Form 12A Challan Management Grid.
-- Automatic computation of statutory administrative and insurance accounts:
-  - **Account 1**: EPF Contributions (EE + ER)
-  - **Account 2**: EPF Administrative Charges (0.50% of EPF wages, min ₹500/₹75)
-  - **Account 10**: EPS Contributions (8.33%)
-  - **Account 21**: EDLI Contribution (0.50% of EDLI wages)
-  - **Account 22**: EDLI Administrative Charges (0.00% / min ₹200)
-- Multi-challan remittance support with TRRN, CRRN, Payment Date, Amount Paid, and Bank Name.
+- 12-month static Form 12A grid. Auto-computes A/C 1 (EPF), A/C 2 (Admin), A/C 10 (EPS), A/C 21 (EDLI), A/C 22 (EDLI Admin).
+- Multi-challan support: TRRN, CRRN, Payment Date, Amount, Bank Name.
 
 ### 6. Statutory Reports & Direct PDF Generation
-Powered by direct, high-performance ReportLab rendering (no external office software required):
-- **Form 3A**: Individual Member's Annual Contribution Card (filters out zero-wage records; renders whole rupee numbers).
-- **Form 6A**: Consolidated Annual Statement showing total wages, contributions, and account breakdowns.
-- **Form 12A**: Statement of Remittances showing month-wise statutory dues vs. actual remittances.
-- **Form 9**: Statutory Register of Employees qualifying for membership (with repeating headers and landscape flow).
+- **Form 3A**: Individual Annual Member Statement (whole rupee).
+- **Form 6A**: Consolidated Annual Statement.
+- **Form 12A**: Statement of Remittances (dues vs. remittances).
+- **Form 9**: Statutory Register of Members (repeating headers, landscape).
 - **Form 5 & Form 10**: New Joinees & Exited Employees monthly returns.
 
 ### 7. EPFO v3.0 ECR File Generator
-- Generates official `#~#` delimited Electronic Challan cum Return (ECR) text files compliant with EPFO Unified Portal v3.0.
-- Fields mapped: `UAN#~#Member_Name#~#Gross_Wages#~#EPF_Wages#~#EPS_Wages#~#EDLI_Wages#~#EE_Share#~#EPS_Share#~#ER_Share#~#NCP_Days#~#Refund_Advances`.
+- Official `#~#`-delimited ECR files compliant with EPFO Unified Portal v3.0.
+- Fields: `UAN#~#Member_Name#~#Gross_Wages#~#EPF_Wages#~#EPS_Wages#~#EDLI_Wages#~#EE_Share#~#EPS_Share#~#ER_Share#~#NCP_Days#~#Refund_Advances`.
 
 ### 8. Employee Wage History Report
-- Comprehensive cross-year employee ledger displaying year-by-year wages, contributions, and months worked.
-- Search by UAN, Member ID, or Name with instant Print-to-PDF functionality.
+- Cross-year ledger: EE/ER/EPS contributions per month grouped by financial year.
+- Search by UAN, Member ID, or Name. Browser Print-to-PDF + server-side ReportLab PDF (repeating headers, pagination).
+
+### 9. Consultant Default Billing Inheritance
+- Consultant sets one default billing mode → applied to all their establishments unless individually overridden.
+- `establishment.billing_mode = null` = inherit (no per-establishment row needed).
+- `PUT /api/admin/users/{user_id}/default-billing` — superadmin sets consultant default.
+- `PUT /api/admin/establishments/{id}/billing-mode` with `billing_mode='inherit'` — clears override.
+- Admin UI: `(inherited)` (indigo) vs `(override)` (amber) badge per establishment card; Manage Billing Modal shows contextual banners + one-click reset button.
+
+---
+
+## 💳 Billing Mode Resolution Logic
+
+```
+resolve_billing_mode(establishment, consultant_user)
+
+1. establishment.billing_mode IS NOT NULL  →  use establishment explicit mode + flat_fee_amount
+2. consultant.default_billing_mode IS NOT NULL  →  use consultant default + default_flat_fee_per_establishment
+3. Fallback  →  per_employee (global tiered rate)
+```
+
+**Per-employee tiers (global default, configurable by superadmin):**
+
+| Employees | Rate |
+| :--- | :--- |
+| 1 – 10 | ₹10/employee/month |
+| 11 – 25 | ₹8/employee/month |
+| 26+ | ₹6/employee/month |
 
 ---
 
 ## 📐 Statutory Calculation Rules & Formulas
 
-1. **Employee EPF Contribution (Account 1)**:
-   $$\text{EE EPF} = \text{round}\left(\text{EPF Wages} \times 12\%\right)$$
-2. **Employer EPS Contribution (Account 10)**:
-   $$\text{EPS Wages} = \min(\text{Actual Wages}, \text{Statutory Ceiling})$$
-   $$\text{ER EPS} = \text{round}\left(\text{EPS Wages} \times 8.33\%\right) \quad (\text{if Age} < 58)$$
-3. **Employer EPF Contribution (Account 1)**:
-   $$\text{ER EPF} = \text{round}\left(\text{EPF Wages} \times 12\%\right) - \text{ER EPS}$$
-4. **EDLI Contribution (Account 21)**:
-   $$\text{ER EDLI} = \text{round}\left(\min(\text{Actual Wages}, \text{Statutory Ceiling}) \times 0.50\%\right)$$
-5. **EPF Admin Charges (Account 2)**:
-   $$\text{Admin Charges} = \max\left(\text{round}\left(\text{Total EPF Wages} \times 0.50\%\right), \text{Minimum Charge}\right)$$
+1. **Employee EPF (A/C 1):** `round(EPF_Wages × 12%)`
+2. **Employer EPS (A/C 10):** `EPS_Wages = min(Actual_Wages, Ceiling)` → `round(EPS_Wages × 8.33%)` (age < 58)
+3. **Employer EPF (A/C 1):** `round(EPF_Wages × 12%) − ER_EPS`
+4. **EDLI (A/C 21):** `round(min(Actual_Wages, Ceiling) × 0.50%)`
+5. **EPF Admin (A/C 2):** `max(round(Total_EPF_Wages × 0.50%), Minimum_Charge)`
 
 ---
 
 ## 🎨 UI / UX Design & Left Sidebar Version Tracker
 
-- **Clean EPFO Theme**: Soft neutral surfaces (`#f8fafc`), clean borders (`#e2e8f0`), and accessible high-contrast typography.
-- **Left Sidebar Version Card**:
-  - Live Present Version indicator: `v1.6.0` with `Present` badge.
-  - Project timeline span: `11-08-2026 → 14-08-2026`.
-  - Clickable `📜 View Version History` button opening the complete interactive modal with timeline cards, milestones, timestamps, and feature lists.
+- **Clean EPFO Theme**: Soft neutral surfaces (`#f8fafc`), clean borders (`#e2e8f0`), accessible high-contrast typography.
+- **Left Sidebar Version Card**: `v1.8.0` Present badge; timeline `11-08-2026 → 18-08-2026`; `📜 View Version History` opens interactive modal with timeline cards and feature lists.
+- **Admin Panel — Consultant Default Billing UI**:
+  - 3-way toggle in consultant edit modal: **No Default** / **Per Employee** / **Flat Fee**.
+  - Quick presets: ₹200 / ₹300 / ₹400 / ₹500/establishment/month + custom amount input.
+  - Establishment billing chips: `(inherited)` indigo badge or `(override)` amber badge with tooltip.
+  - Manage Billing Modal: blue info banner (inheriting) or amber warning banner (override) + "↩ Reset to Consultant Default" button.
 
 ---
 
@@ -163,6 +180,7 @@ Powered by direct, high-performance ReportLab rendering (no external office soft
 - **Backend**: Python 3.8+, FastAPI, Uvicorn, SQLAlchemy, Pandas, ReportLab.
 - **Frontend**: HTML5, Vanilla JavaScript (ES6+), CSS3 Design System.
 - **Database**: PostgreSQL (Supabase) / JSON flat-file storage.
+- **Payments**: Cashfree Payment Gateway (Payment Links API, webhook signature verification).
 - **Dependencies**: `reportlab>=3.6.0`, `pandas>=1.5.0`, `fastapi>=0.95.0`, `uvicorn>=0.20.0`, `openpyxl>=3.0.0`.
 
 ---
@@ -176,21 +194,24 @@ git clone https://github.com/EPFRAGHU/epf-admin-dashboard.git
 cd epf-admin-dashboard
 
 # 2. Install dependencies
-pip install -r requirements.txt
+pip install -r webapp/requirements.txt
+
+# 3. Set environment variables (create a .env file, or export directly)
+# Required: DATABASE_URL, SECRET_KEY
+# Optional (feature-gated): CASHFREE_APP_ID, CASHFREE_SECRET_KEY, SUPERADMIN_EMAIL
+
+# 4. Start the server -- schema migrations run automatically on startup
+uvicorn webapp.app:app --reload --host 0.0.0.0 --port 8000
+```
 
 ### Running Automated Test Suite
-The project includes a comprehensive multi-tenant isolation, role separation, and authentication test suite:
 ```bash
-# Install development / test dependencies
 pip install -r requirements-dev.txt
-
-# Run full automated test suite with verbose output
 pytest webapp/tests/ -v
 ```
-Tests run against an isolated disposable SQLite test database (`test_epf.db`) and never touch production or cloud database instances.
+Tests run against an isolated disposable SQLite database (`test_epf.db`) — never touches production.
 
 ---
 
 ## 📜 Git Auto-Sync Protocol
 All updates, database syncs, and releases are automatically versioned, committed, and pushed to `main`.
-

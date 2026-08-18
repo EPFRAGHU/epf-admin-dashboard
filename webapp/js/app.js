@@ -189,6 +189,31 @@ const App = (() => {
 
     const modalBody = document.querySelector('#modal .modal-body');
     if (!modalBody) return;
+
+    const pending = detail.payment_status === 'pending_verification';
+    const rejected = !!detail.rejection_reason && !pending;
+
+    const statusBannerHtml = pending
+      ? `<div style="background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.35); border-radius:var(--radius-sm); padding:10px 12px; margin-bottom:16px; font-size:12px; color:var(--text1); text-align:left;">
+           ⏳ UTR <strong style="font-family:monospace;">${esc(detail.submitted_utr)}</strong> submitted — awaiting verification by the admin. This will unlock automatically once approved.
+         </div>`
+      : rejected
+        ? `<div style="background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.35); border-radius:var(--radius-sm); padding:10px 12px; margin-bottom:16px; font-size:12px; color:var(--text1); text-align:left;">
+             ✗ Your previous UTR submission was rejected: <strong>${esc(detail.rejection_reason)}</strong>. Please pay again and submit a fresh UTR.
+           </div>`
+        : '';
+
+    const paymentOptionsHtml = pending ? '' : `
+      <div id="fee-payment-action">
+        <button class="btn btn-primary" style="width:100%;" onclick="App.startFeePayment('${year}','${month}', ${detail.amount_due})">💳 Pay ₹${fmt(detail.amount_due)} via Cashfree</button>
+      </div>
+      <div style="display:flex; align-items:center; gap:10px; margin:14px 0; color:var(--text3); font-size:11px;">
+        <div style="flex:1; border-top:1px solid var(--border);"></div>OR<div style="flex:1; border-top:1px solid var(--border);"></div>
+      </div>
+      <button class="btn btn-ghost" style="width:100%;" onclick="App.showUPIFeePanel('${year}','${month}', ${detail.amount_due}, ${detail.fee_id})">📱 Pay via UPI (Manual)</button>
+      <div id="fee-upi-panel" style="margin-top:12px; text-align:left;"></div>
+    `;
+
     modalBody.innerHTML = `
       <div style="text-align:center; padding:8px;">
         <span style="font-size:40px; display:block; margin-bottom:10px;">🔒</span>
@@ -210,14 +235,67 @@ const App = (() => {
             <div style="font-size:20px; font-weight:800; color:var(--danger);">₹${fmt(detail.amount_due)}</div>
           </div>
         </div>
-        <div id="fee-payment-action">
-          <button class="btn btn-primary" style="width:100%;" onclick="App.startFeePayment('${year}','${month}', ${detail.amount_due})">💳 Pay ₹${fmt(detail.amount_due)} via Cashfree</button>
-        </div>
+        ${statusBannerHtml}
+        ${paymentOptionsHtml}
         <div id="fee-payment-status" style="margin-top:12px; font-size:12px; color:var(--text2); min-height:16px;"></div>
       </div>
     `;
     const modalFooter = document.querySelector('#modal .modal-footer');
     if (modalFooter) modalFooter.innerHTML = '<button class="btn btn-ghost" onclick="App.closeModal()">Close</button>';
+
+    if (pending) {
+      const statusEl = document.getElementById('fee-payment-status');
+      if (statusEl) statusEl.innerHTML = '⏳ Checking for verification…';
+      _pollFeePaymentStatus(year, month, 0);
+    }
+  }
+
+  async function showUPIFeePanel(year, month, amount, feeId) {
+    const panel = document.getElementById('fee-upi-panel');
+    if (!panel) return;
+    panel.innerHTML = `<div style="text-align:center; padding:10px;"><div class="spinner" style="margin:0 auto;"></div></div>`;
+
+    let upi;
+    try {
+      upi = await get('/api/upi-settings');
+    } catch (e) {
+      panel.innerHTML = `<p style="font-size:12px; color:var(--text3); text-align:center;">Could not load UPI details. Please try again.</p>`;
+      return;
+    }
+
+    if (!upi.upi_id) {
+      panel.innerHTML = `<p style="font-size:12px; color:var(--text3); text-align:center;">UPI payment is not set up yet — please use Cashfree above.</p>`;
+      return;
+    }
+
+    const upiLink = `upi://pay?pa=${encodeURIComponent(upi.upi_id)}&pn=${encodeURIComponent(upi.upi_name || '')}&am=${encodeURIComponent(amount)}&cu=INR`;
+
+    panel.innerHTML = `
+      <div style="background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; font-size:13px;">
+        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span style="color:var(--text2);">Pay to UPI ID</span><strong style="font-family:monospace;">${esc(upi.upi_id)}</strong></div>
+        ${upi.upi_name ? `<div style="display:flex; justify-content:space-between; margin-bottom:8px;"><span style="color:var(--text2);">Payee Name</span><strong>${esc(upi.upi_name)}</strong></div>` : ''}
+        <a href="${upiLink}" class="btn btn-ghost btn-sm" style="width:100%; display:block; box-sizing:border-box; margin-bottom:10px;">📲 Open in UPI App (on mobile)</a>
+        <div class="form-group" style="margin-bottom:8px;">
+          <label class="form-label" style="font-weight:600; font-size:12px;">UTR / Transaction Reference No.</label>
+          <input type="text" id="fee-utr-input" class="form-input" placeholder="e.g. 123456789012">
+        </div>
+        <button class="btn btn-primary" style="width:100%;" onclick="App.submitFeeUTR(${feeId}, '${year}', '${month}')">✅ Submit UTR</button>
+      </div>
+    `;
+  }
+
+  async function submitFeeUTR(feeId, year, month) {
+    const input = document.getElementById('fee-utr-input');
+    const utr = input ? input.value.trim() : '';
+    if (!utr) { toast('Enter the UTR / transaction reference number', 'error'); return; }
+
+    try {
+      await post(`/api/subscription-fees/${feeId}/submit-utr`, { utr });
+      toast('UTR submitted — awaiting verification');
+      showFeePaymentModal({ year, month }, _feeModalRetry);
+    } catch (e) {
+      // Handled
+    }
   }
 
   async function startFeePayment(year, month, amount) {
@@ -1055,6 +1133,7 @@ const App = (() => {
     showProjectManager, selectAndSwitchEst, logout, showLogin, doLogin, refreshTopbar,
     showVersionHistory, downloadFile,
     showFeePaymentModal, startFeePayment, checkFeePaymentNow, completeFeePaymentDownload,
+    showUPIFeePanel, submitFeeUTR,
     checkCashfreeReturnStatus, checkAdvanceCreditReturnStatus,
     getToken, getCurrentUser, isSuperadmin, getCurrentEstablishmentId, setActiveEstablishment,
     get currentPage() { return currentPage; },
