@@ -275,7 +275,7 @@ const App = (() => {
         <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span style="color:var(--text2);">Pay to UPI ID</span><strong style="font-family:monospace;">${esc(upi.upi_id)}</strong></div>
         ${upi.upi_name ? `<div style="display:flex; justify-content:space-between; margin-bottom:8px;"><span style="color:var(--text2);">Payee Name</span><strong>${esc(upi.upi_name)}</strong></div>` : ''}
         <div style="text-align:center; margin-bottom:10px;">
-          <canvas id="fee-upi-qr-canvas"></canvas>
+          <div id="fee-upi-qr-canvas" style="display:inline-block; background:#fff; padding:8px; border-radius:4px;"></div>
           <p id="fee-upi-qr-fallback" style="display:none; font-size:11px; color:var(--text3);">QR code unavailable — use the link below or enter the UPI ID manually.</p>
           <p style="margin:6px 0 0 0; font-size:11px; color:var(--text3);">Scan with any UPI app to pay ₹${fmt(amount)}</p>
         </div>
@@ -288,18 +288,16 @@ const App = (() => {
       </div>
     `;
 
-    const qrCanvas = document.getElementById('fee-upi-qr-canvas');
-    if (window.QRCode && qrCanvas) {
-      window.QRCode.toCanvas(qrCanvas, upiLink, { width: 180, margin: 1 }, (err) => {
-        if (err) {
-          qrCanvas.style.display = 'none';
-          document.getElementById('fee-upi-qr-fallback').style.display = 'block';
-        }
-      });
-    } else if (qrCanvas) {
-      qrCanvas.style.display = 'none';
-      const fb = document.getElementById('fee-upi-qr-fallback');
-      if (fb) fb.style.display = 'block';
+    const qrContainer = document.getElementById('fee-upi-qr-canvas');
+    if (qrContainer) {
+      try {
+        if (!window.QRCode) throw new Error('QRCode library not loaded');
+        new window.QRCode(qrContainer, { text: upiLink, width: 180, height: 180 });
+      } catch (e) {
+        qrContainer.style.display = 'none';
+        const fb = document.getElementById('fee-upi-qr-fallback');
+        if (fb) fb.style.display = 'block';
+      }
     }
   }
 
