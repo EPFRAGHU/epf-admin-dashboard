@@ -17,6 +17,7 @@ Welcome to the **EPF Admin Dashboard & Statutory Management System** repository.
    - [7. EPFO v3.0 ECR File Generator](#7-epfo-v30-ecr-file-generator)
    - [8. Employee Wage History Report](#8-employee-wage-history-report)
    - [9. Consultant Default Billing Inheritance](#9-consultant-default-billing-inheritance)
+   - [10. Manual UPI/UTR Payment Verification](#10-manual-upiutr-payment-verification)
 4. [Billing Mode Resolution Logic](#billing-mode-resolution-logic)
 5. [Statutory Calculation Rules & Formulas](#statutory-calculation-rules--formulas)
 6. [UI / UX Design & Left Sidebar Version Tracker](#ui--ux-design--left-sidebar-version-tracker)
@@ -72,7 +73,8 @@ The **EPF Admin Dashboard** is a cloud-ready, full-stack statutory compliance pl
 
 | Version | Date (IST) | Status | Major Milestones |
 | :--- | :--- | :--- | :--- |
-| **v1.8.0** | **18-08-2026** | **Present** | **Consultant-Level Default Billing Inheritance Layer** — `User.default_billing_mode` + `User.default_flat_fee_per_establishment` columns on consultant accounts; `Establishment.billing_mode` nullable (`null` = inherit, existing explicit values preserved); central `resolve_billing_mode()` helper (est → consultant default → global tiered); `PUT /api/admin/users/{user_id}/default-billing` endpoint (superadmin-only, validates mode, ActivityLog old→new); `billing_mode='inherit'` accepted on establishment endpoint to clear override; consultant edit modal adds 3-way toggle (No Default / Per Employee / Flat Fee) with ₹200/₹300/₹400/₹500 presets + custom input; establishment cards show `(inherited)` vs `(override)` badge; Manage Billing Modal shows blue/amber banners + "↩ Reset to Consultant Default" footer button; `GET /api/admin/users/{user_id}/establishments` enriched with `billing_mode_explicit`, `billing_mode_own`, `flat_fee_amount_own` per establishment and `default_billing_mode` / `default_flat_fee_per_establishment` on the `user` object. |
+| **v1.9.0** | **19-08-2026** | **Present** | **Manual UPI/UTR Payment Verification & QR Code Generation** — Consultant/employer-facing "Pay via UPI (Manual)" path added alongside Cashfree inside the subscription-fee download-lock modal: shows the payee UPI ID/name from `GET /api/upi-settings`, renders a live scannable QR code (`qrcodejs`, loaded via CDN like Chart.js) encoding `upi://pay?pa=...&pn=...&am=...&cu=INR` with the exact amount due, and a UTR submission form (`POST /api/subscription-fees/{id}/submit-utr`) that moves `payment_status` to `pending_verification` while keeping the download locked. Superadmin-side "Payment Verifications" tab lists pending UTR submissions for approval (`POST /api/admin/payment-verifications/{id}/approve` — sets `payment_status='paid'`, records `payment_reference`, logs `utr_approved` activity) or rejection with a reason; a paired "UPI Settings" tab lets the superadmin configure the payee UPI ID/name used platform-wide. Fixed two shipped-but-broken pieces found during audit: the two admin nav tabs called functions that didn't exist anywhere in `admin.js` (crashed on click, so no UTR could ever be submitted), and the QR panel silently never rendered an actual QR image — it only linked to a mobile-only `upi://` deep link. End-to-end verified live on production with a real ₹10 UPI payment, a real UTR, and real superadmin approval unlocking the download. |
+| **v1.8.0** | 18-08-2026 | Stable | **Consultant-Level Default Billing Inheritance Layer** — `User.default_billing_mode` + `User.default_flat_fee_per_establishment` columns on consultant accounts; `Establishment.billing_mode` nullable (`null` = inherit, existing explicit values preserved); central `resolve_billing_mode()` helper (est → consultant default → global tiered); `PUT /api/admin/users/{user_id}/default-billing` endpoint (superadmin-only, validates mode, ActivityLog old→new); `billing_mode='inherit'` accepted on establishment endpoint to clear override; consultant edit modal adds 3-way toggle (No Default / Per Employee / Flat Fee) with ₹200/₹300/₹400/₹500 presets + custom input; establishment cards show `(inherited)` vs `(override)` badge; Manage Billing Modal shows blue/amber banners + "↩ Reset to Consultant Default" footer button; `GET /api/admin/users/{user_id}/establishments` enriched with `billing_mode_explicit`, `billing_mode_own`, `flat_fee_amount_own` per establishment and `default_billing_mode` / `default_flat_fee_per_establishment` on the `user` object. |
 | **v1.7.0** | 15-08-2026 | Stable | **Subscription Billing, Cashfree Payments & Calc Fixes** — Fixed A/C 1 double-subtracted EPS share and A/C 22 post-2017 ₹200 minimum bug; Gross/EPF/EPS/EDLI breakdown columns in Challan Remittance table; per-establishment per-month Software Subscription Fee tracker with 3-tier rate resolution and download-gating; Advance Credit prepay system with consultant-facing Subscription History; Cashfree Payment Links (webhook-confirmed, signature-verified); Wage History redesigned with EE/ER/EPS per month + ReportLab PDF export; global default rate ₹10/employee/month. |
 | **v1.6.0** | 14-08-2026 | Stable | **Zero-Wage Filter, Integer Formatting & Version Tracking** — Form 3A/6A auto-filter 0-wage employees; all contributions as whole rupees; live Version Progression card in sidebar with interactive history modal. |
 | **v1.5.0** | 14-08-2026 | High Perf | **Native ReportLab PDF Engine & ECR v3.0** — Replaces LibreOffice/pywin32; Form 3A/6A/12A/9/5/10 statutory layouts; ECR v3.0 text generator. |
@@ -131,6 +133,13 @@ The **EPF Admin Dashboard** is a cloud-ready, full-stack statutory compliance pl
 - `PUT /api/admin/establishments/{id}/billing-mode` with `billing_mode='inherit'` — clears override.
 - Admin UI: `(inherited)` (indigo) vs `(override)` (amber) badge per establishment card; Manage Billing Modal shows contextual banners + one-click reset button.
 
+### 10. Manual UPI/UTR Payment Verification
+- Alternative to Cashfree for settling an overdue subscription-fee month: consultant/employer scans a QR code or opens a `upi://pay` deep link, pays the payee UPI ID directly, then submits the UTR/transaction reference number through the app.
+- `POST /api/subscription-fees/{id}/submit-utr` — records the UTR, sets `payment_status='pending_verification'`; download stays locked until superadmin review.
+- `GET /api/upi-settings` — any authenticated user can read the configured payee UPI ID/name/QR string to render the payment panel.
+- Superadmin "Payment Verifications" tab — list, approve (`POST /api/admin/payment-verifications/{id}/approve`), or reject-with-reason pending UTR submissions.
+- Superadmin "UPI Settings" tab — configure the platform-wide payee UPI ID, payee name, and optional static QR string (`PUT /api/admin/settings/upi`).
+
 ---
 
 ## 💳 Billing Mode Resolution Logic
@@ -180,7 +189,7 @@ resolve_billing_mode(establishment, consultant_user)
 - **Backend**: Python 3.8+, FastAPI, Uvicorn, SQLAlchemy, Pandas, ReportLab.
 - **Frontend**: HTML5, Vanilla JavaScript (ES6+), CSS3 Design System.
 - **Database**: PostgreSQL (Supabase) / JSON flat-file storage.
-- **Payments**: Cashfree Payment Gateway (Payment Links API, webhook signature verification).
+- **Payments**: Cashfree Payment Gateway (Payment Links API, webhook signature verification); manual UPI/UTR verification workflow with QR code generation (`qrcodejs` via CDN).
 - **Dependencies**: `reportlab>=3.6.0`, `pandas>=1.5.0`, `fastapi>=0.95.0`, `uvicorn>=0.20.0`, `openpyxl>=3.0.0`.
 
 ---
