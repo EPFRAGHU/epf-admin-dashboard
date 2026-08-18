@@ -338,6 +338,7 @@ td.actions { text-align: center; white-space: nowrap; }
   white-space: nowrap;
 }
 .btn:active { transform: scale(.97); }
+.btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
 
 .btn-primary {
   background: var(--accent);

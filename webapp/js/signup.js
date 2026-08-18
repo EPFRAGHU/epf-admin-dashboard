@@ -46,7 +46,7 @@ const Signup = (() => {
     if (type === 'error') {
       el.style.background = 'rgba(239,68,68,0.1)';
       el.style.border = '1px solid rgba(239,68,68,0.3)';
-      el.style.color = 'var(--danger)';
+      el.style.color = 'var(--red)';
     } else if (type === 'info') {
       el.style.background = 'rgba(59,130,246,0.1)';
       el.style.border = '1px solid rgba(59,130,246,0.3)';
