@@ -419,7 +419,7 @@ const App = (() => {
   const get    = (u) => api(u);
   const post   = (u, b) => api(u, { method: 'POST', body: b instanceof FormData ? b : JSON.stringify(b) });
   const put    = (u, b) => api(u, { method: 'PUT', body: b instanceof FormData ? b : JSON.stringify(b) });
-  const del    = (u) => api(u, { method: 'DELETE' });
+  const del    = (u, b) => api(u, b !== undefined ? { method: 'DELETE', body: b instanceof FormData ? b : JSON.stringify(b) } : { method: 'DELETE' });
 
   /* ── Toast ───────────────────────────────────────────────────── */
   function toast(msg, type = 'success') {

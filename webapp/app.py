@@ -3322,12 +3322,53 @@ async def del_employee(
 
 
 # ── Years Endpoints ───────────────────────────────────────────────────────
+def get_year_deletion_blockers(project: Project, est_obj: Establishment, key: str, db: Session) -> List[str]:
+    """Real-data checks that must block a year from being deleted -- run for every
+    caller including superadmins (see /force for the deliberate, separately-gated
+    escape hatch). Note: this codebase does not track ECR/report download history
+    anywhere (no such table or activity_log action exists), so those two checks
+    from the original spec are not implemented -- flagging rather than fabricating
+    a signal that isn't actually there."""
+    yr = project.years.get(key)
+    if not yr:
+        return []
+    blockers = []
+
+    wage_employee_count = sum(
+        1 for e in yr.entries
+        if any(e.wages) or any(e.gross_wages) or any(e.ncp_days)
+    )
+    if wage_employee_count:
+        blockers.append(f"{wage_employee_count} employee(s) have wage data entered")
+
+    filed_months = sum(
+        1 for r in yr.remittances
+        if r.get("trrn") or r.get("crrn") or r.get("credit_date")
+    )
+    if filed_months:
+        blockers.append(f"{filed_months} month(s) have filed TRRN/CRRN remittances")
+
+    paid_fee_count = db.query(SubscriptionFee).filter(
+        SubscriptionFee.establishment_id == est_obj.id,
+        SubscriptionFee.financial_year == key,
+        SubscriptionFee.is_paid == True,
+    ).count()
+    if paid_fee_count:
+        blockers.append(f"{paid_fee_count} paid subscription fee record(s) exist for this year")
+
+    return blockers
+
+
 @app.get("/api/years")
-async def list_years(active: Tuple[Establishment, Project] = Depends(get_active_establishment)):
+async def list_years(
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
     est_obj, project = active
     rows = []
     for yk in project.year_keys_sorted():
         yr = project.years[yk]
+        blockers = get_year_deletion_blockers(project, est_obj, yk, db)
         rows.append({
             "key": yk, "year_from": yr.year_from, "year_to": yr.year_to,
             "label": yr.long_label, "short": yr.short_label,
@@ -3338,6 +3379,8 @@ async def list_years(active: Tuple[Establishment, Project] = Depends(get_active_
             "er_epf_rate": yr.er_epf_rate, "er_eps_rate": yr.er_eps_rate,
             "entries": len(yr.entries),
             "rate_text": yr.statutory_rate_text,
+            "can_delete": not blockers,
+            "delete_blockers": blockers,
         })
     return {"years": rows, "total": len(rows)}
 
@@ -3379,13 +3422,57 @@ async def edit_year(
 async def del_year(
     key: str,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     est_obj, project = active
     if key not in project.years:
         raise HTTPException(404, "Year not found")
+    # Applies to every caller, including superadmins -- deleting real filed
+    # compliance data is never a casual one-click action. See /force below for
+    # the deliberate, separately-gated superadmin escape hatch.
+    blockers = get_year_deletion_blockers(project, est_obj, key, db)
+    if blockers:
+        raise HTTPException(
+            409,
+            f"Cannot delete FY {key}: " + ", ".join(blockers) + ". Remove or archive this data first."
+        )
     project.remove_year(key)
     save_establishment_project(db, est_obj, project)
+    log_activity(db, current_user.id, est_obj.id, "year.delete",
+                 f"Deleted empty year {key} for {est_obj.name} ({est_obj.code})")
+    return {"ok": True}
+
+
+class YearForceDeleteIn(BaseModel):
+    confirm_code: str
+    confirm_year: str
+
+
+@app.delete("/api/years/{key}/force")
+async def force_del_year(
+    key: str,
+    d: YearForceDeleteIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Superadmin-only escape hatch for deleting a year that DOES have real data.
+    Deliberately a separate endpoint from the normal delete (never exposed to
+    consultants/employers under any circumstance, UI or direct API call) and
+    requires typing the establishment code and year back, GitHub-repo-deletion
+    style, so it can never be triggered by a stray click."""
+    est_obj, project = active
+    if key not in project.years:
+        raise HTTPException(404, "Year not found")
+    if d.confirm_code.strip() != est_obj.code or d.confirm_year.strip() != key:
+        raise HTTPException(400, "Confirmation text did not match. Type the establishment code and year exactly to force-delete.")
+    blockers = get_year_deletion_blockers(project, est_obj, key, db)
+    project.remove_year(key)
+    save_establishment_project(db, est_obj, project)
+    log_activity(db, admin.id, est_obj.id, "year.force_delete",
+                 f"FORCE-deleted year {key} for {est_obj.name} ({est_obj.code}) despite blockers: "
+                 + ("; ".join(blockers) if blockers else "(none -- year was actually empty)"))
     return {"ok": True}
 
 

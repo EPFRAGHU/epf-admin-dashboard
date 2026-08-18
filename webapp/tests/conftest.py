@@ -48,7 +48,10 @@ class AuthClient:
 
     def delete(self, url: str, **kwargs):
         headers = {**self.headers, **kwargs.pop("headers", {})}
-        return self.client.delete(url, headers=headers, **kwargs)
+        # starlette/httpx TestClient.delete() doesn't accept a json= body; use
+        # request() directly so DELETE endpoints that take a confirmation payload
+        # (e.g. the year force-delete escape hatch) can be exercised in tests.
+        return self.client.request("DELETE", url, headers=headers, **kwargs)
 
 
 @pytest.fixture(scope="session", autouse=True)

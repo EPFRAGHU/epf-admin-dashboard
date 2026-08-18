@@ -34,8 +34,16 @@ App.registerPage('years', async (container) => {
           }
           <div class="year-card-actions">
             <button class="btn btn-ghost btn-xs" onclick='showYearModal(${JSON.stringify(y).replace(/'/g,"&#39;")})'>⚙️ Edit Rates</button>
-            <button class="btn btn-danger btn-xs" onclick="deleteYear('${y.key}')">🗑️</button>
+            ${y.can_delete
+              ? `<button class="btn btn-danger btn-xs" onclick="deleteYear('${y.key}')">🗑️</button>`
+              : `<button class="btn btn-danger btn-xs" disabled title="${App.esc('Cannot delete: ' + y.delete_blockers.join('; '))}" style="opacity:0.4; cursor:not-allowed;">🗑️</button>`
+            }
+            ${(!y.can_delete && App.isSuperadmin())
+              ? `<button class="btn btn-ghost btn-xs" style="color:var(--danger);" title="Superadmin: force-delete despite blocking data" onclick="forceDeleteYear('${y.key}')">⚠️ Force Delete</button>`
+              : ''
+            }
           </div>
+          ${!y.can_delete ? `<div style="font-size:11px; color:var(--text3); margin-top:4px;">🔒 ${App.esc(y.delete_blockers.join('; '))}</div>` : ''}
         </div>
       `).join('')}
     </div>
@@ -174,13 +182,51 @@ window.saveYear = async (key) => {
 };
 
 window.deleteYear = (key) => {
-  App.confirm(`Delete financial year <strong>${key}</strong> and all its wage data?`, async () => {
+  App.confirm(`Delete financial year <strong>${key}</strong>? This is only possible because it has no wage, remittance, or subscription data.`, async () => {
     try {
       await App.del(`/api/years/${key}`);
       App.toast('Year deleted and data saved successfully.');
       App.navigate('years');
     } catch (_) {}
   });
+}
+
+// Superadmin-only escape hatch for a year that DOES have real data -- deliberately
+// a separate, more heavily confirmed action (type the establishment code and year
+// back, GitHub-repo-deletion style). Never reachable by consultant/employer accounts:
+// the button itself only renders for App.isSuperadmin(), and the backend endpoint
+// independently requires get_superadmin regardless of what the UI shows.
+window.forceDeleteYear = (key) => {
+  const body = `
+    <div style="margin-bottom:12px; color:var(--danger); font-weight:600; font-size:13px;">
+      ⚠️ This year has real data (wages, remittances, and/or paid subscription fees).
+      Force-deleting is irreversible and will permanently remove all of it.
+    </div>
+    <div class="form-group">
+      <label class="form-label">Type the establishment code to confirm</label>
+      <input class="form-input" id="force-del-code" placeholder="Establishment code">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Type the year key to confirm</label>
+      <input class="form-input" id="force-del-year" placeholder="${key}">
+    </div>
+  `;
+  const footer = `
+    <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
+    <button class="btn btn-danger" onclick="submitForceDeleteYear('${key}')">Force Delete Permanently</button>
+  `;
+  App.openModal(`⚠️ Force-Delete ${key}`, body, footer);
+}
+
+window.submitForceDeleteYear = async (key) => {
+  const confirm_code = (document.getElementById('force-del-code').value || '').trim();
+  const confirm_year = (document.getElementById('force-del-year').value || '').trim();
+  try {
+    await App.del(`/api/years/${key}/force`, { confirm_code, confirm_year });
+    App.closeModal();
+    App.toast(`Year ${key} force-deleted.`);
+    App.navigate('years');
+  } catch (_) {}
 }
 
 function showBulkYearsModal() {
