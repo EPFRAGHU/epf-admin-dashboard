@@ -12,7 +12,8 @@ import os
 import re
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, date
-from typing import List
+from typing import List, Optional, Set
+from collections import Counter
 
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -570,9 +571,9 @@ class Employee:
     doj: str = ''
     doe: str = ''
     reason_leaving: str = ''
-    branch: str = ''
-    division: str = ''
-    unit: str = ''
+    branch_id: int = 0
+    division_id: Optional[int] = None
+    unit_id: Optional[int] = None
 
     def month_rows(self, worker_epf_rate: float, worker_eps_rate: float,
                    employer_epf_rate: float, employer_eps_rate: float,
@@ -638,6 +639,54 @@ class Employee:
 
 
 # --------------------------------------------------------------------------
+# Org structure -- Branch (required, top-level) -> Division (optional) ->
+# Unit (optional). Every establishment always has at least one Branch (see
+# Project.ensure_default_branch); Divisions/Units are opt-in.
+# --------------------------------------------------------------------------
+
+@dataclass
+class Branch:
+    id: int = 0
+    name: str = ""
+    is_default: bool = False
+
+    def to_dict(self):
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d):
+        return Branch(id=d.get("id", 0), name=d.get("name", ""), is_default=d.get("is_default", False))
+
+
+@dataclass
+class Division:
+    id: int = 0
+    branch_id: int = 0
+    name: str = ""
+
+    def to_dict(self):
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d):
+        return Division(id=d.get("id", 0), branch_id=d.get("branch_id", 0), name=d.get("name", ""))
+
+
+@dataclass
+class Unit:
+    id: int = 0
+    division_id: int = 0
+    name: str = ""
+
+    def to_dict(self):
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(d):
+        return Unit(id=d.get("id", 0), division_id=d.get("division_id", 0), name=d.get("name", ""))
+
+
+# --------------------------------------------------------------------------
 # Employee Master -- member id / name / father's name, shared across years
 # --------------------------------------------------------------------------
 
@@ -662,9 +711,9 @@ class MasterEmployee:
     ifsc: str = ""
     higher_epf_ee: bool = False
     higher_epf_er: bool = False
-    branch: str = ""
-    division: str = ""
-    unit: str = ""
+    branch_id: int = 0
+    division_id: Optional[int] = None
+    unit_id: Optional[int] = None
 
     def to_dict(self):
         return asdict(self)
@@ -684,9 +733,9 @@ class MasterEmployee:
             ifsc=d.get("ifsc", ""),
             higher_epf_ee=d.get("higher_epf_ee", False),
             higher_epf_er=d.get("higher_epf_er", False),
-            branch=d.get("branch", "") or "",
-            division=d.get("division", "") or "",
-            unit=d.get("unit", "") or "")
+            branch_id=d.get("branch_id", 0) or 0,
+            division_id=d.get("division_id"),
+            unit_id=d.get("unit_id"))
 
     @property
     def age_years(self):
@@ -777,12 +826,18 @@ class Project:
         self.coverage_date = ""         # Date of Coverage under the EPF Act, DD/MM/YYYY
         self.created_at = datetime.now().strftime("%d-%m-%Y")
         self.is_active = True
-        self.branches: List[str] = []
-        self.divisions: List[str] = []
-        self.units: List[str] = []
+        self.branches: List[Branch] = []
+        self.divisions: List[Division] = []
+        self.units: List[Unit] = []
+        self._next_branch_id = 1
+        self._next_division_id = 1
+        self._next_unit_id = 1
+        self.org_structure_version = 1   # new establishments start "already migrated"
+        self.org_migration_warnings: List[dict] = []
         self.master: dict = {}          # member_id -> MasterEmployee
         self.years: dict = {}           # year_key (long_label) -> YearRecord
         self.current_year_key = None
+        self.ensure_default_branch()
 
     # ---- establishment ----
     def set_establishment(self, code, name, address, coverage_date=""):
@@ -804,8 +859,21 @@ class Project:
                        doe="", reason_leaving="", serial_no=None, relationship="", marital_status="",
                        mobile="", email="", aadhaar="", bank_account="", ifsc="",
                        higher_epf_ee=False, higher_epf_er=False,
-                       branch="", division="", unit=""):
+                       branch_id=None, division_id=None, unit_id=None):
         member_id = normalize_member_id(member_id)
+
+        if branch_id is None:
+            default = self.default_branch()
+            branch_id = default.id if default else None
+        if division_id is not None:
+            div = self.get_division(division_id)
+            if not div or div.branch_id != branch_id:
+                raise ValueError(f"Division {division_id} does not belong to branch {branch_id}")
+        if unit_id is not None:
+            u = self.get_unit(unit_id)
+            if not u or u.division_id != division_id:
+                raise ValueError(f"Unit {unit_id} does not belong to division {division_id}")
+
         if member_id in self.master:
             m = self.master[member_id]
             m.name = name or m.name
@@ -826,9 +894,9 @@ class Project:
             if ifsc: m.ifsc = ifsc
             m.higher_epf_ee = higher_epf_ee
             m.higher_epf_er = higher_epf_er
-            if branch is not None: m.branch = branch
-            if division is not None: m.division = division
-            if unit is not None: m.unit = unit
+            m.branch_id = branch_id
+            m.division_id = division_id
+            m.unit_id = unit_id
         else:
             if serial_no is None:
                 serial_no = self.next_serial_no()
@@ -839,7 +907,84 @@ class Project:
                                                        mobile=mobile, email=email, aadhaar=aadhaar,
                                                        bank_account=bank_account, ifsc=ifsc,
                                                        higher_epf_ee=higher_epf_ee, higher_epf_er=higher_epf_er,
-                                                       branch=branch or "", division=division or "", unit=unit or "")
+                                                       branch_id=branch_id, division_id=division_id, unit_id=unit_id)
+
+    # ---- org structure: Branch -> Division -> Unit ----
+    def ensure_default_branch(self):
+        """Guarantees at least one Branch always exists. Idempotent -- no-op
+        once any Branch (default or not) is present."""
+        if self.branches:
+            return
+        b = Branch(id=self._next_branch_id, name="Main Branch", is_default=True)
+        self._next_branch_id += 1
+        self.branches.append(b)
+
+    def default_branch(self) -> Optional["Branch"]:
+        for b in self.branches:
+            if b.is_default:
+                return b
+        return self.branches[0] if self.branches else None
+
+    def get_branch(self, branch_id) -> Optional["Branch"]:
+        if branch_id is None:
+            return None
+        return next((b for b in self.branches if b.id == branch_id), None)
+
+    def get_division(self, division_id) -> Optional["Division"]:
+        if division_id is None:
+            return None
+        return next((d for d in self.divisions if d.id == division_id), None)
+
+    def get_unit(self, unit_id) -> Optional["Unit"]:
+        if unit_id is None:
+            return None
+        return next((u for u in self.units if u.id == unit_id), None)
+
+    def add_branch(self, name) -> "Branch":
+        b = Branch(id=self._next_branch_id, name=name, is_default=False)
+        self._next_branch_id += 1
+        self.branches.append(b)
+        return b
+
+    def add_division(self, branch_id, name) -> "Division":
+        if not self.get_branch(branch_id):
+            raise ValueError(f"Branch {branch_id} does not exist")
+        d = Division(id=self._next_division_id, branch_id=branch_id, name=name)
+        self._next_division_id += 1
+        self.divisions.append(d)
+        return d
+
+    def add_unit(self, division_id, name) -> "Unit":
+        if not self.get_division(division_id):
+            raise ValueError(f"Division {division_id} does not exist")
+        u = Unit(id=self._next_unit_id, division_id=division_id, name=name)
+        self._next_unit_id += 1
+        self.units.append(u)
+        return u
+
+    def rename_branch(self, branch_id, name):
+        b = self.get_branch(branch_id)
+        if b:
+            b.name = name
+
+    def rename_division(self, division_id, name):
+        d = self.get_division(division_id)
+        if d:
+            d.name = name
+
+    def rename_unit(self, unit_id, name):
+        u = self.get_unit(unit_id)
+        if u:
+            u.name = name
+
+    def remove_branch(self, branch_id):
+        self.branches = [b for b in self.branches if b.id != branch_id]
+
+    def remove_division(self, division_id):
+        self.divisions = [d for d in self.divisions if d.id != division_id]
+
+    def remove_unit(self, unit_id):
+        self.units = [u for u in self.units if u.id != unit_id]
 
     def next_serial_no(self):
         """Next SL No. suggestion for a brand-new employee (one more than the
@@ -978,9 +1123,9 @@ class Project:
             doj = m.doj if m else ""
             doe = m.doe if m else ""
             reason_leaving = m.reason_leaving if m else ""
-            branch = getattr(m, 'branch', '') if m else ""
-            division = getattr(m, 'division', '') if m else ""
-            unit = getattr(m, 'unit', '') if m else ""
+            branch_id = m.branch_id if m else 0
+            division_id = m.division_id if m else None
+            unit_id = m.unit_id if m else None
             result.append(Employee(member_id=e.member_id, name=name, father_name=father, uan=uan,
                                     wages=[int(round(float(x))) if x is not None else 0 for x in e.wages],
                                     gross_wages=[int(round(float(x))) if x is not None else 0 for x in e.gross_wages],
@@ -989,7 +1134,7 @@ class Project:
                                     higher_epf_er=m.higher_epf_er if m else False,
                                     age_crosses_58=getattr(e, 'age_crosses_58', False),
                                     dob=dob, sex=sex, doj=doj, doe=doe, reason_leaving=reason_leaving,
-                                    branch=branch, division=division, unit=unit))
+                                    branch_id=branch_id, division_id=division_id, unit_id=unit_id))
         return result
 
     def build_establishment_for_year(self, year_key) -> Establishment:
@@ -1008,28 +1153,59 @@ class Project:
             "coverage_date": self.coverage_date,
             "created_at": getattr(self, "created_at", datetime.now().strftime("%d-%m-%Y")),
             "is_active": getattr(self, "is_active", True),
-            "branches": getattr(self, "branches", []),
-            "divisions": getattr(self, "divisions", []),
-            "units": getattr(self, "units", []),
+            "branches": [b.to_dict() for b in self.branches],
+            "divisions": [d.to_dict() for d in self.divisions],
+            "units": [u.to_dict() for u in self.units],
+            "next_branch_id": self._next_branch_id,
+            "next_division_id": self._next_division_id,
+            "next_unit_id": self._next_unit_id,
+            "org_structure_version": self.org_structure_version,
+            "org_migration_warnings": self.org_migration_warnings,
             "master": {k: v.to_dict() for k, v in self.master.items()},
             "years": {k: v.to_dict() for k, v in self.years.items()},
             "current_year_key": self.current_year_key,
         }
 
-    def load_from_dict(self, data: dict):
+    def load_from_dict(self, data: dict) -> bool:
+        """Loads a serialized Project dict. Returns True if this load
+        performed a one-time legacy org-structure migration (the caller
+        should then persist the project back so the migration doesn't
+        re-run on every subsequent load)."""
         self.code = data.get("code", "")
         self.name = data.get("name", "")
         self.address = data.get("address", "")
         self.coverage_date = data.get("coverage_date", "")
         self.created_at = data.get("created_at", datetime.now().strftime("%d-%m-%Y"))
         self.is_active = data.get("is_active", True)
-        self.branches = list(data.get("branches", []))
-        self.divisions = list(data.get("divisions", []))
-        self.units = list(data.get("units", []))
-        self.master = {normalize_member_id(k): MasterEmployee.from_dict(v) for k, v in data.get("master", {}).items()}
         self.years = {normalize_member_id(k): YearRecord.from_dict(v) for k, v in data.get("years", {}).items()}
         self.current_year_key = data.get("current_year_key") or next(iter(self.years), None)
-        
+
+        migrated = False
+        if "org_structure_version" not in data:
+            migrated = True
+            self.branches = []
+            self.divisions = []
+            self.units = []
+            self._next_branch_id = 1
+            self._next_division_id = 1
+            self._next_unit_id = 1
+            self.org_migration_warnings = []
+            self.master = {}
+            self._migrate_legacy_org_structure(data)
+            self.org_structure_version = 1
+        else:
+            self.branches = [Branch.from_dict(b) for b in data.get("branches", [])]
+            self.divisions = [Division.from_dict(d) for d in data.get("divisions", [])]
+            self.units = [Unit.from_dict(u) for u in data.get("units", [])]
+            self._next_branch_id = data.get("next_branch_id", (max([b.id for b in self.branches], default=0) + 1))
+            self._next_division_id = data.get("next_division_id", (max([d.id for d in self.divisions], default=0) + 1))
+            self._next_unit_id = data.get("next_unit_id", (max([u.id for u in self.units], default=0) + 1))
+            self.org_structure_version = data.get("org_structure_version", 1)
+            self.org_migration_warnings = list(data.get("org_migration_warnings", []))
+            self.master = {normalize_member_id(k): MasterEmployee.from_dict(v) for k, v in data.get("master", {}).items()}
+
+        self.ensure_default_branch()
+
         # Migrate old 'higher_epf' from entries to MasterEmployee
         for yr_data in data.get("years", {}).values():
             for e_data in yr_data.get("entries", []):
@@ -1038,6 +1214,129 @@ class Project:
                     if mid in self.master:
                         self.master[mid].higher_epf_ee = True
                         self.master[mid].higher_epf_er = True
+
+        return migrated
+
+    def _migrate_legacy_org_structure(self, data: dict):
+        """One-time migration from the old flat Project.branches/divisions/units
+        (plain name lists, no parent-child relationship) into the new nested
+        Branch -> Division -> Unit hierarchy. Infers each Division's parent
+        Branch (and each Unit's parent Division) by majority vote across the
+        legacy per-employee branch/division/unit string tags; anything
+        genuinely ambiguous is attached under a safe fallback AND recorded in
+        self.org_migration_warnings rather than guessed silently."""
+        legacy_branches = list(data.get("branches", []))
+        legacy_divisions = list(data.get("divisions", []))
+        legacy_units = list(data.get("units", []))
+        legacy_master = data.get("master", {})
+
+        name_to_branch = {}
+        for name in legacy_branches:
+            b = self.add_branch(name)
+            name_to_branch[name] = b
+
+        division_branch_votes = {}
+        for v in legacy_master.values():
+            div, br = (v.get("division") or "").strip(), (v.get("branch") or "").strip()
+            if div and br:
+                division_branch_votes.setdefault(div, Counter())[br] += 1
+
+        name_to_division = {}
+        for name in legacy_divisions:
+            votes = division_branch_votes.get(name)
+            if not votes:
+                self.org_migration_warnings.append({
+                    "type": "division_unassigned",
+                    "message": f"Division '{name}' had no employees with an inferable branch; "
+                               f"attached to Main Branch -- please verify.",
+                    "entity_name": name, "affected_member_ids": [],
+                })
+                self.ensure_default_branch()
+                target_branch = self.default_branch()
+            else:
+                distinct = list(votes.keys())
+                if len(distinct) > 1:
+                    winner = votes.most_common(1)[0][0]
+                    losers = [mid for mid, v in legacy_master.items()
+                              if (v.get("division") or "").strip() == name
+                              and (v.get("branch") or "").strip() != winner
+                              and (v.get("branch") or "").strip()]
+                    self.org_migration_warnings.append({
+                        "type": "division_multi_branch",
+                        "message": f"Division '{name}' had employees tagged under multiple different "
+                                   f"branches; attached to the majority branch '{winner}' -- please verify.",
+                        "entity_name": name, "affected_member_ids": losers,
+                    })
+                    target_branch = name_to_branch.get(winner) or self.default_branch()
+                else:
+                    target_branch = name_to_branch.get(distinct[0]) or self.default_branch()
+            d = self.add_division(target_branch.id, name)
+            name_to_division[name] = d
+
+        unit_division_votes = {}
+        for v in legacy_master.values():
+            u, div = (v.get("unit") or "").strip(), (v.get("division") or "").strip()
+            if u and div:
+                unit_division_votes.setdefault(u, Counter())[div] += 1
+
+        name_to_unit = {}
+        for name in legacy_units:
+            votes = unit_division_votes.get(name)
+            if not votes:
+                continue
+            winner_div = votes.most_common(1)[0][0]
+            target_division = name_to_division.get(winner_div)
+            if not target_division:
+                self.org_migration_warnings.append({
+                    "type": "unit_orphaned",
+                    "message": f"Unit '{name}' referenced division '{winner_div}', which no longer "
+                               f"resolves to a valid Division; this unit was not migrated.",
+                    "entity_name": name, "affected_member_ids": [],
+                })
+                continue
+            u = self.add_unit(target_division.id, name)
+            name_to_unit[name] = u
+
+        self.ensure_default_branch()
+        default_branch = self.default_branch()
+
+        for mid, v in legacy_master.items():
+            legacy_branch = (v.get("branch") or "").strip()
+            legacy_division = (v.get("division") or "").strip()
+            legacy_unit = (v.get("unit") or "").strip()
+
+            branch_obj = name_to_branch.get(legacy_branch) if legacy_branch else None
+            branch_id = branch_obj.id if branch_obj else default_branch.id
+
+            division_id = None
+            division_obj = name_to_division.get(legacy_division) if legacy_division else None
+            if division_obj:
+                if division_obj.branch_id == branch_id:
+                    division_id = division_obj.id
+                else:
+                    self.org_migration_warnings.append({
+                        "type": "employee_scope_mismatch",
+                        "message": f"Employee '{mid}' kept only its Branch-level assignment; "
+                                   f"division '{legacy_division}' was migrated under a different branch "
+                                   f"than this employee's own -- please re-assign.",
+                        "entity_name": mid, "affected_member_ids": [mid],
+                    })
+
+            unit_id = None
+            if division_id is not None and legacy_unit:
+                unit_obj = name_to_unit.get(legacy_unit)
+                if unit_obj and unit_obj.division_id == division_id:
+                    unit_id = unit_obj.id
+
+            m = dict(v)
+            m["branch_id"] = branch_id
+            m["division_id"] = division_id
+            m["unit_id"] = unit_id
+            m.pop("branch", None)
+            m.pop("division", None)
+            m.pop("unit", None)
+            mkey = normalize_member_id(mid)
+            self.master[mkey] = MasterEmployee.from_dict(m)
 
     def save(self, filepath: str):
         with open(filepath, "w", encoding="utf-8") as f:
@@ -1254,19 +1553,75 @@ def format_rate_periods(month_rate_pairs):
 
 
 
+# --------------------------------------------------------------------------
+# Shared org-structure scoping -- THE single filter used by ECR generation,
+# Challan splitting, Form generation, the Dashboard, and Org Structure
+# delete-guards. Never reimplement this filtering logic per-feature.
+# --------------------------------------------------------------------------
+
+def filter_employees_by_scope(employees, branch_id=None, division_id=None, unit_id=None):
+    """Most-specific-wins, independently optional: unit_id given -> exact
+    unit match only; else division_id -> everyone under that division (any/no
+    unit); else branch_id -> everyone under that branch (any/no
+    division/unit); none given -> unchanged (whole establishment). `employees`
+    is any iterable of objects exposing .branch_id/.division_id/.unit_id
+    (both MasterEmployee and Employee qualify)."""
+    if unit_id is not None:
+        return [e for e in employees if e.unit_id == unit_id]
+    if division_id is not None:
+        return [e for e in employees if e.division_id == division_id]
+    if branch_id is not None:
+        return [e for e in employees if e.branch_id == branch_id]
+    return list(employees)
+
+
+def resolve_scope_path_for_ids(project: "Project", branch_id=None, division_id=None, unit_id=None) -> str:
+    """'Bhubaneswar Branch -> Administration Division -> Section A' style
+    display string for raw scope ids (Challan split rows, ECR/ZIP filenames)."""
+    parts = []
+    b = project.get_branch(branch_id) if branch_id is not None else None
+    if b:
+        parts.append(b.name)
+    d = project.get_division(division_id) if division_id is not None else None
+    if d:
+        parts.append(d.name)
+    u = project.get_unit(unit_id) if unit_id is not None else None
+    if u:
+        parts.append(u.name)
+    return " → ".join(parts) if parts else "Unassigned"
+
+
+def resolve_employee_scope_path(employee, project: "Project") -> str:
+    """Same resolution as resolve_scope_path_for_ids, for an
+    Employee/MasterEmployee object."""
+    return resolve_scope_path_for_ids(
+        project,
+        branch_id=getattr(employee, "branch_id", None),
+        division_id=getattr(employee, "division_id", None),
+        unit_id=getattr(employee, "unit_id", None),
+    )
+
+
 class ExcelGenerator:
-    def __init__(self, establishment: Establishment, employees: List[Employee], project: "Project" = None, forms_to_generate: List[str] = None):
+    def __init__(self, establishment: Establishment, employees: List[Employee], project: "Project" = None, forms_to_generate: List[str] = None, scope_member_ids: Optional[Set[str]] = None):
         """
         project is optional and only needed to also emit the Form 5 / Form 10
         monthly sheets (they're built from the Employee Master's Date of
         Joining / Date of Exit, which live on the project, not on a single
         year's Employee list). If project is omitted, only 3A/6A/12A are built
         -- exactly the previous behaviour.
+
+        scope_member_ids is an independent org-structure (Branch/Division/Unit)
+        filter for the Form 5/9/10 sheets, which are built from project.master
+        rather than from `employees` -- it is unrelated to `employees` already
+        being wage-filtered for a given year. None means unscoped (today's
+        behaviour: every master employee / every DOJ-DOE match, no wage filter).
         """
         self.est = establishment
         self.employees = [emp for emp in employees if sum(w or 0 for w in (emp.wages or [])) > 0]
         self.project = project
         self.forms_to_generate = forms_to_generate or ['3A', '6A', '12A', '5', '10']
+        self.scope_member_ids = scope_member_ids
 
     def build(self, filepath: str):
         wb = openpyxl.Workbook()
@@ -1962,11 +2317,14 @@ MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
                "July", "August", "September", "October", "November", "December"]
 
 
-def employees_joined_in_month(project: "Project", cal_year: int, cal_month: int):
+def employees_joined_in_month(project: "Project", cal_year: int, cal_month: int, member_ids: Optional[Set[str]] = None):
     """Employee Master records whose Date of Joining falls in this exact
-    calendar month/year, in SL No. order."""
+    calendar month/year, in SL No. order. member_ids, if given, restricts to
+    that scoped set of member ids (None = unscoped, today's behavior)."""
     matches = []
     for m in project.master_list():
+        if member_ids is not None and m.member_id not in member_ids:
+            continue
         if not m.doj:
             continue
         try:
@@ -1978,11 +2336,14 @@ def employees_joined_in_month(project: "Project", cal_year: int, cal_month: int)
     return matches
 
 
-def employees_left_in_month(project: "Project", cal_year: int, cal_month: int):
+def employees_left_in_month(project: "Project", cal_year: int, cal_month: int, member_ids: Optional[Set[str]] = None):
     """Employee Master records whose Date of Exit falls in this exact
-    calendar month/year, in SL No. order."""
+    calendar month/year, in SL No. order. member_ids, if given, restricts to
+    that scoped set of member ids (None = unscoped, today's behavior)."""
     matches = []
     for m in project.master_list():
+        if member_ids is not None and m.member_id not in member_ids:
+            continue
         if not m.doe:
             continue
         try:
@@ -2111,7 +2472,7 @@ def _form5_10_signature_and_notes(ws, row, num_cols, note_paragraphs):
     return row + 1
 
 
-def _write_form5_sheet(ws, project: "Project", cal_year: int, cal_month: int):
+def _write_form5_sheet(ws, project: "Project", cal_year: int, cal_month: int, member_ids: Optional[Set[str]] = None):
     """
     Writes a complete Form 5 (new joiners, for ONE calendar month), matching
     the official EPFO layout, into an already-created worksheet -- shared by
@@ -2119,7 +2480,7 @@ def _write_form5_sheet(ws, project: "Project", cal_year: int, cal_month: int):
     which embeds one Form 5 sheet per month straight into the main
     3A/6A/12A workbook. Returns (last_row, list_of_matched_MasterEmployee).
     """
-    matches = employees_joined_in_month(project, cal_year, cal_month)
+    matches = employees_joined_in_month(project, cal_year, cal_month, member_ids=member_ids)
     month_label = f"{MONTH_NAMES[cal_month - 1]}, {cal_year}"
     num_cols = 10
     col_widths = {1: 6, 2: 16, 3: 16, 4: 22, 5: 30, 6: 12, 7: 8, 8: 20, 9: 36, 10: 16}
@@ -2191,7 +2552,7 @@ def generate_form5_for_month(project: "Project", cal_year: int, cal_month: int, 
     return filepath, matches
 
 
-def _write_form10_sheet(ws, project: "Project", cal_year: int, cal_month: int):
+def _write_form10_sheet(ws, project: "Project", cal_year: int, cal_month: int, member_ids: Optional[Set[str]] = None):
     """
     Writes a complete Form 10 (leavers, for ONE calendar month), matching
     the official EPFO layout, into an already-created worksheet -- shared by
@@ -2199,7 +2560,7 @@ def _write_form10_sheet(ws, project: "Project", cal_year: int, cal_month: int):
     which embeds one Form 10 sheet per month straight into the main
     3A/6A/12A workbook. Returns (last_row, list_of_matched_MasterEmployee).
     """
-    matches = employees_left_in_month(project, cal_year, cal_month)
+    matches = employees_left_in_month(project, cal_year, cal_month, member_ids=member_ids)
     month_label = f"{MONTH_NAMES[cal_month - 1]}, {cal_year}"
     num_cols = 8
     col_widths = {1: 6, 2: 16, 3: 16, 4: 22, 5: 28, 6: 17, 7: 16, 8: 16}
@@ -2275,7 +2636,7 @@ def generate_form10_for_month(project: "Project", cal_year: int, cal_month: int,
     return filepath, matches
 
 
-def _write_form9_sheet(ws, project: "Project"):
+def _write_form9_sheet(ws, project: "Project", member_ids: Optional[Set[str]] = None):
     """
     Writes Form 9 (Revised) -- the one-time "Return of employees who are
     entitled and required to become members of the Employees' Provident
@@ -2292,6 +2653,8 @@ def _write_form9_sheet(ws, project: "Project"):
     establishment record. Returns (last_row, list_of_all_MasterEmployee).
     """
     employees = project.master_list()
+    if member_ids is not None:
+        employees = [m for m in employees if m.member_id in member_ids]
     num_cols = 13
     # Significantly increased column widths so the natural width exceeds the A4 page. 
     # This forces Excel's fitToWidth=1 to scale it down perfectly to touch the left and right margins.
@@ -2407,11 +2770,12 @@ def _build_form5_form10_sheets(self, wb, forms_to_generate=None):
     forms = forms_to_generate or ['5', '10', '9']
     est = self.est
     project = self.project
+    member_ids = self.scope_member_ids
     tight_margins = PageMargins(left=0.3, right=0.3, top=0.3, bottom=0.3, header=0.15, footer=0.15)
 
     if '9' in forms:
         ws9 = wb.create_sheet(title="Form 9")
-        last_row9, _ = _write_form9_sheet(ws9, project)
+        last_row9, _ = _write_form9_sheet(ws9, project, member_ids=member_ids)
         self._apply_a4_page_setup(ws9, last_row=last_row9, num_cols=13, orientation="landscape",
                                    margins=tight_margins, fit_one_page=False, center_on_page=True)
 
@@ -2422,18 +2786,18 @@ def _build_form5_form10_sheets(self, wb, forms_to_generate=None):
             continue
 
         if '5' in forms:
-            matches5 = employees_joined_in_month(project, cal_year, cal_month)
+            matches5 = employees_joined_in_month(project, cal_year, cal_month, member_ids=member_ids)
             if matches5:
                 ws5 = wb.create_sheet(title=f"F5_{month_abbr}"[:31])
-                last_row5, _ = _write_form5_sheet(ws5, project, cal_year, cal_month)
+                last_row5, _ = _write_form5_sheet(ws5, project, cal_year, cal_month, member_ids=member_ids)
                 self._apply_a4_page_setup(ws5, last_row=last_row5, num_cols=9, orientation="landscape",
                                            margins=tight_margins, fit_one_page=True, center_on_page=True)
 
         if '10' in forms:
-            matches10 = employees_left_in_month(project, cal_year, cal_month)
+            matches10 = employees_left_in_month(project, cal_year, cal_month, member_ids=member_ids)
             if matches10:
                 ws10 = wb.create_sheet(title=f"F10_{month_abbr}"[:31])
-                last_row10, _ = _write_form10_sheet(ws10, project, cal_year, cal_month)
+                last_row10, _ = _write_form10_sheet(ws10, project, cal_year, cal_month, member_ids=member_ids)
                 self._apply_a4_page_setup(ws10, last_row=last_row10, num_cols=7, orientation="landscape",
                                            margins=tight_margins, fit_one_page=True, center_on_page=True)
 

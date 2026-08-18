@@ -122,15 +122,22 @@ async def get_active_establishment(
         raise HTTPException(status_code=403, detail="Access denied. You do not have permission to view this establishment.")
 
     p = Project()
+    migrated = False
     if est.data:
         try:
             data_dict = json.loads(est.data)
-            p.load_from_dict(data_dict)
+            migrated = p.load_from_dict(data_dict)
         except Exception as e:
             print(f"Error loading project data for establishment {est.id}: {e}")
             p.set_establishment(est.code, est.name, est.address or "", est.coverage_date or "")
     else:
         p.set_establishment(est.code, est.name, est.address or "", est.coverage_date or "")
+
+    if migrated:
+        # First load since the Branch/Division/Unit org-structure migration ran for
+        # this establishment -- persist immediately so every subsequent request is
+        # a no-op fast path (org_structure_version already present).
+        save_establishment_project(db, est, p)
 
     return est, p
 

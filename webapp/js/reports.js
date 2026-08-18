@@ -69,13 +69,19 @@ App.registerPage('reports', async (container) => {
         <div class="card" style="margin:0">
           <div class="card-head"><div class="card-title">2. Annual Returns (Forms 3A, 6A, 12A, 5, 10)</div></div>
           
-          <div class="form-group" style="margin-bottom:20px; max-width:300px">
-            <label class="form-label">Select Financial Year</label>
-            <select class="form-select" id="r-year">
-              ${years.map(y => `<option value="${y.key}">${y.label}</option>`).reverse().join('')}
-            </select>
+          <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:20px;">
+            <div class="form-group" style="flex:1; min-width:150px; margin-bottom:0;">
+              <label class="form-label">Select Financial Year</label>
+              <select class="form-select" id="r-year">
+                ${years.map(y => `<option value="${y.key}">${y.label}</option>`).reverse().join('')}
+              </select>
+            </div>
+            <div class="form-group" style="flex:1; min-width:220px; margin-bottom:0;">
+              <label class="form-label">Scope (optional)</label>
+              <div id="report-scope-picker"></div>
+            </div>
           </div>
-          
+
           <p style="color:var(--text2); font-size:13px; margin-bottom:12px">
             Select the specific statutory forms you wish to generate for this year.
           </p>
@@ -132,21 +138,23 @@ App.registerPage('reports', async (container) => {
                 <option value="11">Feb Paid in Mar</option>
               </select>
             </div>
-            <div class="form-group" style="flex:1; min-width:150px">
-              <label class="form-label">Select Branch</label>
-              <select class="form-select" id="ecr-branch">
-                <option value="">All Branches (Combined)</option>
-                ${branches.map(b => `<option value="${App.esc(b)}">${App.esc(b)}</option>`).join('')}
-              </select>
+            <div class="form-group" style="flex:2; min-width:220px">
+              <label class="form-label">Scope (optional)</label>
+              <div id="ecr-scope-picker"></div>
             </div>
           </div>
-          
+
           <p style="color:var(--text2); font-size:13px; margin-bottom:12px">
-            Generate the #~# separated ECR format text file. You can download a single month as .txt, or the entire year as a .zip. Use <strong>Download All Branches</strong> to produce separate files per branch in one ZIP.
+            Generate the #~# separated ECR format text file. You can download a single month as .txt, or the entire year as a .zip. Use <strong>Download Grouped ZIP</strong> to produce a separate file per Branch/Division/Unit in one ZIP.
           </p>
-    
-          <div style="display:flex; justify-content:flex-end; gap:10px; flex-wrap:wrap;">
-            <button class="btn btn-glass" onclick="downloadECRBranchZip()" title="Generate separate ECR text file per branch bundled in one ZIP">📦 Download All Branches (ZIP)</button>
+
+          <div style="display:flex; justify-content:flex-end; gap:10px; flex-wrap:wrap; align-items:center;">
+            <select class="form-select" id="ecr-group-level" style="max-width:140px;">
+              <option value="branch">Group by Branch</option>
+              <option value="division">Group by Division</option>
+              <option value="unit">Group by Unit</option>
+            </select>
+            <button class="btn btn-glass" onclick="downloadECRBranchZip()" title="Generate separate ECR text file per Branch/Division/Unit bundled in one ZIP">📦 Download Grouped ZIP</button>
             <button class="btn btn-primary" onclick="downloadECR()">📥 Download ECR File</button>
           </div>
         </div>
@@ -176,7 +184,12 @@ App.registerPage('reports', async (container) => {
       </div>
     </div>
   </div>`;
-  
+
+  const reportScopeEl = document.getElementById('report-scope-picker');
+  if (reportScopeEl) ScopePicker.render(reportScopeEl, orgData, { allowNoneBranch: true });
+  const ecrScopeEl = document.getElementById('ecr-scope-picker');
+  if (ecrScopeEl) ScopePicker.render(ecrScopeEl, orgData, { allowNoneBranch: true });
+
   // Load employees for the dropdown
   App.get('/api/employees').then(res => {
       const searchInput = document.getElementById('r-emp-search');

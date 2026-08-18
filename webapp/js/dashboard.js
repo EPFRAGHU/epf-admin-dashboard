@@ -3,20 +3,22 @@
    ================================================================ */
 
 App.registerPage('dashboard', async (container) => {
-  const branchParam = window.currentDashBranch ? `?branch=${encodeURIComponent(window.currentDashBranch)}` : '';
+  const scope = window.currentDashScope || { branch_id: null, division_id: null, unit_id: null };
+  const scopeQs = new URLSearchParams();
+  if (scope.branch_id != null) scopeQs.set('branch_id', scope.branch_id);
+  if (scope.division_id != null) scopeQs.set('division_id', scope.division_id);
+  if (scope.unit_id != null) scopeQs.set('unit_id', scope.unit_id);
+  const scopeParam = scopeQs.toString() ? `?${scopeQs.toString()}` : '';
   const [data, orgData] = await Promise.all([
-    App.get(`/api/dashboard${branchParam}`),
+    App.get(`/api/dashboard${scopeParam}`),
     App.get('/api/org-structure')
   ]);
   const branches = orgData?.branches || [];
 
   const branchFilterHtml = branches.length > 0 ? `
     <div style="display:flex; align-items:center; gap:8px;">
-      <label style="font-size:12px; color:var(--text2); font-weight:600;">Branch:</label>
-      <select class="form-select" id="dash-branch-filter" style="max-width:180px; padding:4px 8px; font-size:12px;" onchange="window.setDashBranch(this.value)">
-        <option value="">All Branches</option>
-        ${branches.map(b => `<option value="${App.esc(b)}" ${window.currentDashBranch===b?'selected':''}>${App.esc(b)}</option>`).join('')}
-      </select>
+      <label style="font-size:12px; color:var(--text2); font-weight:600;">Scope:</label>
+      <div id="dash-scope-picker" style="min-width:340px;"></div>
     </div>
   ` : '';
 
@@ -169,6 +171,15 @@ App.registerPage('dashboard', async (container) => {
       </div>
     </div>
   </div>`;
+
+  const dashScopeEl = document.getElementById('dash-scope-picker');
+  if (dashScopeEl) {
+    ScopePicker.render(dashScopeEl, orgData, {
+      allowNoneBranch: true,
+      initial: scope,
+      onChange: (value) => { window.setDashScope(value); },
+    });
+  }
 
   // ── Charts ────────────────────────────────────────────────────
   const labels = data.year_stats.map(y => y.key);
@@ -357,8 +368,8 @@ window.showMonthEmployees = async (yearKey, monthIdx, monthLabel) => {
     }
 };
 
-window.setDashBranch = (branch) => {
-    window.currentDashBranch = branch;
+window.setDashScope = (scope) => {
+    window.currentDashScope = scope;
     App.navigate('dashboard');
 };
 

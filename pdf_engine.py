@@ -1,4 +1,5 @@
 import os
+from typing import Optional, Set
 from datetime import datetime
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -61,7 +62,7 @@ def _default_table_style():
 # --------------------------------------------------------------------------
 # Form 9
 # --------------------------------------------------------------------------
-def generate_form_9_pdf(project, filepath: str):
+def generate_form_9_pdf(project, filepath: str, member_ids: Optional[Set[str]] = None):
     doc = _build_pdf_doc(filepath, orientation="landscape")
     story = []
     
@@ -95,6 +96,8 @@ def generate_form_9_pdf(project, filepath: str):
     data = [header_row]
     
     employees = project.master_list()
+    if member_ids is not None:
+        employees = [e for e in employees if e.member_id in member_ids]
     for i, emp in enumerate(employees, start=1):
         leaving = ", ".join(x for x in (emp.doe, emp.reason_leaving) if x)
         row = [
@@ -138,13 +141,15 @@ def generate_form_9_pdf(project, filepath: str):
 # --------------------------------------------------------------------------
 # Form 3A
 # --------------------------------------------------------------------------
-def generate_form_3a_pdf(project, year_key: str, filepath: str):
+def generate_form_3a_pdf(project, year_key: str, filepath: str, member_ids: Optional[Set[str]] = None):
     doc = _build_pdf_doc(filepath, orientation="portrait")
     story = []
-    
+
     est = project.build_establishment_for_year(year_key)
     employees = project.build_employees_for_year(year_key)
     employees = [emp for emp in employees if sum(w or 0 for w in (emp.wages or [])) > 0]
+    if member_ids is not None:
+        employees = [emp for emp in employees if emp.member_id in member_ids]
     
     if not employees:
         story.append(Paragraph("No employees with wages found for this currency period.", style_title))
@@ -292,13 +297,15 @@ def generate_form_3a_pdf(project, year_key: str, filepath: str):
 # --------------------------------------------------------------------------
 # Form 6A
 # --------------------------------------------------------------------------
-def generate_form_6a_pdf(project, year_key: str, filepath: str):
+def generate_form_6a_pdf(project, year_key: str, filepath: str, member_ids: Optional[Set[str]] = None):
     doc = _build_pdf_doc(filepath, orientation="landscape")
     story = []
-    
+
     est = project.build_establishment_for_year(year_key)
     employees = project.build_employees_for_year(year_key)
     employees = [emp for emp in employees if sum(w or 0 for w in (emp.wages or [])) > 0]
+    if member_ids is not None:
+        employees = [emp for emp in employees if emp.member_id in member_ids]
     
     story.append(Paragraph("FORM 6 A", style_title))
     story.append(Paragraph("THE EMPLOYEE'S PROVIDENT FUND, 1952 (PARAGRAPH 43)", style_subtitle))
@@ -402,12 +409,14 @@ def generate_form_6a_pdf(project, year_key: str, filepath: str):
 # --------------------------------------------------------------------------
 # Form 12A
 # --------------------------------------------------------------------------
-def generate_form_12a_pdf(project, year_key: str, filepath: str):
+def generate_form_12a_pdf(project, year_key: str, filepath: str, member_ids: Optional[Set[str]] = None):
     doc = _build_pdf_doc(filepath, orientation="landscape")
     story = []
-    
+
     est = project.build_establishment_for_year(year_key)
     employees = project.build_employees_for_year(year_key)
+    if member_ids is not None:
+        employees = [emp for emp in employees if emp.member_id in member_ids]
     yr_record = project.years.get(year_key)
     all_remittances = yr_record.remittances if yr_record and hasattr(yr_record, 'remittances') else []
     
@@ -533,7 +542,7 @@ def generate_form_12a_pdf(project, year_key: str, filepath: str):
 # --------------------------------------------------------------------------
 # Form 5
 # --------------------------------------------------------------------------
-def generate_form_5_pdf(project, filepath: str):
+def generate_form_5_pdf(project, filepath: str, member_ids: Optional[Set[str]] = None):
     doc = _build_pdf_doc(filepath, orientation="landscape")
     story = []
     
@@ -553,7 +562,7 @@ def generate_form_5_pdf(project, filepath: str):
         cal_month = get_month_num(month_abbr)
         if cal_year is None: continue
         
-        matches = employees_joined_in_month(project, cal_year, cal_month)
+        matches = employees_joined_in_month(project, cal_year, cal_month, member_ids=member_ids)
         if not matches: continue
         
         forms_generated += 1
@@ -620,7 +629,7 @@ def generate_form_5_pdf(project, filepath: str):
 # --------------------------------------------------------------------------
 # Form 10
 # --------------------------------------------------------------------------
-def generate_form_10_pdf(project, filepath: str):
+def generate_form_10_pdf(project, filepath: str, member_ids: Optional[Set[str]] = None):
     doc = _build_pdf_doc(filepath, orientation="landscape")
     story = []
     
@@ -640,7 +649,7 @@ def generate_form_10_pdf(project, filepath: str):
         cal_month = get_month_num(month_abbr)
         if cal_year is None: continue
         
-        matches = employees_left_in_month(project, cal_year, cal_month)
+        matches = employees_left_in_month(project, cal_year, cal_month, member_ids=member_ids)
         if not matches: continue
         
         forms_generated += 1

@@ -21,7 +21,7 @@ App.registerPage('employees', async (container) => {
   const branchFilterHtml = branches.length > 0 ? `
     <select class="form-select" id="emp-branch-filter" onchange="filterEmpTable()" style="max-width:180px; font-size:12px; padding:6px 10px;">
       <option value="">All Branches</option>
-      ${branches.map(b => `<option value="${App.esc(b)}">${App.esc(b)}</option>`).join('')}
+      ${branches.map(b => `<option value="${b.id}">${App.esc(b.name)}</option>`).join('')}
     </select>
   ` : '';
 
@@ -46,7 +46,7 @@ App.registerPage('employees', async (container) => {
           <thead>
             <tr>
               <th>SL</th><th>Member ID</th><th>UAN</th><th>Name</th>
-              <th>Branch</th><th>Division</th><th>Unit</th>
+              <th>Org Scope</th>
               <th>Father's Name</th><th>DOB</th><th>Higher EPF</th><th>Sex</th>
               <th>DOJ</th><th>DOE</th><th>Reason</th><th>Actions</th>
             </tr>
@@ -88,11 +88,11 @@ function renderEmpTable() {
 
 window.filterEmpTable = () => {
   const q = (document.getElementById('emp-search')?.value || '').toLowerCase();
-  const branch = document.getElementById('emp-branch-filter')?.value || '';
-  
+  const branchId = document.getElementById('emp-branch-filter')?.value || '';
+
   filteredEmployees = masterEmployees.filter(e => {
-    const matchesQuery = !q || (e.member_id + ' ' + e.name + ' ' + (e.uan || '') + ' ' + (e.branch || '')).toLowerCase().includes(q);
-    const matchesBranch = !branch || (e.branch === branch);
+    const matchesQuery = !q || (e.member_id + ' ' + e.name + ' ' + (e.uan || '') + ' ' + (e.scope_path || '')).toLowerCase().includes(q);
+    const matchesBranch = !branchId || (String(e.branch_id) === branchId);
     return matchesQuery && matchesBranch;
   });
   currentEmpPage = 1;
@@ -106,9 +106,7 @@ function empRow(e) {
     <td><strong>${App.fmtId(e.member_id)}</strong></td>
     <td>${App.esc(e.uan)}</td>
     <td class="txt">${App.esc(e.name)}</td>
-    <td>${e.branch ? `<span class="badge" style="background:var(--bg); border:1px solid var(--card-border); font-size:11px;">${App.esc(e.branch)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
-    <td>${e.division ? `<span style="font-size:12px; color:var(--text2);">${App.esc(e.division)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
-    <td>${e.unit ? `<span style="font-size:12px; color:var(--text2);">${App.esc(e.unit)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
+    <td>${e.scope_path ? `<span style="font-size:11px; color:var(--text2);">${App.esc(e.scope_path)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
     <td>${App.esc(e.father_name)}</td>
     <td>${App.esc(e.dob)}${e.superannuation ? '<br><span class="badge high" style="margin-top:2px; display:inline-block">58+</span>' : ''}</td>
     <td>
@@ -130,9 +128,6 @@ function showEmpModal(emp = null) {
   const isEdit = !!emp;
   const title = isEdit ? `Edit Employee — ${emp.name}` : 'Add New Employee';
   const e = emp || {};
-  const branches = orgStructureData.branches || [];
-  const divisions = orgStructureData.divisions || [];
-  const units = orgStructureData.units || [];
 
   const body = `
     <div class="form-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
@@ -148,26 +143,9 @@ function showEmpModal(emp = null) {
         <label class="form-label">Name *</label>
         <input class="form-input" id="m-name" value="${App.esc(e.name || '')}">
       </div>
-      <div class="form-group">
-        <label class="form-label">Branch / Location</label>
-        <select class="form-select" id="m-branch">
-          <option value="">— None / Unassigned —</option>
-          ${branches.map(b => `<option value="${App.esc(b)}" ${e.branch===b?'selected':''}>${App.esc(b)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Division / Department</label>
-        <select class="form-select" id="m-division">
-          <option value="">— None —</option>
-          ${divisions.map(d => `<option value="${App.esc(d)}" ${e.division===d?'selected':''}>${App.esc(d)}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Unit / Section</label>
-        <select class="form-select" id="m-unit">
-          <option value="">— None —</option>
-          ${units.map(u => `<option value="${App.esc(u)}" ${e.unit===u?'selected':''}>${App.esc(u)}</option>`).join('')}
-        </select>
+      <div class="form-group" style="grid-column: span 3;">
+        <label class="form-label">Branch / Division / Unit</label>
+        <div id="m-scope-picker"></div>
       </div>
       <div class="form-group">
         <label class="form-label">Father/Husband Name</label>
@@ -267,6 +245,12 @@ function showEmpModal(emp = null) {
     <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
     <button class="btn btn-primary" onclick="saveEmp(${isEdit ? `'${App.fmtId(e.member_id)}'` : 'null'})">${isEdit ? 'Update' : 'Create'}</button>`;
   App.openModal(title, body, footer);
+  const pickerEl = document.getElementById('m-scope-picker');
+  if (pickerEl) {
+    ScopePicker.render(pickerEl, orgStructureData, {
+      initial: { branch_id: e.branch_id, division_id: e.division_id, unit_id: e.unit_id },
+    });
+  }
 }
 
 async function saveEmp(origAcc) {
@@ -290,10 +274,14 @@ async function saveEmp(origAcc) {
     ifsc: document.getElementById('m-ifsc').value.trim().toUpperCase(),
     higher_epf_ee: document.getElementById('m-higher-epf-ee').checked,
     higher_epf_er: document.getElementById('m-higher-epf-er').checked,
-    branch: document.getElementById('m-branch')?.value || '',
-    division: document.getElementById('m-division')?.value || '',
-    unit: document.getElementById('m-unit')?.value || '',
   };
+  const pickerEl = document.getElementById('m-scope-picker');
+  if (pickerEl) {
+    const scope = ScopePicker.getValue(pickerEl);
+    d.branch_id = scope.branch_id;
+    d.division_id = scope.division_id;
+    d.unit_id = scope.unit_id;
+  }
   if (!d.member_id || !d.name) { App.toast('Member ID and Name are required', 'error'); return; }
   try {
     if (origAcc) {

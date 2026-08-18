@@ -167,7 +167,8 @@ from epf_engine import (
     account2_rate_percent, account22_rate_percent,
     ACCOUNT_21_RATE, ACCOUNT_22_MIN,
     generate_ecr_month, calendar_year_for_month, Employee,
-    normalize_member_id, get_excel_sheet_names, get_month_num
+    normalize_member_id, get_excel_sheet_names, get_month_num,
+    filter_employees_by_scope, resolve_scope_path_for_ids, resolve_employee_scope_path,
 )
 
 MONTH_SHORT_NAMES = ["Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]
@@ -699,9 +700,9 @@ class EmployeeIn(BaseModel):
     ifsc: str = ""
     higher_epf_ee: bool = False
     higher_epf_er: bool = False
-    branch: str = ""
-    division: str = ""
-    unit: str = ""
+    branch_id: Optional[int] = None
+    division_id: Optional[int] = None
+    unit_id: Optional[int] = None
 
 class YearIn(BaseModel):
     year_from: str
@@ -758,7 +759,18 @@ class RemittanceIn(BaseModel):
 class BulkRemittanceIn(BaseModel):
     remittances: List[RemittanceIn]
 
-class OrgItemIn(BaseModel):
+class BranchIn(BaseModel):
+    name: str
+
+class DivisionIn(BaseModel):
+    name: str
+    branch_id: int
+
+class UnitIn(BaseModel):
+    name: str
+    division_id: int
+
+class RenameIn(BaseModel):
     name: str
 
 
@@ -2526,22 +2538,22 @@ def compute_remittance_row(yr, est, month_idx, wages_total, ee_total, er_total, 
 # ── Dashboard ─────────────────────────────────────────────────────────────
 @app.get("/api/dashboard")
 async def dashboard(
-    branch: Optional[str] = None,
+    branch_id: Optional[int] = None,
+    division_id: Optional[int] = None,
+    unit_id: Optional[int] = None,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment)
 ):
     est_obj, project = active
+    scoped = branch_id is not None or division_id is not None or unit_id is not None
     year_stats = []
     total_w = total_c = 0
     for yk in project.year_keys_sorted():
         yr = project.years[yk]
         est = project.build_establishment_for_year(yk)
         emps = project.build_employees_for_year(yk)
-        if branch:
-            if branch == "Unassigned":
-                emps = [e for e in emps if not getattr(project.master.get(e.member_id), 'branch', '')]
-            else:
-                emps = [e for e in emps if getattr(project.master.get(e.member_id), 'branch', '') == branch]
-        
+        if scoped:
+            emps = filter_employees_by_scope(emps, branch_id=branch_id, division_id=division_id, unit_id=unit_id)
+
         monthly_stats = []
         year_from_int = int(yr.year_from)
         yw = ywt = yet = 0
@@ -2653,10 +2665,10 @@ async def dashboard(
         })
 
     grand_remit_total = sum(y["totals"]["remit_total"] for y in year_stats)
-    emp_count = len(project.master) if not branch else (
-        len([m for m in project.master.values() if not m.branch]) if branch == "Unassigned"
-        else len([m for m in project.master.values() if m.branch == branch])
-    )
+    if scoped:
+        emp_count = len(filter_employees_by_scope(project.master_list(), branch_id=branch_id, division_id=division_id, unit_id=unit_id))
+    else:
+        emp_count = len(project.master)
     return {
         "establishment": {"id": est_obj.id, "code": project.code, "name": project.name, "address": project.address},
         "employees": emp_count,
@@ -3040,104 +3052,179 @@ async def establishment_refresh_advance_credit_status(
 @app.get("/api/org-structure")
 async def get_org_structure(active: Tuple[Establishment, Project] = Depends(get_active_establishment)):
     est_obj, project = active
+    counts = {"branch": {}, "division": {}, "unit": {}}
+    for m in project.master_list():
+        if m.branch_id is not None:
+            counts["branch"][m.branch_id] = counts["branch"].get(m.branch_id, 0) + 1
+        if m.division_id is not None:
+            counts["division"][m.division_id] = counts["division"].get(m.division_id, 0) + 1
+        if m.unit_id is not None:
+            counts["unit"][m.unit_id] = counts["unit"].get(m.unit_id, 0) + 1
     return {
-        "branches": getattr(project, "branches", []),
-        "divisions": getattr(project, "divisions", []),
-        "units": getattr(project, "units", [])
+        "branches": [dict(b.to_dict(), employee_count=counts["branch"].get(b.id, 0)) for b in project.branches],
+        "divisions": [dict(d.to_dict(), employee_count=counts["division"].get(d.id, 0)) for d in project.divisions],
+        "units": [dict(u.to_dict(), employee_count=counts["unit"].get(u.id, 0)) for u in project.units],
+        "migration_warnings": project.org_migration_warnings,
     }
+
+@app.post("/api/org-structure/migration-warnings/dismiss")
+async def dismiss_migration_warnings(
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
+    project.org_migration_warnings = []
+    save_establishment_project(db, est_obj, project)
+    return {"ok": True}
 
 @app.post("/api/org-structure/branches")
 async def add_branch(
-    d: OrgItemIn,
+    d: BranchIn,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
     db: Session = Depends(get_db)
 ):
     est_obj, project = active
     name = d.name.strip()
     if not name: raise HTTPException(400, "Branch name cannot be empty")
-    if not hasattr(project, "branches"): project.branches = []
-    if name not in project.branches:
-        project.branches.append(name)
-        save_establishment_project(db, est_obj, project)
-    return {"ok": True, "branches": project.branches}
+    project.add_branch(name)
+    save_establishment_project(db, est_obj, project)
+    return {"ok": True, "branches": [b.to_dict() for b in project.branches]}
 
-@app.delete("/api/org-structure/branches/{name:path}")
-async def delete_branch(
-    name: str,
+@app.put("/api/org-structure/branches/{branch_id}")
+async def rename_branch(
+    branch_id: int,
+    d: RenameIn,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
     db: Session = Depends(get_db)
 ):
     est_obj, project = active
-    name = name.strip()
-    affected = [m for m in project.master.values() if getattr(m, 'branch', '') == name]
+    name = d.name.strip()
+    if not name: raise HTTPException(400, "Branch name cannot be empty")
+    if not project.get_branch(branch_id):
+        raise HTTPException(404, "Branch not found")
+    project.rename_branch(branch_id, name)
+    save_establishment_project(db, est_obj, project)
+    return {"ok": True, "branches": [b.to_dict() for b in project.branches]}
+
+@app.delete("/api/org-structure/branches/{branch_id}")
+async def delete_branch(
+    branch_id: int,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
+    if not project.get_branch(branch_id):
+        raise HTTPException(404, "Branch not found")
+    if len(project.branches) <= 1:
+        raise HTTPException(400, "Cannot delete the only remaining branch -- an establishment must always have at least one branch")
+    affected = [m for m in project.master_list() if m.branch_id == branch_id]
     if affected:
-        raise HTTPException(400, f"Cannot delete branch '{name}' because it is assigned to {len(affected)} employee(s)")
-    if hasattr(project, "branches") and name in project.branches:
-        project.branches.remove(name)
-        save_establishment_project(db, est_obj, project)
-    return {"ok": True, "branches": project.branches}
+        raise HTTPException(400, f"Cannot delete this branch because it is assigned to {len(affected)} employee(s)")
+    child_divisions = [d for d in project.divisions if d.branch_id == branch_id]
+    if child_divisions:
+        raise HTTPException(400, f"Cannot delete this branch because it has {len(child_divisions)} division(s) under it")
+    project.remove_branch(branch_id)
+    save_establishment_project(db, est_obj, project)
+    return {"ok": True, "branches": [b.to_dict() for b in project.branches]}
 
 @app.post("/api/org-structure/divisions")
 async def add_division(
-    d: OrgItemIn,
+    d: DivisionIn,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
     db: Session = Depends(get_db)
 ):
     est_obj, project = active
     name = d.name.strip()
     if not name: raise HTTPException(400, "Division name cannot be empty")
-    if not hasattr(project, "divisions"): project.divisions = []
-    if name not in project.divisions:
-        project.divisions.append(name)
-        save_establishment_project(db, est_obj, project)
-    return {"ok": True, "divisions": project.divisions}
+    try:
+        project.add_division(d.branch_id, name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    save_establishment_project(db, est_obj, project)
+    return {"ok": True, "divisions": [d.to_dict() for d in project.divisions]}
 
-@app.delete("/api/org-structure/divisions/{name:path}")
-async def delete_division(
-    name: str,
+@app.put("/api/org-structure/divisions/{division_id}")
+async def rename_division(
+    division_id: int,
+    d: RenameIn,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
     db: Session = Depends(get_db)
 ):
     est_obj, project = active
-    name = name.strip()
-    affected = [m for m in project.master.values() if getattr(m, 'division', '') == name]
+    name = d.name.strip()
+    if not name: raise HTTPException(400, "Division name cannot be empty")
+    if not project.get_division(division_id):
+        raise HTTPException(404, "Division not found")
+    project.rename_division(division_id, name)
+    save_establishment_project(db, est_obj, project)
+    return {"ok": True, "divisions": [d.to_dict() for d in project.divisions]}
+
+@app.delete("/api/org-structure/divisions/{division_id}")
+async def delete_division(
+    division_id: int,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
+    if not project.get_division(division_id):
+        raise HTTPException(404, "Division not found")
+    affected = [m for m in project.master_list() if m.division_id == division_id]
     if affected:
-        raise HTTPException(400, f"Cannot delete division '{name}' because it is assigned to {len(affected)} employee(s)")
-    if hasattr(project, "divisions") and name in project.divisions:
-        project.divisions.remove(name)
-        save_establishment_project(db, est_obj, project)
-    return {"ok": True, "divisions": project.divisions}
+        raise HTTPException(400, f"Cannot delete this division because it is assigned to {len(affected)} employee(s)")
+    child_units = [u for u in project.units if u.division_id == division_id]
+    if child_units:
+        raise HTTPException(400, f"Cannot delete this division because it has {len(child_units)} unit(s) under it")
+    project.remove_division(division_id)
+    save_establishment_project(db, est_obj, project)
+    return {"ok": True, "divisions": [d.to_dict() for d in project.divisions]}
 
 @app.post("/api/org-structure/units")
 async def add_unit(
-    d: OrgItemIn,
+    d: UnitIn,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
     db: Session = Depends(get_db)
 ):
     est_obj, project = active
     name = d.name.strip()
     if not name: raise HTTPException(400, "Unit name cannot be empty")
-    if not hasattr(project, "units"): project.units = []
-    if name not in project.units:
-        project.units.append(name)
-        save_establishment_project(db, est_obj, project)
-    return {"ok": True, "units": project.units}
+    try:
+        project.add_unit(d.division_id, name)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    save_establishment_project(db, est_obj, project)
+    return {"ok": True, "units": [u.to_dict() for u in project.units]}
 
-@app.delete("/api/org-structure/units/{name:path}")
-async def delete_unit(
-    name: str,
+@app.put("/api/org-structure/units/{unit_id}")
+async def rename_unit(
+    unit_id: int,
+    d: RenameIn,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
     db: Session = Depends(get_db)
 ):
     est_obj, project = active
-    name = name.strip()
-    affected = [m for m in project.master.values() if getattr(m, 'unit', '') == name]
+    name = d.name.strip()
+    if not name: raise HTTPException(400, "Unit name cannot be empty")
+    if not project.get_unit(unit_id):
+        raise HTTPException(404, "Unit not found")
+    project.rename_unit(unit_id, name)
+    save_establishment_project(db, est_obj, project)
+    return {"ok": True, "units": [u.to_dict() for u in project.units]}
+
+@app.delete("/api/org-structure/units/{unit_id}")
+async def delete_unit(
+    unit_id: int,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
+    if not project.get_unit(unit_id):
+        raise HTTPException(404, "Unit not found")
+    affected = [m for m in project.master_list() if m.unit_id == unit_id]
     if affected:
-        raise HTTPException(400, f"Cannot delete unit '{name}' because it is assigned to {len(affected)} employee(s)")
-    if hasattr(project, "units") and name in project.units:
-        project.units.remove(name)
-        save_establishment_project(db, est_obj, project)
-    return {"ok": True, "units": project.units}
+        raise HTTPException(400, f"Cannot delete this unit because it is assigned to {len(affected)} employee(s)")
+    project.remove_unit(unit_id)
+    save_establishment_project(db, est_obj, project)
+    return {"ok": True, "units": [u.to_dict() for u in project.units]}
 
 
 # ── Employees Endpoints ───────────────────────────────────────────────────
@@ -3156,9 +3243,10 @@ async def list_employees(active: Tuple[Establishment, Project] = Depends(get_act
             "superannuation": age is not None and age >= SUPERANNUATION_AGE,
             "higher_epf_ee": m.higher_epf_ee,
             "higher_epf_er": m.higher_epf_er,
-            "branch": getattr(m, "branch", ""),
-            "division": getattr(m, "division", ""),
-            "unit": getattr(m, "unit", ""),
+            "branch_id": m.branch_id,
+            "division_id": m.division_id,
+            "unit_id": m.unit_id,
+            "scope_path": resolve_employee_scope_path(m, project),
         })
     return {"employees": rows, "total": len(rows)}
 
@@ -3174,11 +3262,14 @@ async def add_employee(
     est_obj, project = active
     if project.get_master(d.member_id):
         raise HTTPException(400, f"Account {d.member_id} already exists")
-    project.upsert_master(d.member_id, d.name, d.father_name, d.uan,
-                          d.dob, d.sex, d.doj, d.doe, d.reason_leaving, d.serial_no,
-                          d.relationship, d.marital_status, d.mobile, d.email, d.aadhaar,
-                          d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er,
-                          d.branch, d.division, d.unit)
+    try:
+        project.upsert_master(d.member_id, d.name, d.father_name, d.uan,
+                              d.dob, d.sex, d.doj, d.doe, d.reason_leaving, d.serial_no,
+                              d.relationship, d.marital_status, d.mobile, d.email, d.aadhaar,
+                              d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er,
+                              d.branch_id, d.division_id, d.unit_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     save_establishment_project(db, est_obj, project)
     log_activity(
         db, est_obj.user_id, est_obj.id, "employee_added",
@@ -3202,11 +3293,14 @@ async def edit_employee(
         if project.get_master(d.member_id):
             raise HTTPException(400, f"Account {d.member_id} already exists")
         project.rename_account(acc, d.member_id)
-    project.upsert_master(d.member_id, d.name, d.father_name, d.uan,
-                          d.dob, d.sex, d.doj, d.doe, d.reason_leaving, d.serial_no,
-                          d.relationship, d.marital_status, d.mobile, d.email, d.aadhaar,
-                          d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er,
-                          d.branch, d.division, d.unit)
+    try:
+        project.upsert_master(d.member_id, d.name, d.father_name, d.uan,
+                              d.dob, d.sex, d.doj, d.doe, d.reason_leaving, d.serial_no,
+                              d.relationship, d.marital_status, d.mobile, d.email, d.aadhaar,
+                              d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er,
+                              d.branch_id, d.division_id, d.unit_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     save_establishment_project(db, est_obj, project)
     return {"ok": True}
 
@@ -3704,6 +3798,9 @@ def generate_report(
     key: str,
     format: str = 'excel',
     forms: str = '',
+    branch_id: Optional[int] = None,
+    division_id: Optional[int] = None,
+    unit_id: Optional[int] = None,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -3724,36 +3821,43 @@ def generate_report(
     yr = project.years[key]
     est = project.build_establishment_for_year(key)
     emps = project.build_employees_for_year(key)
+    scoped = branch_id is not None or division_id is not None or unit_id is not None
+    if scoped:
+        emps = filter_employees_by_scope(emps, branch_id=branch_id, division_id=division_id, unit_id=unit_id)
+        scope_member_ids = {e.member_id for e in filter_employees_by_scope(
+            project.master_list(), branch_id=branch_id, division_id=division_id, unit_id=unit_id)}
+    else:
+        scope_member_ids = None
     if not emps:
-        raise HTTPException(400, "No wage entries for this year")
-    
+        raise HTTPException(400, "No wage entries for this year" if not scoped else "No employees in the selected scope for this year")
+
     forms_list = [f.strip() for f in forms.split(',')] if forms else ['3A', '6A', '12A', '5', '10']
-    gen = ExcelGenerator(est, emps, project=project, forms_to_generate=forms_list)
+    gen = ExcelGenerator(est, emps, project=project, forms_to_generate=forms_list, scope_member_ids=scope_member_ids)
     safe = (project.code or "EPF").replace("/", "-").replace("\\", "-").strip() or "EPF"
     fname = f"{safe}_{yr.short_label}.xlsx"
     tmp = tempfile.mkdtemp()
     path = os.path.join(tmp, fname)
     gen.build(path)
-    
+
     if format == 'pdf':
         pdf_fname = fname.replace('.xlsx', '.pdf')
         pdf_path = os.path.join(tmp, pdf_fname)
         try:
             from pdf_engine import generate_form_9_pdf, generate_form_3a_pdf, generate_form_6a_pdf, generate_form_12a_pdf, generate_form_5_pdf, generate_form_10_pdf
-            
+
             f = forms_list[0] if forms_list else '3A'
-            if f == '3A': generate_form_3a_pdf(project, key, pdf_path)
-            elif f == '6A': generate_form_6a_pdf(project, key, pdf_path)
-            elif f == '12A': generate_form_12a_pdf(project, key, pdf_path)
-            elif f == '5': generate_form_5_pdf(project, pdf_path)
-            elif f == '10': generate_form_10_pdf(project, pdf_path)
-            elif f == '9': generate_form_9_pdf(project, pdf_path)
+            if f == '3A': generate_form_3a_pdf(project, key, pdf_path, member_ids=scope_member_ids)
+            elif f == '6A': generate_form_6a_pdf(project, key, pdf_path, member_ids=scope_member_ids)
+            elif f == '12A': generate_form_12a_pdf(project, key, pdf_path, member_ids=scope_member_ids)
+            elif f == '5': generate_form_5_pdf(project, pdf_path, member_ids=scope_member_ids)
+            elif f == '10': generate_form_10_pdf(project, pdf_path, member_ids=scope_member_ids)
+            elif f == '9': generate_form_9_pdf(project, pdf_path, member_ids=scope_member_ids)
             else: raise ValueError(f"Unknown form for PDF generation: {f}")
-            
+
             return FileResponse(pdf_path, filename=pdf_fname, media_type="application/pdf")
         except Exception as e:
             raise HTTPException(500, f"PDF generation failed: {str(e)}")
-            
+
     return FileResponse(path, filename=fname, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
@@ -3793,25 +3897,19 @@ def generate_employee_report(
         raise HTTPException(400, "Form 3A cannot be generated for an employee with 0 total wages")
     
     forms_list = [f.strip() for f in forms.split(',')] if forms else ['3A']
-    gen = ExcelGenerator(est, [emp], project=project, forms_to_generate=forms_list)
+    gen = ExcelGenerator(est, [emp], project=project, forms_to_generate=forms_list, scope_member_ids={acc})
     safe = (emp.name or "Employee").replace("/", "-").replace("\\", "-").strip() or "Employee"
     fname = f"{safe}_Form3A.xlsx"
     tmp = tempfile.mkdtemp()
     path = os.path.join(tmp, fname)
     gen.build(path)
-    
+
     if format == 'pdf':
         pdf_fname = fname.replace('.xlsx', '.pdf')
         pdf_path = os.path.join(tmp, pdf_fname)
         try:
             import pdf_engine
-            orig_build = project.build_employees_for_year
-            project.build_employees_for_year = lambda yk: [emp] if yk == key else orig_build(yk)
-            try:
-                pdf_engine.generate_form_3a_pdf(project, key, pdf_path)
-            finally:
-                project.build_employees_for_year = orig_build
-                
+            pdf_engine.generate_form_3a_pdf(project, key, pdf_path, member_ids={acc})
             return FileResponse(pdf_path, filename=pdf_fname, media_type="application/pdf")
         except Exception as e:
             raise HTTPException(500, f"PDF generation failed: {str(e)}")
@@ -3863,20 +3961,51 @@ def report_form9(
 import zipfile
 import io
 
+def _build_ecr_employees_for_scope(project: Project, year_record, branch_id=None, division_id=None, unit_id=None):
+    """The single builder for ECR-shaped Employee objects, used by every ECR
+    endpoint below -- never reimplement this filtering loop per-endpoint."""
+    masters = filter_employees_by_scope(project.master_list(), branch_id=branch_id, division_id=division_id, unit_id=unit_id)
+    employees_with_wages = []
+    for master_emp in masters:
+        entry = next((e for e in year_record.entries if e.member_id == master_emp.member_id), None)
+        emp_obj = Employee(
+            member_id=master_emp.member_id,
+            name=master_emp.name,
+            father_name=master_emp.father_name,
+            uan=master_emp.uan,
+            branch_id=master_emp.branch_id,
+            division_id=master_emp.division_id,
+            unit_id=master_emp.unit_id,
+        )
+        if entry:
+            emp_obj.wages = entry.wages
+            emp_obj.gross_wages = entry.gross_wages
+            emp_obj.ncp_days = getattr(entry, 'ncp_days', [0] * 12)
+            emp_obj.higher_epf_ee = master_emp.higher_epf_ee
+            emp_obj.higher_epf_er = master_emp.higher_epf_er
+            emp_obj.age_crosses_58 = getattr(entry, 'age_crosses_58', False)
+        else:
+            emp_obj.wages = [0.0] * 12
+            emp_obj.ncp_days = [0] * 12
+        employees_with_wages.append(emp_obj)
+    return employees_with_wages
+
+
 @app.get("/api/reports/{year_key}/ecr/{month_idx}")
 async def generate_ecr_txt(
     year_key: str,
     month_idx: int,
-    branch: Optional[str] = None,
-    division: Optional[str] = None,
-    unit: Optional[str] = None,
+    branch_id: Optional[int] = None,
+    division_id: Optional[int] = None,
+    unit_id: Optional[int] = None,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     require_permission(db, current_user, "ecr.download")
     est_obj, project = active
-    if branch or division or unit:
+    scoped = branch_id is not None or division_id is not None or unit_id is not None
+    if scoped:
         require_feature_enabled(db, "branch_feature_enabled", "Branch/division/unit filtering")
     if current_user.role != "superadmin":
         if not (0 <= month_idx < 12):
@@ -3903,90 +4032,75 @@ async def generate_ecr_txt(
     if not year_record:
         raise HTTPException(404, "Year not found")
 
-    employees_with_wages = []
-    for master_emp in project.master.values():
-        if branch:
-            if branch == "Unassigned" and master_emp.branch: continue
-            elif branch != "Unassigned" and master_emp.branch != branch: continue
-        if division and master_emp.division != division: continue
-        if unit and master_emp.unit != unit: continue
-
-        entry = next((e for e in year_record.entries if e.member_id == master_emp.member_id), None)
-        emp_obj = Employee(
-            member_id=master_emp.member_id,
-            name=master_emp.name,
-            father_name=master_emp.father_name,
-            uan=master_emp.uan,
-            branch=master_emp.branch,
-            division=master_emp.division,
-            unit=master_emp.unit
-        )
-        if entry:
-            emp_obj.wages = entry.wages
-            emp_obj.gross_wages = entry.gross_wages
-            emp_obj.ncp_days = getattr(entry, 'ncp_days', [0]*12)
-            emp_obj.higher_epf_ee = master_emp.higher_epf_ee
-            emp_obj.higher_epf_er = master_emp.higher_epf_er
-            emp_obj.age_crosses_58 = getattr(entry, 'age_crosses_58', False)
-        else:
-            emp_obj.wages = [0.0] * 12
-            emp_obj.ncp_days = [0] * 12
-        employees_with_wages.append(emp_obj)
+    employees_with_wages = _build_ecr_employees_for_scope(
+        project, year_record, branch_id=branch_id, division_id=division_id, unit_id=unit_id)
 
     est = project.build_establishment_for_year(year_key)
     txt = generate_ecr_month(est, employees_with_wages, year_record, month_idx)
-    
+
     est_code = "".join(c for c in est.code if c.isalnum())[:15] or "EST"
     month_str = MONTHS[month_idx][:3].upper()
     cal_year = calendar_year_for_month(MONTHS[month_idx], year_record.year_from, year_record.year_to)
-    
-    if branch:
-        clean_b = "".join(c for c in branch if c.isalnum() or c in ('_', '-')) or "Unassigned"
+
+    if scoped:
+        scope_name = resolve_scope_path_for_ids(project, branch_id=branch_id, division_id=division_id, unit_id=unit_id)
+        clean_b = "".join(c for c in scope_name if c.isalnum() or c in ('_', '-')) or "Unassigned"
         fname = f"{est_code}_ECR_{clean_b}_{month_str}_{cal_year}.txt"
     else:
         fname = f"{est_code}_ECR_{month_str}_{cal_year}.txt"
     return Response(content=txt, media_type="text/plain", headers={"Content-Disposition": f"attachment; filename={fname}"})
 
 
-@app.get("/api/reports/{year_key}/ecr/{month_idx}/by-branch")
-async def get_ecr_by_branch_stats(
+@app.get("/api/reports/{year_key}/ecr/{month_idx}/by-scope")
+async def get_ecr_by_scope_stats(
     year_key: str,
     month_idx: int,
+    level: str = "branch",
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
     db: Session = Depends(get_db)
 ):
     require_feature_enabled(db, "branch_feature_enabled", "Branch-wise ECR breakdown")
+    if level not in ("branch", "division", "unit"):
+        raise HTTPException(400, "level must be one of: branch, division, unit")
     est_obj, project = active
     year_record = project.years.get(year_key)
     if not year_record:
         raise HTTPException(404, "Year not found")
-        
-    branch_stats = {}
-    for master_emp in project.master.values():
+
+    scope_stats = {}
+    for master_emp in project.master_list():
         entry = next((e for e in year_record.entries if e.member_id == master_emp.member_id), None)
         if not entry: continue
         w = entry.wages[month_idx] if entry.wages and len(entry.wages) > month_idx else 0
         g = entry.gross_wages[month_idx] if entry.gross_wages and len(entry.gross_wages) > month_idx else 0
         if w > 0 or g > 0:
-            b_name = master_emp.branch or "Unassigned"
-            if b_name not in branch_stats:
-                branch_stats[b_name] = {"branch": b_name, "employee_count": 0, "total_wages": 0}
-            branch_stats[b_name]["employee_count"] += 1
-            branch_stats[b_name]["total_wages"] += w
+            node_id = getattr(master_emp, f"{level}_id", None)
+            key = node_id if node_id is not None else "Unassigned"
+            if key not in scope_stats:
+                display_name = (
+                    resolve_scope_path_for_ids(project, **{f"{level}_id": node_id})
+                    if node_id is not None else "Unassigned"
+                )
+                scope_stats[key] = {"id": node_id, "name": display_name, "employee_count": 0, "total_wages": 0}
+            scope_stats[key]["employee_count"] += 1
+            scope_stats[key]["total_wages"] += w
 
-    return {"branches": sorted(branch_stats.values(), key=lambda x: x["branch"])}
+    return {"level": level, "scopes": sorted(scope_stats.values(), key=lambda x: x["name"])}
 
 
-@app.get("/api/reports/{year_key}/ecr/{month_idx}/zip-by-branch")
-async def generate_ecr_zip_by_branch(
+@app.get("/api/reports/{year_key}/ecr/{month_idx}/zip-by-scope")
+async def generate_ecr_zip_by_scope(
     year_key: str,
     month_idx: int,
+    level: str = "branch",
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     require_permission(db, current_user, "ecr.download")
     require_feature_enabled(db, "branch_feature_enabled", "Branch-wise ECR download")
+    if level not in ("branch", "division", "unit"):
+        raise HTTPException(400, "level must be one of: branch, division, unit")
     est_obj, project = active
     if current_user.role != "superadmin":
         if not (0 <= month_idx < 12):
@@ -4013,23 +4127,28 @@ async def generate_ecr_zip_by_branch(
     if not year_record:
         raise HTTPException(404, "Year not found")
 
-    branch_emps = {}
-    for master_emp in project.master.values():
+    scope_emps = {}
+    for master_emp in project.master_list():
         entry = next((e for e in year_record.entries if e.member_id == master_emp.member_id), None)
         w = entry.wages[month_idx] if entry and entry.wages and len(entry.wages) > month_idx else 0
         g = entry.gross_wages[month_idx] if entry and entry.gross_wages and len(entry.gross_wages) > month_idx else 0
         if w > 0 or g > 0:
-            b_name = master_emp.branch or "Unassigned"
-            if b_name not in branch_emps:
-                branch_emps[b_name] = []
+            node_id = getattr(master_emp, f"{level}_id", None)
+            key = node_id if node_id is not None else "Unassigned"
+            if key not in scope_emps:
+                display_name = (
+                    resolve_scope_path_for_ids(project, **{f"{level}_id": node_id})
+                    if node_id is not None else "Unassigned"
+                )
+                scope_emps[key] = (display_name, [])
             emp_obj = Employee(
                 member_id=master_emp.member_id,
                 name=master_emp.name,
                 father_name=master_emp.father_name,
                 uan=master_emp.uan,
-                branch=master_emp.branch,
-                division=master_emp.division,
-                unit=master_emp.unit,
+                branch_id=master_emp.branch_id,
+                division_id=master_emp.division_id,
+                unit_id=master_emp.unit_id,
                 wages=entry.wages if entry else [0]*12,
                 gross_wages=entry.gross_wages if entry else [0]*12,
                 ncp_days=getattr(entry, 'ncp_days', [0]*12) if entry else [0]*12,
@@ -4037,39 +4156,40 @@ async def generate_ecr_zip_by_branch(
                 higher_epf_er=master_emp.higher_epf_er,
                 age_crosses_58=getattr(entry, 'age_crosses_58', False) if entry else False
             )
-            branch_emps[b_name].append(emp_obj)
+            scope_emps[key][1].append(emp_obj)
 
     est = project.build_establishment_for_year(year_key)
     est_code = "".join(c for c in est.code if c.isalnum())[:15] or "EST"
     month_str = MONTHS[month_idx][:3].upper()
     cal_year = calendar_year_for_month(MONTHS[month_idx], year_record.year_from, year_record.year_to)
-    
+
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
-        for b_name, emps_list in sorted(branch_emps.items()):
+        for display_name, emps_list in sorted(scope_emps.values(), key=lambda v: v[0]):
             txt = generate_ecr_month(est, emps_list, year_record, month_idx)
-            clean_b = "".join(c for c in b_name if c.isalnum() or c in ('_', '-')) or "Unassigned"
+            clean_b = "".join(c for c in display_name if c.isalnum() or c in ('_', '-')) or "Unassigned"
             fname = f"{est_code}_ECR_{clean_b}_{month_str}_{cal_year}.txt"
             zip_file.writestr(fname, txt)
-            
+
     zip_buffer.seek(0)
-    zip_fname = f"{est_code}_ECR_Branches_{month_str}_{cal_year}.zip"
+    zip_fname = f"{est_code}_ECR_{level.capitalize()}s_{month_str}_{cal_year}.zip"
     return Response(content=zip_buffer.getvalue(), media_type="application/zip", headers={"Content-Disposition": f"attachment; filename={zip_fname}"})
 
 
 @app.get("/api/reports/{year_key}/ecr")
 async def generate_ecr_zip(
     year_key: str,
-    branch: Optional[str] = None,
-    division: Optional[str] = None,
-    unit: Optional[str] = None,
+    branch_id: Optional[int] = None,
+    division_id: Optional[int] = None,
+    unit_id: Optional[int] = None,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     require_permission(db, current_user, "ecr.download")
     est_obj, project = active
-    if branch or division or unit:
+    scoped = branch_id is not None or division_id is not None or unit_id is not None
+    if scoped:
         require_feature_enabled(db, "branch_feature_enabled", "Branch/division/unit filtering")
     if current_user.role != "superadmin":
         unpaid = get_unpaid_months_for_year(db, est_obj, project, year_key)
@@ -4083,41 +4203,18 @@ async def generate_ecr_zip(
     year_record = project.years.get(year_key)
     if not year_record:
         raise HTTPException(404, "Year not found")
-        
-    employees_with_wages = []
-    for master_emp in project.master.values():
-        if branch:
-            if branch == "Unassigned" and master_emp.branch: continue
-            elif branch != "Unassigned" and master_emp.branch != branch: continue
-        if division and master_emp.division != division: continue
-        if unit and master_emp.unit != unit: continue
 
-        entry = next((e for e in year_record.entries if e.member_id == master_emp.member_id), None)
-        emp_obj = Employee(
-            member_id=master_emp.member_id,
-            name=master_emp.name,
-            father_name=master_emp.father_name,
-            uan=master_emp.uan,
-            branch=master_emp.branch,
-            division=master_emp.division,
-            unit=master_emp.unit
-        )
-        if entry:
-            emp_obj.wages = entry.wages
-            emp_obj.gross_wages = entry.gross_wages
-            emp_obj.ncp_days = getattr(entry, 'ncp_days', [0]*12)
-            emp_obj.higher_epf_ee = master_emp.higher_epf_ee
-            emp_obj.higher_epf_er = master_emp.higher_epf_er
-            emp_obj.age_crosses_58 = getattr(entry, 'age_crosses_58', False)
-        else:
-            emp_obj.wages = [0.0] * 12
-            emp_obj.ncp_days = [0] * 12
-        employees_with_wages.append(emp_obj)
+    employees_with_wages = _build_ecr_employees_for_scope(
+        project, year_record, branch_id=branch_id, division_id=division_id, unit_id=unit_id)
 
     est = project.build_establishment_for_year(year_key)
     est_code = "".join(c for c in est.code if c.isalnum())[:15] or "EST"
-    clean_b = ("_" + "".join(c for c in branch if c.isalnum() or c in ('_', '-'))) if branch else ""
-    
+    if scoped:
+        scope_name = resolve_scope_path_for_ids(project, branch_id=branch_id, division_id=division_id, unit_id=unit_id)
+        clean_b = "_" + ("".join(c for c in scope_name if c.isalnum() or c in ('_', '-')) or "Unassigned")
+    else:
+        clean_b = ""
+
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
         for idx in range(12):
