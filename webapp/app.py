@@ -245,8 +245,21 @@ def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project
     query per month) -- this endpoint is on the hot path for page loads (Reports,
     Challans, the subscription-status banner), and 12 sequential round-trips to a
     remote DB (Neon Postgres in production) measurably added seconds to page load,
-    especially noticeable right after the DB's connection has been idle."""
-    rate = resolve_rate(db, est_obj)
+    especially noticeable right after the DB's connection has been idle.
+
+    billing_mode governs HOW amount_due is computed, nothing else -- enforcement
+    (download-locking, Cashfree, advance credit, trials) is identical either way.
+    resolve_rate()'s tiered-rate lookup is only run for 'per_employee' establishments;
+    there's no rate to resolve in flat-fee mode. A still-unpaid row always live-adopts
+    the establishment's CURRENT billing_mode/rate/amount on every sync (these are the
+    "future months"). A PAID row is historical and frozen: it remembers the mode it was
+    actually billed under (its own billing_mode, not the establishment's current one) and
+    its amount_due is never rewritten by a later mode switch -- only employee_count is
+    refreshed, for reporting/visibility."""
+    mode = est_obj.billing_mode or "per_employee"
+    flat_amount = round(float(est_obj.flat_fee_amount), 2) if (mode == "flat_fee" and est_obj.flat_fee_amount) else 0.0
+    rate = resolve_rate(db, est_obj) if mode == "per_employee" else None
+
     year_record = project.years.get(year_key)
     if not year_record:
         return
@@ -271,7 +284,8 @@ def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project
                 month=month_abbr,
                 employee_count=emp_count,
                 rate_applied=rate,
-                amount_due=round(emp_count * rate, 2),
+                amount_due=flat_amount if mode == "flat_fee" else round(emp_count * rate, 2),
+                billing_mode=mode,
                 is_paid=False
             )
             db.add(fee_row)
@@ -281,15 +295,22 @@ def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project
             if not fee_row.is_paid:
                 was_unbilled = fee_row.amount_due <= 0
                 fee_row.employee_count = emp_count
+                fee_row.billing_mode = mode
                 fee_row.rate_applied = rate
-                fee_row.amount_due = round(emp_count * rate, 2)
+                fee_row.amount_due = flat_amount if mode == "flat_fee" else round(emp_count * rate, 2)
                 if was_unbilled and fee_row.amount_due > 0:
                     # This row existed as a 0-due placeholder (no wage data yet) and has
                     # just been billed for the first time -- same as a fresh row.
                     apply_advance_credit_if_available(db, est_obj, fee_row)
             else:
+                # Paid -- historical. Recompute amount_due using the row's OWN frozen
+                # billing_mode, not the establishment's possibly-since-changed one, so a
+                # mode switch never rewrites an already-billed/paid month.
                 fee_row.employee_count = emp_count
-                fee_row.amount_due = round(emp_count * fee_row.rate_applied, 2)
+                row_mode = fee_row.billing_mode or "per_employee"
+                if row_mode == "per_employee" and fee_row.rate_applied is not None:
+                    fee_row.amount_due = round(emp_count * fee_row.rate_applied, 2)
+                # flat_fee paid rows: amount_due stays exactly as billed, headcount-independent.
 
         existing_rows[month_abbr] = fee_row
 
@@ -407,6 +428,10 @@ def _run_startup_migrations():
                 _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS cashfree_payment_link_url TEXT;")
                 _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN cashfree_order_id VARCHAR(120);")
                 _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN cashfree_payment_link_url TEXT;")
+                _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN IF NOT EXISTS billing_mode VARCHAR(20) DEFAULT 'per_employee';")
+                _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN IF NOT EXISTS flat_fee_amount FLOAT;")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS billing_mode VARCHAR(20) DEFAULT 'per_employee';")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ALTER COLUMN rate_applied DROP NOT NULL;")
         except Exception as e:
             print(f"  [WARN] DDL check error: {e}")
 
@@ -615,6 +640,10 @@ class EstablishmentIn(BaseModel):
 
 class TrialUpdateIn(BaseModel):
     trial_ends_on: Optional[str] = None  # "YYYY-MM-DD", or null/omitted to clear the trial
+
+class BillingModeUpdateIn(BaseModel):
+    billing_mode: str  # 'per_employee' or 'flat_fee'
+    flat_fee_amount: Optional[float] = None  # required (>0) when billing_mode='flat_fee'; ignored otherwise
 
 class SignupIn(BaseModel):
     role: str  # 'employer' or 'consultant'
@@ -1353,6 +1382,8 @@ async def admin_user_establishments(
             "address": est.address or "—",
             "coverage_date": est.coverage_date or "—",
             "custom_rate_per_employee": est.custom_rate_per_employee,
+            "billing_mode": est.billing_mode or "per_employee",
+            "flat_fee_amount": est.flat_fee_amount,
             "employee_count": emp_count,
             "unpaid_subscription_months": unpaid,
             "has_overdue_subscription": len(unpaid) > 0,
@@ -1591,7 +1622,10 @@ async def admin_get_establishment_subscription_fees(
 
     default_setting = db.query(Setting).filter(Setting.key == "default_rate_per_employee").first()
     default_rate = float(default_setting.value) if default_setting and default_setting.value else 10.0
-    effective_rate = resolve_rate(db, est, consultant)
+    billing_mode = est.billing_mode or "per_employee"
+    # No "rate per employee" concept exists in flat-fee mode -- skip resolve_rate() entirely
+    # rather than compute a figure that would just be confusing and unused.
+    effective_rate = resolve_rate(db, est, consultant) if billing_mode == "per_employee" else None
 
     fee_rows = db.query(SubscriptionFee).filter(
         SubscriptionFee.establishment_id == est_id,
@@ -1610,13 +1644,19 @@ async def admin_get_establishment_subscription_fees(
         display_name = f"{MONTH_FULL.get(m_abbr.upper(), m_abbr)} {cal_yr}"
         overdue = is_month_overdue(year, i) and emp_count > 0 and (not f_obj or not f_obj.is_paid)
 
+        row_mode = (f_obj.billing_mode if f_obj else billing_mode) or "per_employee"
+        amount_due = f_obj.amount_due if f_obj else (est.flat_fee_amount if billing_mode == "flat_fee" else round(emp_count * (effective_rate or 0), 2))
+        billing_display = f"₹{amount_due}/month flat rate" if row_mode == "flat_fee" else f"₹{f_obj.rate_applied if f_obj else effective_rate}/employee"
+
         months_data.append({
             "month_idx": i,
             "month": m_abbr,
             "display_name": display_name,
             "employee_count": f_obj.employee_count if f_obj else emp_count,
             "rate_applied": f_obj.rate_applied if f_obj else effective_rate,
-            "amount_due": f_obj.amount_due if f_obj else round(emp_count * effective_rate, 2),
+            "amount_due": amount_due,
+            "billing_mode": row_mode,
+            "billing_display": billing_display,
             "is_paid": f_obj.is_paid if f_obj else False,
             "paid_date": f_obj.paid_date or "" if f_obj else "",
             "payment_reference": f_obj.payment_reference or "" if f_obj else "",
@@ -1632,6 +1672,8 @@ async def admin_get_establishment_subscription_fees(
             "code": est.code,
             "name": est.name,
             "custom_rate": est.custom_rate_per_employee,
+            "billing_mode": billing_mode,
+            "flat_fee_amount": est.flat_fee_amount,
             "trial_ends_on": est.trial_ends_on.isoformat() if est.trial_ends_on else None,
             "is_in_trial": is_establishment_in_trial(est),
             "trial_days_left": get_trial_days_left(est)
@@ -1707,6 +1749,61 @@ async def admin_update_establishment_trial(
         "is_in_trial": is_establishment_in_trial(est),
         "trial_days_left": get_trial_days_left(est)
     }
+
+
+def _describe_billing_mode(mode: str, flat_amount: Optional[float]) -> str:
+    if mode == "flat_fee":
+        return f"Flat ₹{flat_amount}/month"
+    return "Per Employee (tiered/custom rate)"
+
+
+@app.put("/api/admin/establishments/{est_id}/billing-mode")
+async def admin_update_establishment_billing_mode(
+    est_id: int,
+    d: BillingModeUpdateIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Switch an establishment between per-employee (tiered/custom rate) and flat-fee
+    billing -- a superadmin-only decision, never reachable from any Consultant/Employer
+    endpoint. Only affects FUTURE (still-unpaid) SubscriptionFee months; already-paid
+    rows remember their own billing_mode and stay frozen at whatever amount was correct
+    when they were billed (see sync_subscription_fees_for_year)."""
+    est = db.query(Establishment).filter(Establishment.id == est_id).first()
+    if not est:
+        raise HTTPException(404, "Establishment not found")
+
+    mode = (d.billing_mode or "").strip()
+    if mode not in ("per_employee", "flat_fee"):
+        raise HTTPException(400, "billing_mode must be 'per_employee' or 'flat_fee'")
+
+    flat_amount = None
+    if mode == "flat_fee":
+        if d.flat_fee_amount is None or d.flat_fee_amount <= 0:
+            raise HTTPException(400, "flat_fee_amount must be a positive number for flat_fee billing mode")
+        flat_amount = round(float(d.flat_fee_amount), 2)
+
+    old_mode = est.billing_mode or "per_employee"
+    old_amount = est.flat_fee_amount
+
+    if old_mode == mode and old_amount == flat_amount:
+        return {"ok": True, "billing_mode": est.billing_mode, "flat_fee_amount": est.flat_fee_amount}
+
+    est.billing_mode = mode
+    est.flat_fee_amount = flat_amount
+    db.commit()
+
+    log_activity(
+        db, admin.id, est.id, "billing_mode_changed",
+        f"Changed billing mode for {est.name} ({est.code}): "
+        f"{_describe_billing_mode(old_mode, old_amount)} → {_describe_billing_mode(mode, flat_amount)}",
+        {
+            "old_billing_mode": old_mode, "old_flat_fee_amount": old_amount,
+            "new_billing_mode": mode, "new_flat_fee_amount": flat_amount
+        }
+    )
+
+    return {"ok": True, "billing_mode": est.billing_mode, "flat_fee_amount": est.flat_fee_amount}
 
 
 @app.post("/api/admin/establishments/{est_id}/subscription-fees")
@@ -2787,8 +2884,16 @@ async def get_establishment_subscription_status(
         "total_overdue": len(unpaid),
         "is_in_trial": is_establishment_in_trial(est_obj),
         "trial_ends_on": est_obj.trial_ends_on.isoformat() if est_obj.trial_ends_on else None,
-        "trial_days_left": get_trial_days_left(est_obj)
+        "trial_days_left": get_trial_days_left(est_obj),
+        "billing_mode": est_obj.billing_mode or "per_employee",
+        "flat_fee_amount": est_obj.flat_fee_amount
     }
+
+
+def _billing_display(mode: str, rate_applied: Optional[float], amount_due: float) -> str:
+    if mode == "flat_fee":
+        return f"₹{amount_due}/month flat rate"
+    return f"₹{rate_applied}/employee" if rate_applied is not None else "Default rate"
 
 
 def _subscription_payment_dict(f: SubscriptionFee, est: Establishment, consultant: Optional[User] = None) -> dict:
@@ -2805,6 +2910,7 @@ def _subscription_payment_dict(f: SubscriptionFee, est: Establishment, consultan
     yt = str(int(yf) + 1)
     cal_yr = calendar_year_for_month(f.month, yf, yt)
     display_name = f"{MONTH_FULL.get(f.month.upper(), f.month)} {cal_yr}"
+    row_mode = f.billing_mode or "per_employee"
 
     return {
         "id": f.id,
@@ -2819,6 +2925,8 @@ def _subscription_payment_dict(f: SubscriptionFee, est: Establishment, consultan
         "employee_count": f.employee_count,
         "rate_applied": f.rate_applied,
         "amount_due": f.amount_due,
+        "billing_mode": row_mode,
+        "billing_display": _billing_display(row_mode, f.rate_applied, f.amount_due),
         "paid_date": f.paid_date or "",
         "payment_reference": f.payment_reference or "",
         "cashfree_order_id": f.cashfree_order_id or "",
@@ -2903,6 +3011,7 @@ async def get_establishment_fee_month_detail(
     cal_yr = calendar_year_for_month(month, year_record.year_from, year_record.year_to) if year_record else ""
     display_name = f"{MONTH_FULL.get(month.upper(), month)} {cal_yr}".strip()
 
+    row_mode = fee_row.billing_mode or "per_employee"
     return {
         "month": fee_row.month,
         "financial_year": fee_row.financial_year,
@@ -2910,6 +3019,8 @@ async def get_establishment_fee_month_detail(
         "employee_count": fee_row.employee_count,
         "rate_applied": fee_row.rate_applied,
         "amount_due": fee_row.amount_due,
+        "billing_mode": row_mode,
+        "billing_display": _billing_display(row_mode, fee_row.rate_applied, fee_row.amount_due),
         "is_paid": fee_row.is_paid,
         "is_overdue": overdue and not fee_row.is_paid,
     }

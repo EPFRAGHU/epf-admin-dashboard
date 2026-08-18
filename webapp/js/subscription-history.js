@@ -117,7 +117,7 @@ const SubscriptionHistory = {
                   <tr>
                     <th>Month</th>
                     <th class="num">Employees</th>
-                    <th class="num">Rate</th>
+                    <th class="num">Rate/Fee</th>
                     <th class="num">Amount Paid</th>
                     <th>Paid Via</th>
                     <th>Paid Date</th>
@@ -132,7 +132,7 @@ const SubscriptionHistory = {
                         <div style="font-size:10px; color:var(--text3);">FY ${App.esc(p.financial_year)}</div>
                       </td>
                       <td class="num">${p.employee_count}</td>
-                      <td class="num">₹${p.rate_applied}</td>
+                      <td class="num">${p.billing_mode === 'flat_fee' ? '<span style="font-size:10px;">Flat</span>' : `₹${p.rate_applied}`}</td>
                       <td class="num" style="font-weight:700; color:var(--primary);">₹${App.fmt(p.amount_due)}</td>
                       <td>${SubscriptionHistory.sourceTag(p.source)}</td>
                       <td>${App.esc(p.paid_date || '—')}</td>
@@ -168,7 +168,7 @@ const SubscriptionHistory = {
           <div style="display:flex; justify-content:space-between;"><span style="color:var(--text2);">Financial Year</span><strong>${App.esc(p.financial_year)}</strong></div>
           <div style="display:flex; justify-content:space-between;"><span style="color:var(--text2);">Month</span><strong>${App.esc(p.display_name)}</strong></div>
           <div style="display:flex; justify-content:space-between;"><span style="color:var(--text2);">Employees Billed</span><strong>${p.employee_count}</strong></div>
-          <div style="display:flex; justify-content:space-between;"><span style="color:var(--text2);">Rate Applied</span><strong>₹${p.rate_applied}/employee</strong></div>
+          <div style="display:flex; justify-content:space-between;"><span style="color:var(--text2);">${p.billing_mode === 'flat_fee' ? 'Billing' : 'Rate Applied'}</span><strong>${App.esc(p.billing_display || (p.rate_applied != null ? `₹${p.rate_applied}/employee` : '—'))}</strong></div>
           <div style="display:flex; justify-content:space-between; border-top:1px dashed var(--border); padding-top:8px;">
             <span style="color:var(--text2); font-weight:700;">Amount Paid</span>
             <strong style="color:var(--primary); font-size:16px;">₹${App.fmt(p.amount_due)}</strong>

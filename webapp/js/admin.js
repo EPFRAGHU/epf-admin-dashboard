@@ -1515,29 +1515,36 @@ const Admin = (() => {
               subBadge = `<span class="badge low" style="font-size:11px; font-weight:600;">✓ Fees Paid</span>`;
             }
 
-            const effectiveRateDisplay = e.custom_rate_per_employee 
+            const effectiveRateDisplay = e.custom_rate_per_employee
               ? `₹${e.custom_rate_per_employee}/emp (Est Override)`
               : (res.user.custom_rate_per_employee ? `₹${res.user.custom_rate_per_employee}/emp (${res.user.role === 'employer' ? 'Employer' : 'Consultant'} Rate)` : `₹10/emp (Global Default)`);
+
+            const isFlat = e.billing_mode === 'flat_fee';
+            const billingBadge = isFlat
+              ? `<span class="badge" style="font-size:10px; font-weight:700; background:rgba(245,158,11,0.15); color:#b45309;">Flat ₹${e.flat_fee_amount != null ? e.flat_fee_amount : '—'}</span>`
+              : (e.custom_rate_per_employee ? `<span class="badge" style="font-size:10px; font-weight:700; background:rgba(99,102,241,0.1); color:var(--primary);">Custom ₹${e.custom_rate_per_employee}/emp</span>` : `<span class="badge" style="font-size:10px; font-weight:600; color:var(--text3);">Tiered</span>`);
 
             return `
               <div class="card" style="display:flex; flex-direction:column; justify-content:space-between; padding:18px; border:1px solid var(--card-border); border-radius:var(--radius); background:var(--card); box-shadow:var(--shadow);">
                 <div>
                   <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px; gap:6px; flex-wrap:wrap;">
                     <span class="badge low" style="font-weight:700; font-family:monospace; font-size:11px;">${App.esc(e.code)}</span>
-                    <div style="display:flex; gap:6px; align-items:center;">
+                    <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
                       ${subBadge}
+                      ${billingBadge}
                       <span class="badge" style="font-size:11px; background:var(--bg2); border:1px solid var(--border); color:var(--primary); font-weight:600;">👥 ${e.employee_count}</span>
                     </div>
                   </div>
                   <h4 style="margin:0 0 6px 0; font-size:15px; font-weight:700; color:var(--text1); line-height:1.3;">${App.esc(e.name)}</h4>
                   <p style="margin:0 0 8px 0; font-size:12px; color:var(--text2); line-height:1.4;">${App.esc(e.address || 'Address not specified')}</p>
-                  
+
                   <div style="font-size:11px; color:var(--text3); margin-bottom:4px;">Coverage Date: <strong>${App.esc(e.coverage_date || '—')}</strong></div>
                   <div style="font-size:11px; color:var(--text2); margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
-                    <span>Fee Rate: <strong>${effectiveRateDisplay}</strong></span>
-                    <button class="btn btn-ghost btn-sm" style="padding:2px 6px; font-size:11px;" onclick="Admin.showEditEstablishmentModal(${e.id}, '${App.esc(e.name)}', '${App.esc(e.code)}', ${e.custom_rate_per_employee != null ? e.custom_rate_per_employee : 'null'})" title="Override Rate for this Establishment">
-                      ✏️ Edit Rate
-                    </button>
+                    <span>Billing: <strong>${isFlat ? `Flat ₹${e.flat_fee_amount != null ? e.flat_fee_amount : '—'}/month` : effectiveRateDisplay}</strong></span>
+                    <div style="display:flex; gap:4px;">
+                      ${!isFlat ? `<button class="btn btn-ghost btn-sm" style="padding:2px 6px; font-size:11px;" onclick="Admin.showEditEstablishmentModal(${e.id}, '${App.esc(e.name)}', '${App.esc(e.code)}', ${e.custom_rate_per_employee != null ? e.custom_rate_per_employee : 'null'})" title="Override Rate for this Establishment">✏️ Edit Rate</button>` : ''}
+                      <button class="btn btn-ghost btn-sm" style="padding:2px 6px; font-size:11px;" onclick="Admin.showManageBillingModal(${e.id}, '${App.esc(e.name)}', '${App.esc(e.code)}', '${e.billing_mode || 'per_employee'}', ${e.flat_fee_amount != null ? e.flat_fee_amount : 'null'})" title="Switch between Per Employee and Flat Fee billing">⚙️ Manage Billing</button>
+                    </div>
                   </div>
                   <div style="font-size:11px; color:var(--text2); margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
                     <span>Trial: <strong>${e.trial_ends_on ? (e.is_in_trial ? `Active until ${App.esc(e.trial_ends_on)}` : `Expired ${App.esc(e.trial_ends_on)}`) : 'None'}</strong></span>
@@ -1717,8 +1724,15 @@ const Admin = (() => {
           </div>
         </div>
 
-        <!-- Rate Resolution Hierarchy Banner -->
+        <!-- Rate Resolution / Billing Mode Banner -->
         <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:12px; padding-top:10px; border-top:1px dashed var(--border); font-size:12px;">
+          ${est.billing_mode === 'flat_fee' ? `
+          <span style="color:var(--text3); font-weight:600; text-transform:uppercase; font-size:10px;">Billing Mode:</span>
+          <span class="badge" style="background:rgba(245,158,11,0.15); color:#b45309; font-weight:700; font-size:12px;">
+            Flat ₹${App.fmt(est.flat_fee_amount)}/month
+          </span>
+          <span style="color:var(--text3); font-size:11px;">— fixed regardless of employee count</span>
+          ` : `
           <span style="color:var(--text3); font-weight:600; text-transform:uppercase; font-size:10px;">Billing Rate:</span>
           <span style="color:var(--text2);">Global: <strong>₹${rates.global_default}</strong>/emp</span>
           <span style="color:var(--text3);">→</span>
@@ -1729,6 +1743,10 @@ const Admin = (() => {
           <span class="badge" style="background:rgba(99,102,241,0.15); color:var(--primary); font-weight:700; font-size:12px;">
             Effective Rate: ₹${rates.effective_rate}/employee/month
           </span>
+          `}
+          <button class="btn btn-ghost btn-sm" style="margin-left:auto; padding:2px 8px; font-size:11px;" onclick="Admin.showManageBillingModal(${est.id}, '${App.esc(est.name)}', '${App.esc(est.code)}', '${est.billing_mode || 'per_employee'}', ${est.flat_fee_amount != null ? est.flat_fee_amount : 'null'})">
+            ⚙️ Manage Billing Mode
+          </button>
         </div>
       </div>
 
@@ -1803,7 +1821,7 @@ const Admin = (() => {
             <tr>
               <th style="width:130px;">Month</th>
               <th style="width:110px; text-align:center;">ECR Employees</th>
-              <th style="width:90px; text-align:right;">Rate (₹)</th>
+              <th style="width:90px; text-align:right;">Rate/Fee</th>
               <th style="width:110px; text-align:right;">Total Fee (₹)</th>
               <th style="width:100px; text-align:center;">Status</th>
               <th style="width:80px; text-align:center;">Paid?</th>
@@ -1834,7 +1852,7 @@ const Admin = (() => {
                     ${m.employee_count}
                   </td>
                   <td style="text-align:right; font-family:monospace; color:var(--text2);">
-                    ₹${m.rate_applied}
+                    ${m.billing_mode === 'flat_fee' ? '<span style="font-size:10px;">Flat</span>' : `₹${m.rate_applied}`}
                   </td>
                   <td style="text-align:right; font-weight:700; color:${m.amount_due > 0 ? (m.is_paid ? 'var(--green)' : 'var(--primary)') : 'var(--text3)'};">
                     ₹${App.fmt(m.amount_due)}
@@ -2220,6 +2238,103 @@ const Admin = (() => {
     }
   }
 
+  /* ── Manage Billing Mode Modal (superadmin only) ────────────── */
+  const FLAT_FEE_PRESETS = [1000, 2000, 5000, 10000];
+
+  function billingModeFormHtml(mode, flatAmount) {
+    const isFlat = mode === 'flat_fee';
+    return `
+      <div class="form-group" style="margin-bottom:14px;">
+        <label class="form-label" style="font-weight:600;">Billing Mode</label>
+        <div style="display:flex; gap:8px; margin-top:6px;">
+          <button type="button" id="mb-mode-per_employee" class="btn ${!isFlat ? 'btn-primary' : 'btn-ghost'} btn-sm" style="flex:1;" onclick="Admin.setBillingModeChoice('per_employee')">Per Employee</button>
+          <button type="button" id="mb-mode-flat_fee" class="btn ${isFlat ? 'btn-primary' : 'btn-ghost'} btn-sm" style="flex:1;" onclick="Admin.setBillingModeChoice('flat_fee')">Flat Fee</button>
+        </div>
+      </div>
+      <div id="mb-per-employee-note" style="display:${isFlat ? 'none' : 'block'}; font-size:12px; color:var(--text2); padding:10px 12px; background:var(--bg2); border-radius:var(--radius-sm); border:1px solid var(--border); margin-bottom:8px;">
+        Uses the existing tiered/custom rate resolution (Global → Account Holder override → Establishment override).
+      </div>
+      <div id="mb-flat-fee-fields" style="display:${isFlat ? 'block' : 'none'};">
+        <div class="form-group" style="margin-bottom:8px;">
+          <label class="form-label" style="font-weight:600;">Flat Amount (₹/month)</label>
+          <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">
+            ${FLAT_FEE_PRESETS.map(p => `<button type="button" class="btn btn-ghost btn-sm" onclick="Admin.pickFlatFeePreset(${p})">₹${p}</button>`).join('')}
+          </div>
+          <input type="number" step="1" min="1" id="mb-flat-amount" class="form-input" placeholder="Custom amount, e.g. 7500" value="${isFlat && flatAmount != null ? flatAmount : ''}">
+          <div style="font-size:11px; color:var(--text3); margin-top:4px;">Charged every month regardless of employee headcount that month.</div>
+        </div>
+      </div>
+    `;
+  }
+
+  function setBillingModeChoice(mode) {
+    const perBtn = document.getElementById('mb-mode-per_employee');
+    const flatBtn = document.getElementById('mb-mode-flat_fee');
+    const perNote = document.getElementById('mb-per-employee-note');
+    const flatFields = document.getElementById('mb-flat-fee-fields');
+    if (!perBtn || !flatBtn) return;
+
+    const isFlat = mode === 'flat_fee';
+    perBtn.className = `btn ${!isFlat ? 'btn-primary' : 'btn-ghost'} btn-sm`;
+    flatBtn.className = `btn ${isFlat ? 'btn-primary' : 'btn-ghost'} btn-sm`;
+    if (perNote) perNote.style.display = isFlat ? 'none' : 'block';
+    if (flatFields) flatFields.style.display = isFlat ? 'block' : 'none';
+    flatBtn.dataset.selected = isFlat ? '1' : '0';
+    perBtn.dataset.selected = isFlat ? '0' : '1';
+  }
+
+  function pickFlatFeePreset(amount) {
+    const input = document.getElementById('mb-flat-amount');
+    if (input) input.value = amount;
+  }
+
+  function showManageBillingModal(estId, estName, estCode, currentMode, currentFlatAmount) {
+    const bodyHtml = `
+      <form id="manage-billing-form" onsubmit="event.preventDefault(); Admin.saveBillingMode(${estId});">
+        ${billingModeFormHtml(currentMode, currentFlatAmount)}
+        <div style="font-size:11px; color:var(--text3); margin-top:6px;">
+          Switching modes only affects future (still-unpaid) months — already-billed/paid months keep the amount they were actually charged.
+        </div>
+      </form>
+    `;
+    const footerHtml = `
+      <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="Admin.saveBillingMode(${estId})">Save Billing Mode</button>
+    `;
+    App.openModal(`Manage Billing Mode: ${App.esc(estName)}`, bodyHtml, footerHtml);
+  }
+
+  async function saveBillingMode(estId) {
+    const flatBtn = document.getElementById('mb-mode-flat_fee');
+    const isFlat = flatBtn && flatBtn.dataset.selected === '1';
+    const mode = isFlat ? 'flat_fee' : 'per_employee';
+
+    let flat_fee_amount = null;
+    if (isFlat) {
+      const amountInput = document.getElementById('mb-flat-amount');
+      const val = amountInput ? amountInput.value.trim() : '';
+      flat_fee_amount = val === '' ? NaN : parseFloat(val);
+      if (!Number.isFinite(flat_fee_amount) || flat_fee_amount <= 0) {
+        App.toast('Enter a valid flat fee amount greater than 0.', 'error');
+        return;
+      }
+    }
+
+    try {
+      await App.put(`/api/admin/establishments/${estId}/billing-mode`, { billing_mode: mode, flat_fee_amount });
+      App.toast(isFlat ? `Billing mode set to Flat ₹${flat_fee_amount}/month` : 'Billing mode set to Per Employee');
+      App.closeModal();
+      if (currentSelectedConsultant) {
+        showConsultantEstablishments(currentSelectedConsultant.id);
+      }
+      if (currentSubscriptionEstablishment && currentSubscriptionEstablishment.id === estId) {
+        refreshSubscriptionGrid(estId, currentSubscriptionYear || '2026-27');
+      }
+    } catch (e) {
+      // Handled
+    }
+  }
+
   /* ── Add Establishment on behalf of a User (superadmin only) ─── */
   function showAddEstablishmentForUserModal(userId) {
     const bodyHtml = `
@@ -2245,6 +2360,10 @@ const Admin = (() => {
           <input type="date" id="aefu-trial" class="form-input">
           <div style="font-size:11px; color:var(--text3); margin-top:4px;">Leave blank to bill normally from the start. Can be set/changed later via "Manage Trial".</div>
         </div>
+        <div class="form-group" style="margin-bottom:8px;">
+          <label class="form-label" style="font-weight:600;">Billing Mode <span style="font-weight:400; color:var(--text3);">(superadmin-only)</span></label>
+          ${billingModeFormHtml('per_employee', null)}
+        </div>
       </form>
     `;
     const footerHtml = `
@@ -2266,8 +2385,24 @@ const Admin = (() => {
       return;
     }
 
+    const flatBtn = document.getElementById('mb-mode-flat_fee');
+    const isFlat = flatBtn && flatBtn.dataset.selected === '1';
+    let flat_fee_amount = null;
+    if (isFlat) {
+      const amountInput = document.getElementById('mb-flat-amount');
+      const val = amountInput ? amountInput.value.trim() : '';
+      flat_fee_amount = val === '' ? NaN : parseFloat(val);
+      if (!Number.isFinite(flat_fee_amount) || flat_fee_amount <= 0) {
+        App.toast('Enter a valid flat fee amount greater than 0.', 'error');
+        return;
+      }
+    }
+
     try {
       const res = await App.post('/api/establishments', { code, name, address, coverage_date, owner_user_id: userId, trial_ends_on });
+      if (isFlat) {
+        await App.put(`/api/admin/establishments/${res.establishment.id}/billing-mode`, { billing_mode: 'flat_fee', flat_fee_amount });
+      }
       App.toast(`Establishment "${res.establishment.name}" created successfully`);
       App.closeModal();
       showConsultantEstablishments(userId);
@@ -2459,6 +2594,10 @@ const Admin = (() => {
     showManageTrialModal,
     saveTrial,
     clearTrial,
+    showManageBillingModal,
+    setBillingModeChoice,
+    pickFlatFeePreset,
+    saveBillingMode,
     showAddEstablishmentForUserModal,
     saveNewEstablishmentForUser,
     onSignupStatusFilterChange,

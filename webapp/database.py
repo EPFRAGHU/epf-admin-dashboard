@@ -45,6 +45,8 @@ class Establishment(Base):
     custom_rate_per_employee = Column(Float, nullable=True)  # Nullable rate override (₹/emp)
     advance_credit_balance = Column(Float, nullable=False, default=0.0)  # Prepaid subscription credit (₹), auto-applied to future months
     trial_ends_on = Column(Date, nullable=True)  # Null = no trial (normal enforcement). Superadmin-set only.
+    billing_mode = Column(String(20), nullable=False, default="per_employee")  # 'per_employee' | 'flat_fee'. Superadmin-set only.
+    flat_fee_amount = Column(Float, nullable=True)  # ₹/month, only meaningful when billing_mode='flat_fee'
     data = Column(Text, nullable=False, default="{}")  # Serialized Project JSON
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -78,8 +80,9 @@ class SubscriptionFee(Base):
     financial_year = Column(String(50), nullable=False, index=True)  # e.g. "2026-27"
     month = Column(String(20), nullable=False)  # "Mar", "Apr", ... "Feb"
     employee_count = Column(Integer, default=0, nullable=False)
-    rate_applied = Column(Float, default=10.0, nullable=False)
+    rate_applied = Column(Float, default=10.0, nullable=True)  # Null for flat_fee rows -- there's no per-employee rate to show
     amount_due = Column(Float, default=0.0, nullable=False)
+    billing_mode = Column(String(20), nullable=False, default="per_employee")  # Mode this specific row was billed under -- frozen once paid, so a later mode switch never rewrites history
     is_paid = Column(Boolean, default=False, nullable=False)
     paid_date = Column(String(50), nullable=True)
     payment_reference = Column(String(255), nullable=True)  # UPI / Bank reference / Cashfree payment id
