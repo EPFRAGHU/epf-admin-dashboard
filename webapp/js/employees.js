@@ -84,7 +84,15 @@ App.registerPage('add-employee', async (container) => {
     </div>
     <div class="card">
       <h3 style="margin-bottom:16px">Add New Employee</h3>
-      <div class="form-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
+      <style>
+        .compact-form-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 10px 12px; }
+        .compact-form-grid .form-group { gap: 3px; }
+        .compact-form-grid .form-label { font-size: 10px; }
+        .compact-form-grid .form-input, .compact-form-grid .form-select { padding: 6px 8px; font-size: 12.5px; }
+        @media (max-width: 1100px) { .compact-form-grid { grid-template-columns: repeat(4, 1fr); } }
+        @media (max-width: 640px) { .compact-form-grid { grid-template-columns: repeat(2, 1fr); } }
+      </style>
+      <div class="form-grid compact-form-grid">
         <div class="form-group">
           <label class="form-label">Member ID *</label>
           <input class="form-input" id="ae-acc" maxlength="7">
@@ -181,18 +189,16 @@ App.registerPage('add-employee', async (container) => {
           <input class="form-input" id="ae-sl" type="number">
         </div>
         <div class="form-group">
-          <label class="form-label" style="display:flex;align-items:center;gap:8px">
+          <label class="form-label" style="display:flex;align-items:center;gap:6px;white-space:nowrap;">
             <input type="checkbox" id="ae-higher-epf-ee">
-            Allow Higher EPF (EE)
+            Higher EPF (EE)
           </label>
-          <p style="font-size:10px;color:var(--text3);margin-top:2px;">Employee 12% on actual wages</p>
         </div>
         <div class="form-group">
-          <label class="form-label" style="display:flex;align-items:center;gap:8px">
+          <label class="form-label" style="display:flex;align-items:center;gap:6px;white-space:nowrap;">
             <input type="checkbox" id="ae-higher-epf-er">
-            Allow Higher EPF (ER)
+            Higher EPF (ER)
           </label>
-          <p style="font-size:10px;color:var(--text3);margin-top:2px;">Employer PF on actual wages</p>
         </div>
       </div>
       <div style="margin-top:20px; display:flex; gap:10px;">
