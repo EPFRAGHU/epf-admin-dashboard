@@ -71,10 +71,29 @@ window.setEmpPage = (page) => {
 /* ── Add Employee — full page (not a modal) ─────────────────────── */
 let recentlyAddedEmployees = [];
 const RECENT_ADDED_CAP = 15;
+let nextSerialNo = 1;
+
+function computeNextSerialNo(employees) {
+  const nums = (employees || [])
+    .map(e => parseInt(e.serial_no, 10))
+    .filter(n => !isNaN(n));
+  return (nums.length ? Math.max(...nums) : 0) + 1;
+}
+
+function scopeNameFromList(list, id) {
+  if (id === null || id === undefined || id === '') return '—';
+  const item = (list || []).find(x => String(x.id) === String(id));
+  return item ? item.name : '—';
+}
 
 App.registerPage('add-employee', async (container) => {
-  const orgRes = await App.get('/api/org-structure');
+  const [empRes, orgRes] = await Promise.all([
+    App.get('/api/employees'),
+    App.get('/api/org-structure')
+  ]);
+  masterEmployees = empRes.employees || [];
   orgStructureData = orgRes || { branches: [], divisions: [], units: [] };
+  nextSerialNo = computeNextSerialNo(masterEmployees);
 
   container.innerHTML = `<div class="fade-in">
     <div class="toolbar">
@@ -104,10 +123,6 @@ App.registerPage('add-employee', async (container) => {
         <div class="form-group">
           <label class="form-label">Name *</label>
           <input class="form-input" id="ae-name">
-        </div>
-        <div class="form-group" style="grid-column: span 3;">
-          <label class="form-label">Branch / Division / Unit</label>
-          <div id="ae-scope-picker"></div>
         </div>
         <div class="form-group">
           <label class="form-label">Father/Husband Name</label>
@@ -185,8 +200,8 @@ App.registerPage('add-employee', async (container) => {
           <input class="form-input" id="ae-ifsc" maxlength="11" style="text-transform: uppercase">
         </div>
         <div class="form-group">
-          <label class="form-label">Serial No.</label>
-          <input class="form-input" id="ae-sl" type="number">
+          <label class="form-label">Serial No. (Auto)</label>
+          <input class="form-input" id="ae-sl" type="number" readonly style="opacity:0.7; cursor:not-allowed;">
         </div>
         <div class="form-group">
           <label class="form-label" style="display:flex;align-items:center;gap:6px;white-space:nowrap;">
@@ -199,6 +214,10 @@ App.registerPage('add-employee', async (container) => {
             <input type="checkbox" id="ae-higher-epf-er">
             Higher EPF (ER)
           </label>
+        </div>
+        <div class="form-group" style="grid-column: span 3;">
+          <label class="form-label">Branch / Division / Unit</label>
+          <div id="ae-scope-picker"></div>
         </div>
       </div>
       <div style="margin-top:20px; display:flex; gap:10px;">
@@ -216,7 +235,11 @@ App.registerPage('add-employee', async (container) => {
       <div class="table-wrap">
         <table>
           <thead>
-            <tr><th>Member ID</th><th>UAN</th><th>Name</th><th>DOJ</th></tr>
+            <tr>
+              <th>Member ID</th><th>UAN</th><th>Name</th><th>Father's Name</th>
+              <th>DOB</th><th>DOJ</th><th>Sex</th><th>Mobile Number</th>
+              <th>Branch</th><th>Division</th><th>Unit</th>
+            </tr>
           </thead>
           <tbody id="recent-added-tbody"></tbody>
         </table>
@@ -225,6 +248,8 @@ App.registerPage('add-employee', async (container) => {
   </div>`;
 
   ScopePicker.render(document.getElementById('ae-scope-picker'), orgStructureData, {});
+  const slEl = document.getElementById('ae-sl');
+  if (slEl) slEl.value = nextSerialNo;
   renderRecentlyAdded();
 });
 
@@ -232,20 +257,27 @@ function renderRecentlyAdded() {
   const tbody = document.getElementById('recent-added-tbody');
   if (!tbody) return;
   if (recentlyAddedEmployees.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text3)">No employees added yet this session</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;color:var(--text3)">No employees added yet this session</td></tr>`;
     return;
   }
   tbody.innerHTML = recentlyAddedEmployees.map(e => `<tr data-search="${(e.member_id + ' ' + e.name + ' ' + e.uan).toLowerCase()}">
     <td><strong>${App.fmtId(e.member_id)}</strong></td>
     <td>${App.esc(e.uan)}</td>
     <td class="txt">${App.esc(e.name)}</td>
+    <td>${App.esc(e.father_name)}</td>
+    <td>${App.esc(e.dob)}</td>
     <td>${App.esc(e.doj)}</td>
+    <td>${App.esc(e.sex)}</td>
+    <td>${App.esc(e.mobile)}</td>
+    <td>${App.esc(scopeNameFromList(orgStructureData.branches, e.branch_id))}</td>
+    <td>${App.esc(scopeNameFromList(orgStructureData.divisions, e.division_id))}</td>
+    <td>${App.esc(scopeNameFromList(orgStructureData.units, e.unit_id))}</td>
   </tr>`).join('');
 }
 
 window.clearAddEmpForm = () => {
   ['ae-acc', 'ae-uan', 'ae-name', 'ae-father', 'ae-dob', 'ae-doj', 'ae-doe',
-   'ae-mobile', 'ae-email', 'ae-aadhaar', 'ae-bank', 'ae-ifsc', 'ae-sl'].forEach(id => {
+   'ae-mobile', 'ae-email', 'ae-aadhaar', 'ae-bank', 'ae-ifsc'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -259,6 +291,8 @@ window.clearAddEmpForm = () => {
   });
   const pickerEl = document.getElementById('ae-scope-picker');
   if (pickerEl) ScopePicker.render(pickerEl, orgStructureData, {});
+  const slEl = document.getElementById('ae-sl');
+  if (slEl) slEl.value = nextSerialNo;
 };
 
 window.saveNewEmpFromPage = async () => {
@@ -296,6 +330,8 @@ window.saveNewEmpFromPage = async () => {
     App.toast('Employee added and data saved successfully.');
     recentlyAddedEmployees.unshift(d);
     if (recentlyAddedEmployees.length > RECENT_ADDED_CAP) recentlyAddedEmployees.length = RECENT_ADDED_CAP;
+    masterEmployees.push(d);
+    nextSerialNo = computeNextSerialNo(masterEmployees);
     renderRecentlyAdded();
     clearAddEmpForm();
   } catch (_) {}
