@@ -1016,6 +1016,22 @@ window.bulkTableManualIds = [];
 let currentBulkPage = 1;
 const BULK_PAGE_SIZE = 50;
 
+window.openExitModalForWageRow = (memberId) => {
+  syncBulkTableState(); // preserve any unsaved edits on other rows before the modal state takes over
+  const masterEmp = (window._masterEmployees || []).find(e => e.member_id === memberId);
+  if (!masterEmp) return App.toast('Employee not found in the master list', 'error');
+
+  showEmpModal(masterEmp, {
+    onSaved: async () => {
+      try {
+        const { employees } = await App.get('/api/employees');
+        window._masterEmployees = employees;
+      } catch (_) { }
+      renderMonthlyTable();
+    }
+  });
+};
+
 window.addEmployeeByUAN = () => {
   const uan = document.getElementById('bulk-add-uan').value.trim();
   if (!uan) return App.toast('Please enter a UAN', 'error');
@@ -1204,11 +1220,15 @@ window.renderMonthlyTable = () => {
               <td style="text-align:center">${start + idx + 1}</td>
               <td>${App.esc(master.uan || '-')}</td>
               <td>
-                <div style="font-weight:500; margin-bottom:4px;">${App.esc(master.name)}</div>
+                <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+                  <div style="font-weight:500;">${App.esc(master.name)}</div>
+                  ${master.doe ? `<span class="badge high" style="font-size:9px; padding:1px 6px;">Exited ${App.esc(master.doe)}</span>` : ''}
+                </div>
                 <div style="display:flex; gap:10px; font-size:11px; color:var(--text2); align-items:center; flex-wrap:nowrap;">
                   <label style="cursor:pointer; display:inline-flex; align-items:center; gap:3px;" title="Higher EPF (Employee Share)"><input type="checkbox" class="b-higher-ee" ${higher_ee ? 'checked' : ''}> Higher EPF (EE)</label>
                   <label style="cursor:pointer; display:inline-flex; align-items:center; gap:3px;" title="Higher EPF (Employer Share)"><input type="checkbox" class="b-higher-er" ${higher_er ? 'checked' : ''}> Higher EPF (ER)</label>
                   <label style="cursor:pointer; display:inline-flex; align-items:center; gap:3px;" title="Age > 58 (EPS = 0)"><input type="checkbox" class="b-age58" ${age58 ? 'checked' : ''}> Age > 58</label>
+                  <button type="button" class="btn btn-ghost btn-xs" style="padding:1px 6px; font-size:10px;" onclick="openExitModalForWageRow('${App.esc(master.member_id)}')" title="Set or edit Date of Exit &amp; Reason of Leaving">🚪 ${master.doe ? 'Edit Exit' : 'Mark Exit'}</button>
                 </div>
               </td>
               <td style="text-align:center" class="b-dim">${daysInMonth}</td>

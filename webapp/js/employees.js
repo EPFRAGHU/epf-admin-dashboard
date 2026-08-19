@@ -401,7 +401,10 @@ function empRow(e) {
   </tr>`;
 }
 
-function showEmpModal(emp = null) {
+let empModalOnSaved = null;
+
+async function showEmpModal(emp = null, opts = {}) {
+  empModalOnSaved = opts.onSaved || null;
   const isEdit = !!emp;
   const title = isEdit ? `Edit Employee — ${emp.name}` : 'Add New Employee';
   const e = emp || {};
@@ -524,6 +527,9 @@ function showEmpModal(emp = null) {
   App.openModal(title, body, footer);
   const pickerEl = document.getElementById('m-scope-picker');
   if (pickerEl) {
+    if (!orgStructureData || !(orgStructureData.branches || []).length) {
+      try { orgStructureData = await App.get('/api/org-structure'); } catch (_) {}
+    }
     ScopePicker.render(pickerEl, orgStructureData, {
       initial: { branch_id: e.branch_id, division_id: e.division_id, unit_id: e.unit_id },
     });
@@ -569,7 +575,13 @@ async function saveEmp(origAcc) {
       App.toast('Employee added and data saved successfully.');
     }
     App.closeModal();
-    App.navigate('employees');
+    const onSaved = empModalOnSaved;
+    empModalOnSaved = null;
+    if (onSaved) {
+      onSaved(d);
+    } else {
+      App.navigate('employees');
+    }
   } catch (_) {}
 }
 
