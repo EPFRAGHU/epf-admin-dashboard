@@ -1032,6 +1032,38 @@ window.openExitModalForWageRow = (memberId) => {
   });
 };
 
+// Wage-month index -> {year, month} using the same Mar..Feb layout as the ECR "Paid in" labels.
+function getWageMonthYearMonth(monthIdx) {
+  const startYear = parseInt(currentYearKey.split('-')[0], 10);
+  const targetYear = monthIdx < 10 ? startYear : startYear + 1;
+  let monthNumber;
+  if (monthIdx === 0) monthNumber = 3;
+  else if (monthIdx === 11) monthNumber = 2;
+  else if (monthIdx === 10) monthNumber = 1;
+  else monthNumber = monthIdx + 3;
+  return { year: targetYear, month: monthNumber };
+}
+
+// True if the given wage month falls within [DOJ, DOE] (either bound optional).
+function isEmployedInWageMonth(master, monthIdx) {
+  const { year, month } = getWageMonthYearMonth(monthIdx);
+  const wageYM = year * 12 + month;
+
+  const dojTime = master.doj ? parseDMY(master.doj) : null;
+  if (dojTime !== null) {
+    const d = new Date(dojTime);
+    if (d.getFullYear() * 12 + (d.getMonth() + 1) > wageYM) return false;
+  }
+
+  const doeTime = master.doe ? parseDMY(master.doe) : null;
+  if (doeTime !== null) {
+    const d = new Date(doeTime);
+    if (d.getFullYear() * 12 + (d.getMonth() + 1) < wageYM) return false;
+  }
+
+  return true;
+}
+
 window.addEmployeeByUAN = () => {
   const uan = document.getElementById('bulk-add-uan').value.trim();
   if (!uan) return App.toast('Please enter a UAN', 'error');
@@ -1039,6 +1071,11 @@ window.addEmployeeByUAN = () => {
   const emp = window._masterEmployees.find(e => e.uan === uan);
   if (!emp) {
     return App.toast('Employee not found with this UAN. Please add them in the main Employees menu first.', 'error');
+  }
+
+  const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
+  if (!isEmployedInWageMonth(emp, monthIdx)) {
+    return App.toast(`${emp.name} was not employed during this wage month (per their Date of Joining / Date of Exit)`, 'error');
   }
 
   if (!window.bulkTableVisibleIds.includes(emp.member_id)) {
@@ -1154,6 +1191,12 @@ window.initBulkTableState = () => {
       }
     }
 
+    // Hard filter: never show an employee in a wage month outside their DOJ..DOE window,
+    // regardless of stray data or a manual add from before the DOJ/DOE was set.
+    if (!isEmployedInWageMonth(master, monthIdx)) {
+      shouldShow = false;
+    }
+
     if (shouldShow) {
       window.bulkTableVisibleIds.push(master.member_id);
       bulkTableState[master.member_id] = { g, w, n, higher_ee, higher_er, age58, isCopied };
@@ -1194,13 +1237,7 @@ window.renderMonthlyTable = () => {
   // Only map over visible IDs
   const allVisibleEmps = (window._masterEmployees || []).filter(e => window.bulkTableVisibleIds.includes(e.member_id));
 
-  const startYear = parseInt(currentYearKey.split('-')[0], 10);
-  let targetYear = monthIdx < 10 ? startYear : startYear + 1;
-  let monthNumber;
-  if (monthIdx === 0) monthNumber = 3;
-  else if (monthIdx === 11) monthNumber = 2;
-  else if (monthIdx === 10) monthNumber = 1;
-  else monthNumber = monthIdx + 3;
+  const { year: targetYear, month: monthNumber } = getWageMonthYearMonth(monthIdx);
 
   const daysInMonth = new Date(targetYear, monthNumber, 0).getDate();
 
