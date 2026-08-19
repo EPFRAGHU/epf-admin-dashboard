@@ -241,6 +241,8 @@ App.registerPage('employees', async (container) => {
         <span style="color:var(--text3);font-size:12px" id="emp-count-label">${filteredEmployees.length} employees</span>
       </div>
       <div class="toolbar-right">
+        <button class="btn btn-glass" onclick="downloadForm9('pdf')">📄 Form 9 PDF</button>
+        <button class="btn btn-glass" onclick="downloadForm9('excel')">📊 Form 9 Excel</button>
         <button class="btn btn-glass" onclick="showMasterImportModal()">📥 Bulk Import Master</button>
       </div>
     </div>
