@@ -1044,24 +1044,34 @@ function getWageMonthYearMonth(monthIdx) {
   return { year: targetYear, month: monthNumber };
 }
 
-// True if the given wage month falls within [DOJ, DOE] (either bound optional).
-function isEmployedInWageMonth(master, monthIdx) {
+// Returns null if the employee was employed during the given wage month, otherwise a
+// human-readable reason (including the actual DOJ/DOE and reason of leaving) for why not.
+function getEmploymentWindowViolation(master, monthIdx) {
   const { year, month } = getWageMonthYearMonth(monthIdx);
   const wageYM = year * 12 + month;
 
   const dojTime = master.doj ? parseDMY(master.doj) : null;
   if (dojTime !== null) {
     const d = new Date(dojTime);
-    if (d.getFullYear() * 12 + (d.getMonth() + 1) > wageYM) return false;
+    if (d.getFullYear() * 12 + (d.getMonth() + 1) > wageYM) {
+      return `Date of Joining is ${master.doj}`;
+    }
   }
 
   const doeTime = master.doe ? parseDMY(master.doe) : null;
   if (doeTime !== null) {
     const d = new Date(doeTime);
-    if (d.getFullYear() * 12 + (d.getMonth() + 1) < wageYM) return false;
+    if (d.getFullYear() * 12 + (d.getMonth() + 1) < wageYM) {
+      return `Date of Exit is ${master.doe}${master.reason_leaving ? `, Reason: ${master.reason_leaving}` : ''}`;
+    }
   }
 
-  return true;
+  return null;
+}
+
+// True if the given wage month falls within [DOJ, DOE] (either bound optional).
+function isEmployedInWageMonth(master, monthIdx) {
+  return getEmploymentWindowViolation(master, monthIdx) === null;
 }
 
 window.addEmployeeByUAN = () => {
@@ -1074,8 +1084,9 @@ window.addEmployeeByUAN = () => {
   }
 
   const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
-  if (!isEmployedInWageMonth(emp, monthIdx)) {
-    return App.toast(`${emp.name} was not employed during this wage month (per their Date of Joining / Date of Exit)`, 'error');
+  const violation = getEmploymentWindowViolation(emp, monthIdx);
+  if (violation) {
+    return App.toast(`${emp.name} was not employed during this wage month — ${violation}`, 'error');
   }
 
   if (!window.bulkTableVisibleIds.includes(emp.member_id)) {
