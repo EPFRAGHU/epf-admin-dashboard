@@ -186,6 +186,24 @@ def count_ecr_employees_for_month(project: Project, year_key: str, month_idx: in
                 count += 1
     return count
 
+def build_establishment_wage_grid(project: Project) -> list:
+    """Per financial year, per-month (Mar..Feb) wage-entry status -- drives the
+    green/red status-box grid on the Establishment page's establishment list."""
+    grid = []
+    for year_key, yr in sorted(project.years.items(), key=lambda kv: kv[1].year_from, reverse=True):
+        months = []
+        for i, m_abbr in enumerate(MONTH_SHORT_NAMES):
+            emp_count = count_ecr_employees_for_month(project, year_key, i)
+            cal_yr = calendar_year_for_month(m_abbr, yr.year_from, yr.year_to)
+            months.append({
+                "month": m_abbr,
+                "label": f"{MONTH_FULL.get(m_abbr.upper(), m_abbr)} {cal_yr}",
+                "employees": emp_count,
+                "has_wages": emp_count > 0,
+            })
+        grid.append({"year": year_key, "months": months})
+    return grid
+
 def resolve_rate(db: Session, establishment: Establishment, user: Optional[User] = None) -> float:
     """Resolve rate per employee: Establishment override > Consultant override > Global default (10.0)."""
     if establishment.custom_rate_per_employee is not None and establishment.custom_rate_per_employee > 0:
@@ -2864,10 +2882,15 @@ async def list_establishments(
     for est in ests:
         emp_count = 0
         year_count = 0
+        wage_grid = []
         try:
-            data_dict = json.loads(est.data) if est.data else {}
-            emp_count = len(data_dict.get("master", {}))
-            year_count = len(data_dict.get("years", {}))
+            if est.data:
+                data_dict = json.loads(est.data)
+                p = Project()
+                p.load_from_dict(data_dict)
+                emp_count = len(p.master)
+                year_count = len(p.years)
+                wage_grid = build_establishment_wage_grid(p)
         except Exception:
             pass
 
@@ -2880,6 +2903,7 @@ async def list_establishments(
             "coverage_date": est.coverage_date or "—",
             "employee_count": emp_count,
             "year_count": year_count,
+            "wage_grid": wage_grid,
             "created_at": est.created_at.strftime("%d-%m-%Y") if est.created_at else "—"
         })
 

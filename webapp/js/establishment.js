@@ -17,16 +17,28 @@ App.registerPage('establishment', async (container) => {
     let tableRows = '';
     
     if (establishments.length === 0) {
-      tableRows = `<tr><td colspan="8" style="text-align: center; padding: 24px; color: var(--text3);">No establishments registered yet. Add one using the form above.</td></tr>`;
+      tableRows = `<tr><td colspan="9" style="text-align: center; padding: 24px; color: var(--text3);">No establishments registered yet. Add one using the form above.</td></tr>`;
     } else {
       establishments.forEach((eItem, index) => {
         const isCurrentActive = Number(eItem.id) === Number(currentEstId);
-        
+
         const loadBtn = isCurrentActive
           ? `<span class="badge low" style="font-size:10px; font-weight:700;">● Active</span>`
           : `<button class="btn btn-ghost btn-sm" style="color: var(--primary); padding: 4px 8px; font-weight:600;" onclick="App.selectAndSwitchEst(${eItem.id}, '${App.esc(eItem.name)}', '${App.esc(eItem.code)}')">Load</button>`;
-        
+
         const editBtn = `<button class="btn btn-ghost btn-sm" style="padding: 4px 8px;" onclick="window.editEstablishment(${eItem.id})">✏️ Edit</button>`;
+
+        let wageGridHtml = `<span style="font-size:11px; color:var(--text3);">No years yet</span>`;
+        if (eItem.wage_grid && eItem.wage_grid.length > 0) {
+          wageGridHtml = '<div class="est-wage-grid">' + eItem.wage_grid.map(yr => {
+            const boxes = yr.months.map(m => {
+              const cls = m.has_wages ? 'green' : 'red';
+              const title = m.has_wages ? `${m.label}: wages entered for ${m.employees} employee(s)` : `${m.label}: no wages entered`;
+              return `<div class="month-box ${cls}" title="${App.esc(title)}"></div>`;
+            }).join('');
+            return `<div class="est-wage-year"><span style="font-weight:600; min-width:46px; color:var(--text2);">${App.esc(yr.year)}</span><div class="est-wage-boxes">${boxes}</div></div>`;
+          }).join('') + '</div>';
+        }
 
         tableRows += `
           <tr style="${isCurrentActive ? 'background: rgba(99,102,241,0.04);' : ''}">
@@ -38,6 +50,7 @@ App.registerPage('establishment', async (container) => {
             <td style="text-align:center;">
               <span class="badge" style="background:var(--bg2); border:1px solid var(--border); font-weight:600;">👥 ${eItem.employee_count || 0}</span>
             </td>
+            <td>${wageGridHtml}</td>
             <td style="font-size: 12px; color: var(--text3);">${App.esc(eItem.created_at || '—')}</td>
             <td style="text-align:right;">
               <div style="display:flex; justify-content:flex-end; align-items:center; gap:6px;">
@@ -125,6 +138,7 @@ App.registerPage('establishment', async (container) => {
               <th>Address</th>
               <th style="width:120px;">Coverage Date</th>
               <th style="width:100px; text-align:center;">Employees</th>
+              <th style="min-width:260px;">Wage Entry Status (Mar–Feb)</th>
               <th style="width:120px;">Created Date</th>
               <th style="text-align:right; width:140px;">Actions</th>
             </tr>
