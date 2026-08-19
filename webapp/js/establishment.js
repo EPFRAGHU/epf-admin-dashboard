@@ -34,14 +34,15 @@ App.registerPage('establishment', async (container) => {
             const boxes = yr.months.map(m => {
               const cls = m.has_wages ? 'green' : 'red';
               const title = m.has_wages ? `${m.label}: wages entered for ${m.employees} employee(s)` : `${m.label}: no wages entered`;
-              return `<div class="month-box ${cls}" title="${App.esc(title)}"></div>`;
+              const countText = m.has_wages ? m.employees : '';
+              return `<div class="month-box ${cls}" title="${App.esc(title)}">${countText}</div>`;
             }).join('');
             return `<div class="est-wage-year"><span style="font-weight:600; min-width:46px; color:var(--text2);">${App.esc(yr.year)}</span><div class="est-wage-boxes">${boxes}</div></div>`;
           }).join('') + '</div>';
         }
 
         tableRows += `
-          <tr style="${isCurrentActive ? 'background: rgba(99,102,241,0.04);' : ''}">
+          <tr class="est-row-wagegrid" style="${isCurrentActive ? 'background: rgba(99,102,241,0.04);' : ''}">
             <td style="text-align:center;">${index + 1}</td>
             <td style="font-weight: 700; font-family:monospace; color:var(--primary);">${App.esc(eItem.code)}</td>
             <td style="font-weight: 600; color: var(--text1);">${App.esc(eItem.name)}</td>

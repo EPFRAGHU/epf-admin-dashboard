@@ -664,13 +664,14 @@ input[type=number] {
 }
 
 /* All Establishments */
-.est-wage-grid { display: flex; flex-direction: column; gap: 6px; }
-.est-wage-year { display: flex; align-items: center; gap: 8px; font-size: 11px; }
-.est-wage-boxes { display: flex; gap: 3px; }
-.month-box { width: 14px; height: 14px; border-radius: 3px; position: relative; cursor: help; }
+.est-row-wagegrid td { padding-top: 14px; padding-bottom: 18px; }
+.est-wage-grid { display: flex; flex-direction: column; gap: 10px; }
+.est-wage-year { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.est-wage-boxes { display: flex; gap: 5px; flex-wrap: wrap; }
+.month-box { width: 30px; height: 30px; border-radius: 6px; position: relative; cursor: help; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #fff; text-shadow: 0 1px 1px rgba(0,0,0,.25); }
 .month-box.green { background: var(--green); }
 .month-box.red { background: var(--red); }
-.month-box:hover::after { content: attr(title); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: #000; color: #fff; padding: 4px 6px; border-radius: 4px; font-size: 10px; white-space: nowrap; z-index: 10; pointer-events: none; margin-bottom: 4px; }
+.month-box:hover::after { content: attr(title); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: #000; color: #fff; padding: 4px 6px; border-radius: 4px; font-size: 10px; white-space: nowrap; z-index: 10; pointer-events: none; margin-bottom: 4px; font-weight: 500; }
 .status-badge { padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; white-space: nowrap; }
 .status-active { background: var(--green-glow); color: var(--green); }
 .status-inactive { background: rgba(229,72,77,.12); color: var(--red); }
