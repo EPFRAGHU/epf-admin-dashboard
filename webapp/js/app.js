@@ -594,6 +594,7 @@ const App = (() => {
       employees: 'Employee Master',
       years: 'Financial Years & Rates',
       wages: 'Wage Entry',
+      'wage-entry': 'Monthly Wage Entry',
       challans: 'Form 12A Challans',
       reports: 'Statutory Reports & Export',
       'subscription-history': '📜 Subscription History',
@@ -655,6 +656,9 @@ const App = (() => {
       </a>
       <a class="nav-item ${currentPage === 'wages' ? 'active' : ''}" data-page="wages">
         <span class="nav-icon">💰</span><span>Wage Entry</span>
+      </a>
+      <a class="nav-item ${currentPage === 'wage-entry' ? 'active' : ''}" data-page="wage-entry">
+        <span class="nav-icon">🗓️</span><span>Monthly Wage Entry</span>
       </a>
       <a class="nav-item ${currentPage === 'challans' ? 'active' : ''}" data-page="challans">
         <span class="nav-icon">🏦</span><span>Challans</span>

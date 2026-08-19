@@ -39,7 +39,7 @@ App.registerPage('wages', async (container) => {
         <button class="btn btn-danger" onclick="deleteAllWages()">🗑️ Delete All</button>
         <button class="btn btn-glass" onclick="showBulkImportModal()">📥 Bulk Import</button>
         <button class="btn btn-glass" onclick="showImportModal()">📥 Import Excel</button>
-        <button class="btn btn-primary" onclick="showMonthlyWageModal()">+ Monthly Wage Entry</button>
+        <button class="btn btn-primary" onclick="App.navigate('wage-entry')">+ Monthly Wage Entry</button>
         <button class="btn btn-primary" onclick="showWageModal()">+ Add Employee Wages</button>
       </div>
     </div>
@@ -784,96 +784,26 @@ window.runBulkImport = async (token) => {
   }
 };
 
-window.showMonthlyWageModal = async () => {
-  // Ensure master employees are loaded
-  const { employees: masterEmployees } = await App.get('/api/employees');
-  const body = `
-    <div style="margin-bottom:16px">
-      <div class="form-group">
-        <label class="form-label">Import Type</label>
-        <div style="display:flex; gap:16px; align-items:center;">
-          <label style="cursor:pointer; display:flex; align-items:center; gap:6px;"><input type="radio" name="import-type" value="yearly" checked onchange="toggleImportMonth()"> Yearly (All 12 Months)</label>
-          <label style="cursor:pointer; display:flex; align-items:center; gap:6px;"><input type="radio" name="import-type" value="monthly" onchange="toggleImportMonth()"> Monthly (Single Month)</label>
-        </div>
-      </div>
-      <div class="form-group" id="import-month-group" style="display:none; margin-top:12px;">
-        <label class="form-label">Select Month</label>
-        <select class="form-select" id="single-import-month">
-          ${monthOptions}
-        </select>
-      </div>
-      <p style="color:var(--text2); font-size:13px; line-height:1.5; margin-top:12px;" id="import-instructions">
-        Upload an Excel file to import wages for <strong>${currentWagesData.label}</strong>. The file must have a header row and columns like:
-        <br><br>
-        <code>UAN | Name | APR | APR NCP | MAY | MAY NCP ...</code>
-      </p>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Excel File</label>
-      <input type="file" id="single-import-file" accept=".xlsx,.xls,.csv" class="form-input">
-    </div>
-  `;
-  const footer = `
-    <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
-    <button class="btn btn-primary" onclick="runSingleImport()">Import Data</button>
-  `;
-  App.openModal(`Import Wages — ${currentWagesData.label}`, body, footer);
-};
+App.registerPage('wage-entry', async (container) => {
+  if (!constantsCache) constantsCache = await App.get('/api/constants');
 
-window.toggleImportMonth = () => {
-  const type = document.querySelector('input[name="import-type"]:checked').value;
-  document.getElementById('import-month-group').style.display = type === 'monthly' ? 'block' : 'none';
-  const instructions = document.getElementById('import-instructions');
-  if (type === 'monthly') {
-    instructions.innerHTML = `
-          Upload an Excel file to import wages for the selected month. The file must have a header row and columns like:
-          <br><br>
-          <code>UAN | NAME | GROSS WAGES | EPF WAGES | NCP DAYS</code>
-        `;
-  } else {
-    instructions.innerHTML = `
-          Upload an Excel file to import wages for <strong>${currentWagesData.label}</strong>. The file must have a header row and columns like:
-          <br><br>
-          <code>UAN | Name | APR | APR NCP | MAY | MAY NCP ...</code>
-        `;
+  const { years } = await App.get('/api/years');
+  if (years.length === 0) {
+    container.innerHTML = `<div class="empty-state">
+      <div class="empty-state-icon">🗓️</div>
+      <div class="empty-state-text">No financial years available. Add a year first to enter wages.</div>
+      <button class="btn btn-primary" style="margin-top:16px" onclick="App.navigate('years')">Go to Years</button>
+    </div>`;
+    return;
   }
-};
 
-window.runSingleImport = async () => {
-  const fileInput = document.getElementById('single-import-file');
-  if (!fileInput.files.length) return App.toast('Please select a file', 'error');
-
-  const type = document.querySelector('input[name="import-type"]:checked').value;
-  const monthIdx = type === 'monthly' ? document.getElementById('single-import-month').value : -1;
-
-  App.toast('Uploading and processing...', 'info');
-  App.closeModal();
-
-  const formData = new FormData();
-  formData.append('file', fileInput.files[0]);
-  formData.append('import_type', type);
-  formData.append('month_idx', monthIdx);
-
-  try {
-    const res = await fetch(`/api/import/${currentYearKey}`, { method: 'POST', body: formData });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-
-    let msg = `Successfully imported ${data.imported} wage records.`;
-    if (data.warnings && data.warnings.length) {
-      msg += `\n\nWarnings:\n- ${data.warnings.join('\n- ')}`;
-      App.toast('Imported with warnings', 'info');
-      alert(msg);
-    } else {
-      App.toast(msg);
-    }
-    App.navigate('wages');
-  } catch (e) {
-    App.toast(e.message, 'error');
+  // Use currently selected year (e.g. carried over from the Wage Entry page) or the latest one
+  if (!currentYearKey || !years.find(y => y.key === currentYearKey)) {
+    currentYearKey = years[years.length - 1].key;
   }
-};
 
-window.showMonthlyWageModal = async () => {
+  currentWagesData = await App.get(`/api/years/${currentYearKey}/wages`);
+
   // Ensure master employees are loaded
   const { employees: masterEmployees } = await App.get('/api/employees');
   window._masterEmployees = masterEmployees;
@@ -905,8 +835,22 @@ window.showMonthlyWageModal = async () => {
   // So if idx - 1 is negative, we default to 0 (March).
   defaultMonthIdx = Math.max(0, prevIdx);
 
-  const body = `
-      <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom: 16px;">
+  container.innerHTML = `<div class="fade-in">
+    <div class="page-header">
+      <div>
+        <div class="section-title">Monthly Wage Entry</div>
+        <div class="page-desc">Enter wages for every employee for a single month at once. Contributions are calculated automatically based on the statutory rates.</div>
+      </div>
+      <div class="toolbar-right">
+        <select class="form-select" id="wage-entry-year-select" onchange="switchWageEntryYear()">
+          ${years.map(y => `<option value="${y.key}" ${y.key === currentYearKey ? 'selected' : ''}>${y.label}</option>`).join('')}
+        </select>
+        <button class="btn btn-primary" onclick="saveMonthlyWages()">💾 Save Monthly Wages</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:16px;">
         <div class="form-group" style="margin-bottom: 0;">
           <label class="form-label">Select Month</label>
           <select class="form-select" id="bulk-month-select" onchange="initBulkTableState()" style="width:200px">
@@ -914,26 +858,29 @@ window.showMonthlyWageModal = async () => {
           </select>
         </div>
         <div class="form-group" style="margin-bottom: 0; display:flex; gap:8px;">
-          <input type="text" class="form-input" id="bulk-add-uan" placeholder="Enter UAN to add employee..." style="width:250px">
+          <input type="text" class="form-input" id="bulk-add-uan" placeholder="Enter UAN to add employee..." style="width:280px">
           <button class="btn btn-secondary" onclick="addEmployeeByUAN()">Add Employee</button>
         </div>
       </div>
-      <div class="table-wrap" style="max-height:55vh; overflow-y:auto;">
+    </div>
+
+    <div class="card">
+      <div class="table-wrap">
         <table class="wage-table">
           <thead style="position: sticky; top: 0; background: var(--bg2); z-index: 10;">
             <tr>
-              <th class="txt" style="width:40px">Sl No.</th>
-              <th class="txt" style="width:120px">UAN</th>
-              <th class="txt">Name & Options</th>
-              <th style="width:70px; text-align:center">Days<br><small>in Mth</small></th>
-              <th style="width:70px">NCP<br>Days</th>
-              <th style="width:70px; text-align:center">Work<br>Days</th>
-              <th style="width:100px">Gross Wages</th>
-              <th style="width:100px">EPF Wages</th>
-              <th style="width:80px; text-align:right">EPS Wages</th>
-              <th style="text-align:right">EE Share<br><small>(${currentWagesData.rates.w_epf}%)</small></th>
-              <th style="text-align:right">ER PF<br><small>(${currentWagesData.rates.e_epf}%)</small></th>
-              <th style="text-align:right">Pension<br><small>(${currentWagesData.rates.e_eps}%)</small></th>
+              <th class="txt" style="width:60px">Sl No.</th>
+              <th class="txt" style="width:150px">UAN</th>
+              <th class="txt" style="min-width:280px">Name & Options</th>
+              <th style="width:90px; text-align:center">Days<br><small>in Mth</small></th>
+              <th style="width:90px">NCP<br>Days</th>
+              <th style="width:90px; text-align:center">Work<br>Days</th>
+              <th style="width:150px">Gross Wages</th>
+              <th style="width:150px">EPF Wages</th>
+              <th style="width:120px; text-align:right">EPS Wages</th>
+              <th style="width:130px; text-align:right">EE Share<br><small>(${currentWagesData.rates.w_epf}%)</small></th>
+              <th style="width:130px; text-align:right">ER PF<br><small>(${currentWagesData.rates.e_epf}%)</small></th>
+              <th style="width:130px; text-align:right">Pension<br><small>(${currentWagesData.rates.e_eps}%)</small></th>
             </tr>
           </thead>
           <tbody id="bulk-wage-body">
@@ -942,18 +889,16 @@ window.showMonthlyWageModal = async () => {
         </table>
       </div>
       <div id="bulk-pagination-container"></div>
-    `;
-  const footer = `
-      <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
-      <button class="btn btn-primary" onclick="saveMonthlyWages()">Save Monthly Wages</button>
-    `;
+    </div>
+  </div>`;
 
-  App.openModal(`Monthly Wage Entry — ${currentWagesData.label}`, body, footer, true);
+  document.getElementById('bulk-month-select').value = defaultMonthIdx;
+  initBulkTableState();
+});
 
-  setTimeout(() => {
-    document.getElementById('bulk-month-select').value = defaultMonthIdx;
-    initBulkTableState();
-  }, 100);
+window.switchWageEntryYear = () => {
+  currentYearKey = document.getElementById('wage-entry-year-select').value;
+  App.navigate('wage-entry');
 };
 
 let bulkTableState = {};
@@ -1270,8 +1215,7 @@ window.saveMonthlyWages = async () => {
   try {
     await App.post(`/api/years/${currentYearKey}/wages/bulk_month`, { month_idx: monthIdx, employees });
     App.toast('Monthly wages saved successfully.');
-    App.closeModal();
-    App.navigate('wages');
+    App.navigate('wage-entry');
   } catch (e) {
     App.toast(e.message, 'error');
   }
