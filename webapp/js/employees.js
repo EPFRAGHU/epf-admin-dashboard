@@ -1,11 +1,34 @@
 /* ================================================================
    Employees — CRUD for Employee Master (Form 9)
+   Add Employee is an inline form at the top of this same page —
+   the table directly below it is the single source of truth for
+   both data entry confirmation and the full employee list, so a
+   newly-added row never has to be shown in two different places.
    ================================================================ */
 let masterEmployees = [];
 let filteredEmployees = [];
 let orgStructureData = { branches: [], divisions: [], units: [] };
 let currentEmpPage = 1;
 const EMP_PAGE_SIZE = 50;
+let nextSerialNo = 1;
+
+function computeNextSerialNo(employees) {
+  const nums = (employees || [])
+    .map(e => parseInt(e.serial_no, 10))
+    .filter(n => !isNaN(n));
+  return (nums.length ? Math.max(...nums) : 0) + 1;
+}
+
+function computeScopePath(branchId, divisionId, unitId) {
+  const parts = [];
+  const branch = (orgStructureData.branches || []).find(b => String(b.id) === String(branchId));
+  if (branch) parts.push(branch.name);
+  const division = (orgStructureData.divisions || []).find(d => String(d.id) === String(divisionId));
+  if (division) parts.push(division.name);
+  const unit = (orgStructureData.units || []).find(u => String(u.id) === String(unitId));
+  if (unit) parts.push(unit.name);
+  return parts.length ? parts.join(' → ') : 'Unassigned';
+}
 
 App.registerPage('employees', async (container) => {
   const [empRes, orgRes] = await Promise.all([
@@ -16,7 +39,8 @@ App.registerPage('employees', async (container) => {
   filteredEmployees = [...masterEmployees];
   orgStructureData = orgRes || { branches: [], divisions: [], units: [] };
   currentEmpPage = 1;
-  
+  nextSerialNo = computeNextSerialNo(masterEmployees);
+
   const branches = orgStructureData.branches || [];
   const branchFilterHtml = branches.length > 0 ? `
     <select class="form-select" id="emp-branch-filter" onchange="filterEmpTable()" style="max-width:180px; font-size:12px; padding:6px 10px;">
@@ -26,81 +50,6 @@ App.registerPage('employees', async (container) => {
   ` : '';
 
   container.innerHTML = `<div class="fade-in">
-    <div class="toolbar">
-      <div class="toolbar-left" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-        <div class="search-box">
-          <span class="search-icon">🔍</span>
-          <input class="form-input" id="emp-search" placeholder="Search employees…" oninput="filterEmpTable()">
-        </div>
-        ${branchFilterHtml}
-        <span style="color:var(--text3);font-size:12px" id="emp-count-label">${filteredEmployees.length} employees</span>
-      </div>
-      <div class="toolbar-right">
-        <button class="btn btn-glass" onclick="showMasterImportModal()">📥 Bulk Import Master</button>
-        <button class="btn btn-primary" onclick="App.navigate('add-employee')">+ Add Employee</button>
-      </div>
-    </div>
-    <div class="card">
-      <div class="table-wrap">
-        <table id="emp-table">
-          <thead>
-            <tr>
-              <th>SL</th><th>Member ID</th><th>UAN</th><th>Name</th>
-              <th>Org Scope</th>
-              <th>Father's Name</th><th>DOB</th><th>Higher EPF</th><th>Sex</th>
-              <th>DOJ</th><th>DOE</th><th>Reason</th><th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="emp-tbody">
-            <!-- Rendered via JS -->
-          </tbody>
-        </table>
-      </div>
-      <div id="emp-pagination-container"></div>
-    </div>
-  </div>`;
-  
-  renderEmpTable();
-});
-
-window.setEmpPage = (page) => {
-  currentEmpPage = page;
-  renderEmpTable();
-};
-
-/* ── Add Employee — full page (not a modal) ─────────────────────── */
-let recentlyAddedEmployees = [];
-const RECENT_ADDED_CAP = 15;
-let nextSerialNo = 1;
-
-function computeNextSerialNo(employees) {
-  const nums = (employees || [])
-    .map(e => parseInt(e.serial_no, 10))
-    .filter(n => !isNaN(n));
-  return (nums.length ? Math.max(...nums) : 0) + 1;
-}
-
-function scopeNameFromList(list, id) {
-  if (id === null || id === undefined || id === '') return '—';
-  const item = (list || []).find(x => String(x.id) === String(id));
-  return item ? item.name : '—';
-}
-
-App.registerPage('add-employee', async (container) => {
-  const [empRes, orgRes] = await Promise.all([
-    App.get('/api/employees'),
-    App.get('/api/org-structure')
-  ]);
-  masterEmployees = empRes.employees || [];
-  orgStructureData = orgRes || { branches: [], divisions: [], units: [] };
-  nextSerialNo = computeNextSerialNo(masterEmployees);
-
-  container.innerHTML = `<div class="fade-in">
-    <div class="toolbar">
-      <div class="toolbar-left">
-        <button class="btn btn-ghost" onclick="App.navigate('employees')">← Back to Employees</button>
-      </div>
-    </div>
     <div class="card">
       <h3 style="margin-bottom:16px">Add New Employee</h3>
       <style>
@@ -225,55 +174,51 @@ App.registerPage('add-employee', async (container) => {
         <button class="btn btn-ghost" onclick="clearAddEmpForm()">Clear</button>
       </div>
     </div>
-    <div class="card" style="margin-top:20px">
-      <div class="toolbar">
-        <div class="toolbar-left"><h3>Recently Added</h3></div>
-        <div class="toolbar-right">
-          <a href="#" onclick="App.navigate('employees'); return false;">View full employee list →</a>
+
+    <div class="toolbar" style="margin-top:20px">
+      <div class="toolbar-left" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input class="form-input" id="emp-search" placeholder="Search employees…" oninput="filterEmpTable()">
         </div>
+        ${branchFilterHtml}
+        <span style="color:var(--text3);font-size:12px" id="emp-count-label">${filteredEmployees.length} employees</span>
       </div>
+      <div class="toolbar-right">
+        <button class="btn btn-glass" onclick="showMasterImportModal()">📥 Bulk Import Master</button>
+      </div>
+    </div>
+    <div class="card">
       <div class="table-wrap">
-        <table>
+        <table id="emp-table">
           <thead>
             <tr>
-              <th>Member ID</th><th>UAN</th><th>Name</th><th>Father's Name</th>
-              <th>DOB</th><th>DOJ</th><th>Sex</th><th>Mobile Number</th>
-              <th>Branch</th><th>Division</th><th>Unit</th>
+              <th>SL</th><th>Member ID</th><th>UAN</th><th>Name</th>
+              <th>Org Scope</th>
+              <th>Father's Name</th><th>DOB</th><th>Higher EPF</th><th>Sex</th>
+              <th>DOJ</th><th>DOE</th><th>Reason</th><th>Actions</th>
             </tr>
           </thead>
-          <tbody id="recent-added-tbody"></tbody>
+          <tbody id="emp-tbody">
+            <!-- Rendered via JS -->
+          </tbody>
         </table>
       </div>
+      <div id="emp-pagination-container"></div>
     </div>
   </div>`;
 
   ScopePicker.render(document.getElementById('ae-scope-picker'), orgStructureData, {});
   const slEl = document.getElementById('ae-sl');
   if (slEl) slEl.value = nextSerialNo;
-  renderRecentlyAdded();
+
+  renderEmpTable();
 });
 
-function renderRecentlyAdded() {
-  const tbody = document.getElementById('recent-added-tbody');
-  if (!tbody) return;
-  if (recentlyAddedEmployees.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;color:var(--text3)">No employees added yet this session</td></tr>`;
-    return;
-  }
-  tbody.innerHTML = recentlyAddedEmployees.map(e => `<tr data-search="${(e.member_id + ' ' + e.name + ' ' + e.uan).toLowerCase()}">
-    <td><strong>${App.fmtId(e.member_id)}</strong></td>
-    <td>${App.esc(e.uan)}</td>
-    <td class="txt">${App.esc(e.name)}</td>
-    <td>${App.esc(e.father_name)}</td>
-    <td>${App.esc(e.dob)}</td>
-    <td>${App.esc(e.doj)}</td>
-    <td>${App.esc(e.sex)}</td>
-    <td>${App.esc(e.mobile)}</td>
-    <td>${App.esc(scopeNameFromList(orgStructureData.branches, e.branch_id))}</td>
-    <td>${App.esc(scopeNameFromList(orgStructureData.divisions, e.division_id))}</td>
-    <td>${App.esc(scopeNameFromList(orgStructureData.units, e.unit_id))}</td>
-  </tr>`).join('');
-}
+window.setEmpPage = (page) => {
+  currentEmpPage = page;
+  renderEmpTable();
+};
 
 window.clearAddEmpForm = () => {
   ['ae-acc', 'ae-uan', 'ae-name', 'ae-father', 'ae-dob', 'ae-doj', 'ae-doe',
@@ -323,16 +268,15 @@ window.saveNewEmpFromPage = async () => {
     d.branch_id = scope.branch_id;
     d.division_id = scope.division_id;
     d.unit_id = scope.unit_id;
+    d.scope_path = computeScopePath(scope.branch_id, scope.division_id, scope.unit_id);
   }
   if (!d.member_id || !d.name) { App.toast('Member ID and Name are required', 'error'); return; }
   try {
     await App.post('/api/employees', d);
     App.toast('Employee added and data saved successfully.');
-    recentlyAddedEmployees.unshift(d);
-    if (recentlyAddedEmployees.length > RECENT_ADDED_CAP) recentlyAddedEmployees.length = RECENT_ADDED_CAP;
-    masterEmployees.push(d);
+    masterEmployees.unshift(d);
     nextSerialNo = computeNextSerialNo(masterEmployees);
-    renderRecentlyAdded();
+    filterEmpTable();
     clearAddEmpForm();
   } catch (_) {}
 };
