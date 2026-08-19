@@ -592,6 +592,7 @@ const App = (() => {
       establishment: 'Establishment Profile',
       'org-structure': 'Organization Structure',
       employees: 'Employee Master',
+      'add-employee': 'Add New Employee',
       years: 'Financial Years & Rates',
       wages: 'Wage Entry',
       'wage-entry': 'Monthly Wage Entry',

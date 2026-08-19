@@ -37,7 +37,7 @@ App.registerPage('employees', async (container) => {
       </div>
       <div class="toolbar-right">
         <button class="btn btn-glass" onclick="showMasterImportModal()">📥 Bulk Import Master</button>
-        <button class="btn btn-primary" onclick="showEmpModal()">+ Add Employee</button>
+        <button class="btn btn-primary" onclick="App.navigate('add-employee')">+ Add Employee</button>
       </div>
     </div>
     <div class="card">
@@ -66,6 +66,233 @@ App.registerPage('employees', async (container) => {
 window.setEmpPage = (page) => {
   currentEmpPage = page;
   renderEmpTable();
+};
+
+/* ── Add Employee — full page (not a modal) ─────────────────────── */
+let recentlyAddedEmployees = [];
+const RECENT_ADDED_CAP = 15;
+
+App.registerPage('add-employee', async (container) => {
+  const orgRes = await App.get('/api/org-structure');
+  orgStructureData = orgRes || { branches: [], divisions: [], units: [] };
+
+  container.innerHTML = `<div class="fade-in">
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <button class="btn btn-ghost" onclick="App.navigate('employees')">← Back to Employees</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="margin-bottom:16px">Add New Employee</h3>
+      <div class="form-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;">
+        <div class="form-group">
+          <label class="form-label">Member ID *</label>
+          <input class="form-input" id="ae-acc" maxlength="7">
+        </div>
+        <div class="form-group">
+          <label class="form-label">UAN</label>
+          <input class="form-input" id="ae-uan">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Name *</label>
+          <input class="form-input" id="ae-name">
+        </div>
+        <div class="form-group" style="grid-column: span 3;">
+          <label class="form-label">Branch / Division / Unit</label>
+          <div id="ae-scope-picker"></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Father/Husband Name</label>
+          <input class="form-input" id="ae-father">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Relationship</label>
+          <select class="form-select" id="ae-relationship">
+            <option value="">—</option>
+            <option value="Father">Father</option>
+            <option value="Husband">Husband</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Date of Birth</label>
+          <input class="form-input" id="ae-dob" placeholder="DD-MM-YYYY">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Sex</label>
+          <select class="form-select" id="ae-sex">
+            <option value="">—</option>
+            <option value="Male">Male</option>
+            <option value="Female">Female</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Marital Status</label>
+          <select class="form-select" id="ae-marital">
+            <option value="">—</option>
+            <option value="Married">Married</option>
+            <option value="Unmarried">Unmarried</option>
+            <option value="Widow/Widower">Widow/Widower</option>
+            <option value="Divorcee">Divorcee</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Date of Joining (EPF)</label>
+          <input class="form-input" id="ae-doj" placeholder="DD-MM-YYYY">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Date of Exit</label>
+          <input class="form-input" id="ae-doe" placeholder="DD-MM-YYYY">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Reason of Leaving</label>
+          <select class="form-select" id="ae-reason">
+            <option value="">—</option>
+            <option>Retirement/Superannuation</option>
+            <option>Resignation</option>
+            <option>Retrenchment</option>
+            <option>Death</option>
+            <option>Permanent disability</option>
+            <option>Migration to another establishment</option>
+            <option>Transfer</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Mobile Number</label>
+          <input class="form-input" id="ae-mobile" maxlength="10">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Email ID</label>
+          <input class="form-input" id="ae-email" type="email">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Aadhaar</label>
+          <input class="form-input" id="ae-aadhaar" maxlength="12">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Bank Account Number</label>
+          <input class="form-input" id="ae-bank">
+        </div>
+        <div class="form-group">
+          <label class="form-label">IFSC</label>
+          <input class="form-input" id="ae-ifsc" maxlength="11" style="text-transform: uppercase">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Serial No.</label>
+          <input class="form-input" id="ae-sl" type="number">
+        </div>
+        <div class="form-group">
+          <label class="form-label" style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" id="ae-higher-epf-ee">
+            Allow Higher EPF (EE)
+          </label>
+          <p style="font-size:10px;color:var(--text3);margin-top:2px;">Employee 12% on actual wages</p>
+        </div>
+        <div class="form-group">
+          <label class="form-label" style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" id="ae-higher-epf-er">
+            Allow Higher EPF (ER)
+          </label>
+          <p style="font-size:10px;color:var(--text3);margin-top:2px;">Employer PF on actual wages</p>
+        </div>
+      </div>
+      <div style="margin-top:20px; display:flex; gap:10px;">
+        <button class="btn btn-primary" onclick="saveNewEmpFromPage()">Create</button>
+        <button class="btn btn-ghost" onclick="clearAddEmpForm()">Clear</button>
+      </div>
+    </div>
+    <div class="card" style="margin-top:20px">
+      <div class="toolbar">
+        <div class="toolbar-left"><h3>Recently Added</h3></div>
+        <div class="toolbar-right">
+          <a href="#" onclick="App.navigate('employees'); return false;">View full employee list →</a>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Member ID</th><th>UAN</th><th>Name</th><th>DOJ</th></tr>
+          </thead>
+          <tbody id="recent-added-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>`;
+
+  ScopePicker.render(document.getElementById('ae-scope-picker'), orgStructureData, {});
+  renderRecentlyAdded();
+});
+
+function renderRecentlyAdded() {
+  const tbody = document.getElementById('recent-added-tbody');
+  if (!tbody) return;
+  if (recentlyAddedEmployees.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text3)">No employees added yet this session</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = recentlyAddedEmployees.map(e => `<tr data-search="${(e.member_id + ' ' + e.name + ' ' + e.uan).toLowerCase()}">
+    <td><strong>${App.fmtId(e.member_id)}</strong></td>
+    <td>${App.esc(e.uan)}</td>
+    <td class="txt">${App.esc(e.name)}</td>
+    <td>${App.esc(e.doj)}</td>
+  </tr>`).join('');
+}
+
+window.clearAddEmpForm = () => {
+  ['ae-acc', 'ae-uan', 'ae-name', 'ae-father', 'ae-dob', 'ae-doj', 'ae-doe',
+   'ae-mobile', 'ae-email', 'ae-aadhaar', 'ae-bank', 'ae-ifsc', 'ae-sl'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  ['ae-relationship', 'ae-sex', 'ae-marital', 'ae-reason'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  ['ae-higher-epf-ee', 'ae-higher-epf-er'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.checked = false;
+  });
+  const pickerEl = document.getElementById('ae-scope-picker');
+  if (pickerEl) ScopePicker.render(pickerEl, orgStructureData, {});
+};
+
+window.saveNewEmpFromPage = async () => {
+  const d = {
+    member_id: document.getElementById('ae-acc').value.trim().slice(-7),
+    name: document.getElementById('ae-name').value.trim(),
+    father_name: document.getElementById('ae-father').value.trim(),
+    uan: document.getElementById('ae-uan').value.trim(),
+    dob: document.getElementById('ae-dob').value.trim(),
+    sex: document.getElementById('ae-sex').value,
+    doj: document.getElementById('ae-doj').value.trim(),
+    doe: document.getElementById('ae-doe').value.trim(),
+    reason_leaving: document.getElementById('ae-reason').value,
+    serial_no: parseInt(document.getElementById('ae-sl').value) || null,
+    relationship: document.getElementById('ae-relationship').value,
+    marital_status: document.getElementById('ae-marital').value,
+    mobile: document.getElementById('ae-mobile').value.trim(),
+    email: document.getElementById('ae-email').value.trim(),
+    aadhaar: document.getElementById('ae-aadhaar').value.trim(),
+    bank_account: document.getElementById('ae-bank').value.trim(),
+    ifsc: document.getElementById('ae-ifsc').value.trim().toUpperCase(),
+    higher_epf_ee: document.getElementById('ae-higher-epf-ee').checked,
+    higher_epf_er: document.getElementById('ae-higher-epf-er').checked,
+  };
+  const pickerEl = document.getElementById('ae-scope-picker');
+  if (pickerEl) {
+    const scope = ScopePicker.getValue(pickerEl);
+    d.branch_id = scope.branch_id;
+    d.division_id = scope.division_id;
+    d.unit_id = scope.unit_id;
+  }
+  if (!d.member_id || !d.name) { App.toast('Member ID and Name are required', 'error'); return; }
+  try {
+    await App.post('/api/employees', d);
+    App.toast('Employee added and data saved successfully.');
+    recentlyAddedEmployees.unshift(d);
+    if (recentlyAddedEmployees.length > RECENT_ADDED_CAP) recentlyAddedEmployees.length = RECENT_ADDED_CAP;
+    renderRecentlyAdded();
+    clearAddEmpForm();
+  } catch (_) {}
 };
 
 function renderEmpTable() {
