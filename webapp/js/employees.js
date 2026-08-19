@@ -30,6 +30,61 @@ function computeScopePath(branchId, divisionId, unitId) {
   return parts.length ? parts.join(' → ') : 'Unassigned';
 }
 
+/* ── Employee Master table sorting ───────────────────────────────── */
+let empSortState = { column: null, direction: 'asc' };
+
+const EMP_SORT_TYPES = {
+  serial_no: 'number', member_id: 'string', uan: 'string', name: 'string',
+  scope_path: 'string', father_name: 'string', dob: 'date', sex: 'string',
+  doj: 'date', doe: 'date', reason_leaving: 'string',
+};
+
+function parseDMY(s) {
+  const parts = (s || '').split('-');
+  if (parts.length !== 3) return null;
+  const [d, m, y] = parts.map(Number);
+  if (!d || !m || !y) return null;
+  return new Date(y, m - 1, d).getTime();
+}
+
+function compareEmp(a, b, column) {
+  const type = EMP_SORT_TYPES[column] || 'string';
+  if (type === 'number') {
+    const av = parseInt(a[column], 10), bv = parseInt(b[column], 10);
+    return (isNaN(av) ? -Infinity : av) - (isNaN(bv) ? -Infinity : bv);
+  }
+  if (type === 'date') {
+    const av = parseDMY(a[column]), bv = parseDMY(b[column]);
+    return (av === null ? -Infinity : av) - (bv === null ? -Infinity : bv);
+  }
+  const av = (a[column] || '').toString().toLowerCase();
+  const bv = (b[column] || '').toString().toLowerCase();
+  return av.localeCompare(bv);
+}
+
+function empSortTh(column, label) {
+  return `<th class="sortable" onclick="sortEmpTable('${column}')" style="cursor:pointer; user-select:none;">${label}<span id="sort-arrow-${column}" style="margin-left:4px; opacity:0.7;"></span></th>`;
+}
+
+function updateEmpSortHeaders() {
+  Object.keys(EMP_SORT_TYPES).forEach(col => {
+    const el = document.getElementById(`sort-arrow-${col}`);
+    if (!el) return;
+    el.textContent = empSortState.column === col ? (empSortState.direction === 'asc' ? '▲' : '▼') : '';
+  });
+}
+
+window.sortEmpTable = (column) => {
+  if (empSortState.column === column) {
+    empSortState.direction = empSortState.direction === 'asc' ? 'desc' : 'asc';
+  } else {
+    empSortState.column = column;
+    empSortState.direction = 'asc';
+  }
+  filterEmpTable();
+  updateEmpSortHeaders();
+};
+
 App.registerPage('employees', async (container) => {
   const [empRes, orgRes] = await Promise.all([
     App.get('/api/employees'),
@@ -39,6 +94,7 @@ App.registerPage('employees', async (container) => {
   filteredEmployees = [...masterEmployees];
   orgStructureData = orgRes || { branches: [], divisions: [], units: [] };
   currentEmpPage = 1;
+  empSortState = { column: null, direction: 'asc' };
   nextSerialNo = computeNextSerialNo(masterEmployees);
 
   const branches = orgStructureData.branches || [];
@@ -193,10 +249,10 @@ App.registerPage('employees', async (container) => {
         <table id="emp-table">
           <thead>
             <tr>
-              <th>SL</th><th>Member ID</th><th>UAN</th><th>Name</th>
-              <th>Org Scope</th>
-              <th>Father's Name</th><th>DOB</th><th>Higher EPF</th><th>Sex</th>
-              <th>DOJ</th><th>DOE</th><th>Reason</th><th>Actions</th>
+              ${empSortTh('serial_no', 'SL')}${empSortTh('member_id', 'Member ID')}${empSortTh('uan', 'UAN')}${empSortTh('name', 'Name')}
+              ${empSortTh('scope_path', 'Org Scope')}
+              ${empSortTh('father_name', "Father's Name")}${empSortTh('dob', 'DOB')}<th>Higher EPF</th>${empSortTh('sex', 'Sex')}
+              ${empSortTh('doj', 'DOJ')}${empSortTh('doe', 'DOE')}${empSortTh('reason_leaving', 'Reason')}<th>Actions</th>
             </tr>
           </thead>
           <tbody id="emp-tbody">
@@ -308,6 +364,12 @@ window.filterEmpTable = () => {
     const matchesBranch = !branchId || (String(e.branch_id) === branchId);
     return matchesQuery && matchesBranch;
   });
+  if (empSortState.column) {
+    filteredEmployees.sort((a, b) => {
+      const cmp = compareEmp(a, b, empSortState.column);
+      return empSortState.direction === 'asc' ? cmp : -cmp;
+    });
+  }
   currentEmpPage = 1;
   renderEmpTable();
 };
