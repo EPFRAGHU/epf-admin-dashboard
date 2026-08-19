@@ -80,39 +80,148 @@ App.registerPage('wages', async (container) => {
     ${currentWagesData.employees.length === 0 ? `<div class="empty-state">
       <div class="empty-state-icon">📝</div>
       <div class="empty-state-text">No wage entries for ${currentYearKey}.</div>
-    </div>` : ''}
+    </div>` : `
+    <div class="card" id="wages-nav-bar" style="margin-bottom:16px; padding:12px 16px; display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;">
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-glass btn-sm" id="wage-nav-first" onclick="goToWageCard('first')">⏮ First</button>
+        <button class="btn btn-glass btn-sm" id="wage-nav-prev" onclick="goToWageCard('prev')">◀ Prev</button>
+      </div>
+      <div style="flex:1; min-width:220px; max-width:380px; position:relative;">
+        <input type="text" class="form-input" id="wage-emp-search" placeholder="🔍 Search Member ID, UAN or Name..." autocomplete="off" style="width:100%">
+        <div id="wage-emp-search-dropdown" style="display:none; position:absolute; top:100%; left:0; right:0; max-height:260px; overflow-y:auto; background:var(--bg2); border:1px solid var(--border); border-radius:6px; z-index:100; box-shadow:0 4px 12px rgba(0,0,0,0.15); margin-top:4px;"></div>
+      </div>
+      <div style="font-size:13px; color:var(--text2); white-space:nowrap;">
+        Employee <strong id="wage-nav-counter">-</strong> of <strong id="wage-nav-total">${currentWagesData.employees.length}</strong>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-glass btn-sm" id="wage-nav-next" onclick="goToWageCard('next')">Next ▶</button>
+        <button class="btn btn-glass btn-sm" id="wage-nav-last" onclick="goToWageCard('last')">Last ⏭</button>
+      </div>
+    </div>
+    `}
 
-    <div style="display:flex; flex-direction:column; gap:24px" id="wages-cards-container">
+    <div id="wages-cards-container">
       <!-- Rendered via JS -->
     </div>
-    <div id="wages-cards-pagination"></div>
   </div>`;
 
+  currentWageCardsPage = 1;
   renderWageCardsPage();
+  setupWageEmployeeSearch();
 });
 
 let currentWageCardsPage = 1;
-const WAGE_CARDS_PAGE_SIZE = 50;
 
 window.setWageCardsPage = (page) => {
   currentWageCardsPage = page;
   renderWageCardsPage();
 };
 
+window.goToWageCard = (dir) => {
+  const total = currentWagesData.employees.length;
+  if (total === 0) return;
+  if (dir === 'first') currentWageCardsPage = 1;
+  else if (dir === 'prev') currentWageCardsPage = Math.max(1, currentWageCardsPage - 1);
+  else if (dir === 'next') currentWageCardsPage = Math.min(total, currentWageCardsPage + 1);
+  else if (dir === 'last') currentWageCardsPage = total;
+  renderWageCardsPage();
+};
+
 function renderWageCardsPage() {
   const container = document.getElementById('wages-cards-container');
-  const pgContainer = document.getElementById('wages-cards-pagination');
   if (!container) return;
 
   const emps = currentWagesData.employees;
-  const start = (currentWageCardsPage - 1) * WAGE_CARDS_PAGE_SIZE;
-  const sliced = emps.slice(start, start + WAGE_CARDS_PAGE_SIZE);
-
-  container.innerHTML = sliced.map(renderWageCard).join('');
-
-  if (pgContainer) {
-    pgContainer.innerHTML = App.renderPagination(emps.length, currentWageCardsPage, WAGE_CARDS_PAGE_SIZE, 'setWageCardsPage');
+  if (emps.length === 0) {
+    container.innerHTML = '';
+    return;
   }
+
+  if (currentWageCardsPage < 1) currentWageCardsPage = 1;
+  if (currentWageCardsPage > emps.length) currentWageCardsPage = emps.length;
+
+  container.innerHTML = renderWageCard(emps[currentWageCardsPage - 1]);
+  updateWageNavUI();
+}
+
+function updateWageNavUI() {
+  const total = currentWagesData.employees.length;
+  const counterEl = document.getElementById('wage-nav-counter');
+  const totalEl = document.getElementById('wage-nav-total');
+  if (counterEl) counterEl.textContent = total === 0 ? '0' : String(currentWageCardsPage);
+  if (totalEl) totalEl.textContent = String(total);
+
+  const atFirst = total === 0 || currentWageCardsPage <= 1;
+  const atLast = total === 0 || currentWageCardsPage >= total;
+  ['wage-nav-first', 'wage-nav-prev'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) { b.disabled = atFirst; b.style.opacity = atFirst ? '0.5' : '1'; b.style.cursor = atFirst ? 'not-allowed' : 'pointer'; }
+  });
+  ['wage-nav-next', 'wage-nav-last'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) { b.disabled = atLast; b.style.opacity = atLast ? '0.5' : '1'; b.style.cursor = atLast ? 'not-allowed' : 'pointer'; }
+  });
+}
+
+window.jumpToWageEmployee = (memberId) => {
+  const idx = currentWagesData.employees.findIndex(e => e.member_id === memberId);
+  if (idx < 0) return;
+  currentWageCardsPage = idx + 1;
+  renderWageCardsPage();
+  const input = document.getElementById('wage-emp-search');
+  const dropdown = document.getElementById('wage-emp-search-dropdown');
+  if (input) input.value = '';
+  if (dropdown) dropdown.style.display = 'none';
+};
+
+function setupWageEmployeeSearch() {
+  const input = document.getElementById('wage-emp-search');
+  const dropdown = document.getElementById('wage-emp-search-dropdown');
+  if (!input || !dropdown) return;
+
+  const findMatches = (q) => {
+    const lower = q.trim().toLowerCase();
+    if (!lower) return [];
+    return currentWagesData.employees.filter(e =>
+      (e.member_id || '').toLowerCase().includes(lower) ||
+      (e.uan || '').toLowerCase().includes(lower) ||
+      (e.name || '').toLowerCase().includes(lower)
+    ).slice(0, 20);
+  };
+
+  const renderMatches = (q) => {
+    const matches = findMatches(q);
+    if (!q.trim()) { dropdown.style.display = 'none'; return; }
+
+    if (matches.length === 0) {
+      dropdown.innerHTML = '<div style="padding:8px 12px; color:var(--text3); font-size:13px;">No matching employees</div>';
+      dropdown.style.display = 'block';
+      return;
+    }
+
+    dropdown.innerHTML = matches.map(e => `
+      <div class="wage-search-option" data-id="${App.esc(e.member_id)}" style="padding:8px 12px; cursor:pointer; border-bottom:1px solid var(--border); font-size:13px;">
+        <strong>${App.esc(e.name)}</strong> — ${App.esc(e.member_id)}${e.uan ? ' | UAN: ' + App.esc(e.uan) : ''}
+      </div>
+    `).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.wage-search-option').forEach(opt => {
+      opt.addEventListener('mousedown', () => jumpToWageEmployee(opt.getAttribute('data-id')));
+      opt.addEventListener('mouseenter', () => opt.style.background = 'var(--hover-bg, rgba(0,0,0,0.05))');
+      opt.addEventListener('mouseleave', () => opt.style.background = 'transparent');
+    });
+  };
+
+  input.addEventListener('input', () => renderMatches(input.value));
+  input.addEventListener('focus', () => { if (input.value.trim()) renderMatches(input.value); });
+  input.addEventListener('blur', () => setTimeout(() => { dropdown.style.display = 'none'; }, 150));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const matches = findMatches(input.value);
+      if (matches.length) jumpToWageEmployee(matches[0].member_id);
+    }
+  });
 }
 
 window.switchWageYear = () => {
