@@ -794,7 +794,8 @@ window.downloadYearPDF = (form) => {
       return App.toast(`No employees with wages > 0 in this year to generate Form ${form}`, 'error');
     }
   }
-  window.open(`/api/reports/${currentYearKey}?format=pdf&forms=${form}`, '_blank');
+  App.toast(`Generating Form ${form} (PDF)...`, 'info');
+  App.downloadFile(`/api/reports/${currentYearKey}?format=pdf&forms=${form}`, `Form${form}_${currentYearKey}.pdf`);
 };
 
 window.downloadYearExcel = (form) => {
@@ -807,7 +808,8 @@ window.downloadYearExcel = (form) => {
       return App.toast(`No employees with wages > 0 in this year to generate Form ${form}`, 'error');
     }
   }
-  window.open(`/api/reports/${currentYearKey}?format=excel&forms=${form}`, '_blank');
+  App.toast(`Generating Form ${form} (Excel)...`, 'info');
+  App.downloadFile(`/api/reports/${currentYearKey}?format=excel&forms=${form}`, `Form${form}_${currentYearKey}.xlsx`);
 };
 
 window.downloadEmployeePDF = (memberId) => {
@@ -818,7 +820,9 @@ window.downloadEmployeePDF = (memberId) => {
       return App.toast('Form 3A cannot be generated for an employee with 0 total wages', 'error');
     }
   }
-  window.open(`/api/reports/${currentYearKey}/employee/${encodeURIComponent(memberId)}?format=pdf&forms=3A`, '_blank');
+  const safeName = (emp && emp.name ? emp.name : 'Employee').replace(/[^a-zA-Z0-9 ]/g, '').trim() || 'Employee';
+  App.toast('Generating PDF…', 'info');
+  App.downloadFile(`/api/reports/${currentYearKey}/employee/${encodeURIComponent(memberId)}?format=pdf&forms=3A`, `${safeName}_Form3A.pdf`);
 };
 
 window.analyzeBulkImport = async () => {

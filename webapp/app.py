@@ -375,8 +375,10 @@ def is_month_overdue(year_key: str, month_idx: int) -> bool:
     grace_cutoff = date(cal_y, cal_m, last_day) + timedelta(days=1)
     return date.today() > grace_cutoff
 
-def get_unpaid_months_for_year(db: Session, establishment: Establishment, project: Project, year_key: str) -> List[str]:
-    """Returns list of formatted month names for which wages exist, fee is unpaid, and grace period has elapsed."""
+def get_unpaid_months_detail_for_year(db: Session, establishment: Establishment, project: Project, year_key: str) -> List[dict]:
+    """Like get_unpaid_months_for_year but returns structured {fee_id, month, display, amount_due,
+    financial_year} rows instead of formatted strings, so callers can turn a 402 into an actionable
+    payment breakdown (exact amount per month + a payable total) instead of a bare error string."""
     if is_establishment_in_trial(establishment):
         return []
     fee_rows = sync_subscription_fees_for_year(db, establishment, project, year_key)
@@ -396,9 +398,33 @@ def get_unpaid_months_for_year(db: Session, establishment: Establishment, projec
         if fee_row and not fee_row.is_paid:
             if is_month_overdue(year_key, month_idx):
                 cal_yr = calendar_year_for_month(month_abbr, year_record.year_from, year_record.year_to)
-                unpaid_overdue.append(f"{MONTH_FULL.get(month_abbr.upper(), month_abbr)} {cal_yr}")
+                unpaid_overdue.append({
+                    "fee_id": fee_row.id,
+                    "month": month_abbr,
+                    "financial_year": year_key,
+                    "display": f"{MONTH_FULL.get(month_abbr.upper(), month_abbr)} {cal_yr}",
+                    "amount_due": fee_row.amount_due,
+                })
 
     return unpaid_overdue
+
+def get_unpaid_months_for_year(db: Session, establishment: Establishment, project: Project, year_key: str) -> List[str]:
+    """Returns list of formatted month names for which wages exist, fee is unpaid, and grace period has elapsed."""
+    return [row["display"] for row in get_unpaid_months_detail_for_year(db, establishment, project, year_key)]
+
+def _year_payment_required_detail(unpaid_rows: List[dict], financial_year: Optional[str] = None) -> dict:
+    """Builds the structured 402 body for a whole-year (or multi-year, for Form 9) blocked
+    download -- an actionable breakdown the frontend renders as a payment prompt (Cashfree +
+    QR for the combined total) instead of a bare error string."""
+    total_due = round(sum(r["amount_due"] for r in unpaid_rows), 2)
+    months_str = ", ".join(r["display"] for r in unpaid_rows)
+    return {
+        "message": f"Download blocked — software subscription fee for {months_str} is unpaid. Settle it below to unlock the download.",
+        "financial_year": financial_year,
+        "unpaid_months": unpaid_rows,
+        "total_due": total_due,
+        "count": len(unpaid_rows),
+    }
 
 # ── App setup ──────────────────────────────────────────────────────────────
 app = FastAPI(title="EPF Admin Dashboard", version="2.1.0")
@@ -788,6 +814,16 @@ class AdvancePaymentIn(BaseModel):
 class CreateFeeLinkIn(BaseModel):
     financial_year: str
     month: str
+
+class PayAllOverdueIn(BaseModel):
+    fee_ids: List[int]
+
+class RefreshBatchStatusIn(BaseModel):
+    fee_ids: List[int]
+
+class BatchSubmitUTRIn(BaseModel):
+    fee_ids: List[int]
+    utr: str
 
 class PaymentUpdateItem(BaseModel):
     month: str
@@ -2451,22 +2487,41 @@ async def approve_payment(
         if fee.payment_status != "pending_verification":
             raise HTTPException(400, "Only pending_verification fees can be approved")
 
-        fee.payment_status = "paid"
-        fee.is_paid = True
-        fee.verified_by = admin.id
-        fee.verified_at = datetime.now(timezone.utc)
-        fee.payment_reference = fee.submitted_utr
-        fee.paid_date = date.today().strftime("%d-%m-%Y")
+        # A "pay all overdue" batch submits the SAME utr across every covered
+        # SubscriptionFee row (no new linking table) -- so approving any one row
+        # of the batch must cascade to its still-pending siblings sharing that utr.
+        sibling_fees = []
+        if fee.submitted_utr:
+            sibling_fees = db.query(SubscriptionFee).filter(
+                SubscriptionFee.establishment_id == fee.establishment_id,
+                SubscriptionFee.submitted_utr == fee.submitted_utr,
+                SubscriptionFee.payment_status == "pending_verification",
+                SubscriptionFee.id != fee.id,
+            ).all()
+
+        now = datetime.now(timezone.utc)
+        today_str = date.today().strftime("%d-%m-%Y")
+        approved_months = [f"{fee.month} {fee.financial_year}"]
+        for row in [fee] + sibling_fees:
+            row.payment_status = "paid"
+            row.is_paid = True
+            row.verified_by = admin.id
+            row.verified_at = now
+            row.payment_reference = row.submitted_utr
+            row.paid_date = today_str
+            if row is not fee:
+                approved_months.append(f"{row.month} {row.financial_year}")
         db.commit()
 
         est = db.query(Establishment).filter(Establishment.id == fee.establishment_id).first()
+        months_str = ", ".join(approved_months)
         log_activity(
             db, admin.id, fee.establishment_id, "utr_approved",
-            f"Approved UTR payment for {fee.month} {fee.financial_year} — {est.name if est else ''}: {fee.submitted_utr}",
-            {"financial_year": fee.financial_year, "month": fee.month, "utr": fee.submitted_utr}
+            f"Approved UTR payment for {months_str} — {est.name if est else ''}: {fee.submitted_utr}",
+            {"financial_year": fee.financial_year, "month": fee.month, "utr": fee.submitted_utr, "months": approved_months}
         )
 
-        return {"ok": True, "payment_status": "paid"}
+        return {"ok": True, "payment_status": "paid", "months_approved": approved_months}
 
     ledger_row = db.query(AdvanceCreditLedger).filter(AdvanceCreditLedger.id == real_id).first()
     if not ledger_row:
@@ -2771,11 +2826,15 @@ async def cashfree_webhook(request: Request, db: Session = Depends(get_db)):
     payment_ref = str(order_info.get("transaction_id") or order_info.get("order_id") or data.get("cf_link_id") or link_id)
 
     if link_id.startswith("sub_"):
-        fee_row = db.query(SubscriptionFee).filter(SubscriptionFee.cashfree_order_id == link_id).first()
-        if not fee_row:
+        # A "pay all overdue" batch order writes the SAME cashfree_order_id across every
+        # covered SubscriptionFee row, so .all() (not .first()) is required to confirm
+        # every month the order paid for, not just one.
+        fee_rows = db.query(SubscriptionFee).filter(SubscriptionFee.cashfree_order_id == link_id).all()
+        if not fee_rows:
             print(f"[CashfreeWebhook] No SubscriptionFee found for order_id={link_id}")
             return {"ok": True}
-        _confirm_subscription_fee_paid(db, fee_row, payment_ref=payment_ref, source="cashfree")
+        for fee_row in fee_rows:
+            _confirm_subscription_fee_paid(db, fee_row, payment_ref=payment_ref, source="cashfree")
 
     elif link_id.startswith("adv_"):
         ledger_row = db.query(AdvanceCreditLedger).filter(AdvanceCreditLedger.cashfree_order_id == link_id).first()
@@ -3662,6 +3721,150 @@ async def establishment_refresh_fee_status(
         _confirm_subscription_fee_paid(db, fee_row, payment_ref=str(status_resp.get("cf_link_id") or fee_row.cashfree_order_id))
 
     return {"ok": True, "is_paid": fee_row.is_paid}
+
+
+def _load_batch_fee_rows(db: Session, est_id: int, fee_ids: List[int]) -> List[SubscriptionFee]:
+    """Shared loader for the 'pay all overdue' endpoints -- loads and validates the
+    SubscriptionFee rows a batch payment covers, scoped to one establishment."""
+    if not fee_ids:
+        raise HTTPException(400, "No fee_ids provided")
+    fee_rows = db.query(SubscriptionFee).filter(
+        SubscriptionFee.id.in_(fee_ids),
+        SubscriptionFee.establishment_id == est_id,
+    ).all()
+    if len(fee_rows) != len(set(fee_ids)):
+        raise HTTPException(404, "One or more subscription fee rows were not found for this establishment.")
+    unpaid_rows = [f for f in fee_rows if not f.is_paid]
+    if not unpaid_rows:
+        raise HTTPException(400, "All selected months are already paid.")
+    return unpaid_rows
+
+
+@app.post("/api/establishment/subscription-fees/pay-all/create-link")
+async def establishment_pay_all_overdue_create_link(
+    d: PayAllOverdueIn,
+    request: Request,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    """Creates ONE Cashfree Payment Link for the combined total of several unpaid/overdue
+    SubscriptionFee rows -- the 'pay all overdue in one shot' path. Reuses the exact same
+    cashfree_order_id column each row already has (writing the same order_id across every
+    covered row) so the existing webhook/refresh-status code just needs .first() -> .all()
+    to confirm every covered month, instead of introducing a new linking table."""
+    require_feature_enabled(db, "cashfree_payments_enabled", "Cashfree payments")
+    est_obj, project = active
+    fee_rows = _load_batch_fee_rows(db, est_obj.id, d.fee_ids)
+
+    total_due = round(sum(f.amount_due for f in fee_rows), 2)
+    if total_due <= 0:
+        raise HTTPException(400, "No fee due for the selected months.")
+
+    consultant = db.query(User).filter(User.id == est_obj.user_id).first()
+    phone = (consultant.mobile or "").strip() if consultant else ""
+    if not phone:
+        raise HTTPException(400, "Consultant has no mobile number on file — required by Cashfree to generate a payment link.")
+
+    order_id = cashfree_client.new_order_id("sub", f"batch{est_obj.id}")
+    months_str = ", ".join(f"{f.month} {f.financial_year}" for f in fee_rows)
+    return_url = f"{_app_base_url(request)}/?cf_payment_return=1&type=sub_batch&est_id={est_obj.id}"
+    try:
+        link_resp = cashfree_client.create_payment_link(
+            link_id=order_id,
+            amount=total_due,
+            purpose=f"Software subscription fee — {len(fee_rows)} month(s) ({months_str}) — {est_obj.name} ({est_obj.code})",
+            customer_phone=phone,
+            customer_name=consultant.name if consultant else "",
+            customer_email=consultant.email if consultant else "",
+            return_url=return_url,
+        )
+    except cashfree_client.CashfreeConfigError as e:
+        raise HTTPException(500, str(e))
+    except requests.HTTPError as e:
+        raise HTTPException(502, f"Cashfree link creation failed: {e.response.text if e.response is not None else str(e)}")
+
+    for f in fee_rows:
+        f.cashfree_order_id = order_id
+        f.cashfree_payment_link_url = link_resp.get("link_url")
+    db.commit()
+
+    return {"ok": True, "link_url": link_resp.get("link_url"), "order_id": order_id, "total_due": total_due}
+
+
+@app.post("/api/establishment/subscription-fees/pay-all/refresh-status")
+async def establishment_pay_all_overdue_refresh_status(
+    d: RefreshBatchStatusIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    """Polls payment status for a batch of fee rows. Checks DB state first (covers both a
+    webhook that already landed AND a superadmin manual-UTR approval, either of which flips
+    is_paid directly) before falling back to a live Cashfree status check."""
+    est_obj, project = active
+    fee_rows = db.query(SubscriptionFee).filter(
+        SubscriptionFee.id.in_(d.fee_ids),
+        SubscriptionFee.establishment_id == est_obj.id,
+    ).all()
+    if not fee_rows:
+        raise HTTPException(404, "Subscription fee rows not found")
+
+    if all(f.is_paid for f in fee_rows):
+        return {"ok": True, "is_paid": True}
+
+    order_id = next((f.cashfree_order_id for f in fee_rows if f.cashfree_order_id), None)
+    if not order_id:
+        return {"ok": True, "is_paid": False}
+
+    try:
+        status_resp = cashfree_client.get_payment_link_status(order_id)
+    except requests.HTTPError as e:
+        raise HTTPException(502, f"Cashfree status check failed: {e.response.text if e.response is not None else str(e)}")
+
+    if status_resp.get("link_status") == "PAID":
+        payment_ref = str(status_resp.get("cf_link_id") or order_id)
+        for f in fee_rows:
+            if f.cashfree_order_id == order_id:
+                _confirm_subscription_fee_paid(db, f, payment_ref=payment_ref, source="cashfree")
+
+    return {"ok": True, "is_paid": all(f.is_paid for f in fee_rows)}
+
+
+@app.post("/api/establishment/subscription-fees/pay-all/submit-utr")
+async def establishment_pay_all_overdue_submit_utr(
+    d: BatchSubmitUTRIn,
+    current_user: User = Depends(get_current_user),
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    """Manual UPI/QR path for 'pay all overdue in one shot' -- submits the SAME utr across
+    every covered SubscriptionFee row, so approve_payment's sibling-cascade logic marks
+    them all paid together once a superadmin approves any one of them."""
+    est_obj, project = active
+    fee_rows = _load_batch_fee_rows(db, est_obj.id, d.fee_ids)
+
+    utr = d.utr.strip()
+    if not utr:
+        raise HTTPException(400, "UTR cannot be empty")
+    if _utr_already_submitted(db, utr):
+        raise HTTPException(400, "This UTR has already been submitted for verification.")
+
+    now = datetime.now(timezone.utc)
+    for f in fee_rows:
+        f.payment_status = "pending_verification"
+        f.submitted_utr = utr
+        f.submitted_by = current_user.id
+        f.submitted_at = now
+        f.rejection_reason = None
+    db.commit()
+
+    months_str = ", ".join(f"{f.month} {f.financial_year}" for f in fee_rows)
+    log_activity(
+        db, current_user.id, est_obj.id, "utr_submitted",
+        f"UTR submitted for {len(fee_rows)} month(s) ({months_str}) — {est_obj.name} ({est_obj.code}): {utr}",
+        {"months": months_str, "utr": utr, "fee_ids": [f.id for f in fee_rows]}
+    )
+
+    return {"ok": True, "payment_status": "pending_verification"}
 
 
 @app.post("/api/establishment/advance-payment/create-link")
@@ -4664,12 +4867,11 @@ def generate_report(
     require_permission(db, current_user, "forms.download")
     est_obj, project = active
     if current_user.role != "superadmin":
-        unpaid = get_unpaid_months_for_year(db, est_obj, project, key)
-        if unpaid:
-            months_str = ", ".join(unpaid)
+        unpaid_detail = get_unpaid_months_detail_for_year(db, est_obj, project, key)
+        if unpaid_detail:
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=f"Download blocked — software subscription fee for {months_str} is unpaid. Contact your administrator to settle platform fees."
+                detail=_year_payment_required_detail(unpaid_detail, key)
             )
 
     if key not in project.years:
@@ -4730,12 +4932,11 @@ def generate_employee_report(
     require_permission(db, current_user, "forms.download")
     est_obj, project = active
     if current_user.role != "superadmin":
-        unpaid = get_unpaid_months_for_year(db, est_obj, project, key)
-        if unpaid:
-            months_str = ", ".join(unpaid)
+        unpaid_detail = get_unpaid_months_detail_for_year(db, est_obj, project, key)
+        if unpaid_detail:
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=f"Download blocked — software subscription fee for {months_str} is unpaid. Contact your administrator to settle platform fees."
+                detail=_year_payment_required_detail(unpaid_detail, key)
             )
 
     if key not in project.years:
@@ -4783,14 +4984,15 @@ def report_form9(
     require_permission(db, current_user, "forms.download")
     est_obj, project = active
     if current_user.role != "superadmin":
-        all_unpaid = []
+        all_unpaid_detail = []
         for yk in project.years.keys():
-            all_unpaid.extend(get_unpaid_months_for_year(db, est_obj, project, yk))
-        if all_unpaid:
-            months_str = ", ".join(sorted(list(set(all_unpaid))))
+            all_unpaid_detail.extend(get_unpaid_months_detail_for_year(db, est_obj, project, yk))
+        if all_unpaid_detail:
+            # Form 9 spans every year on file, unlike the other forms which are scoped to one
+            # financial year -- so financial_year is left None (multi-year) rather than a single key.
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=f"Download blocked — software subscription fee for {months_str} is unpaid. Contact your administrator to settle platform fees."
+                detail=_year_payment_required_detail(all_unpaid_detail, None)
             )
 
     if not project.master:
@@ -5048,12 +5250,11 @@ async def generate_ecr_zip(
     if scoped:
         require_feature_enabled(db, "branch_feature_enabled", "Branch/division/unit filtering")
     if current_user.role != "superadmin":
-        unpaid = get_unpaid_months_for_year(db, est_obj, project, year_key)
-        if unpaid:
-            months_str = ", ".join(unpaid)
+        unpaid_detail = get_unpaid_months_detail_for_year(db, est_obj, project, year_key)
+        if unpaid_detail:
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=f"Download blocked — software subscription fee for {months_str} is unpaid. Contact your administrator to settle platform fees."
+                detail=_year_payment_required_detail(unpaid_detail, year_key)
             )
 
     year_record = project.years.get(year_key)

@@ -117,6 +117,14 @@ const App = (() => {
           return;
         }
         const err = await res.json().catch(() => ({ detail: 'Payment Required' }));
+        // Whole-year/multi-month downloads (Form 3A/6A/9/12A/5/10, per-employee Form 3A,
+        // whole-year ECR) carry a structured breakdown in err.detail -- turn that into the
+        // same actionable payment prompt the per-month flow already has, instead of a bare error.
+        if (err.detail && typeof err.detail === 'object' && Array.isArray(err.detail.unpaid_months)) {
+          showYearPaymentModal(err.detail, () => downloadFile(url, defaultFilename, monthCtx));
+          return;
+        }
+        const bareMsg = typeof err.detail === 'string' ? err.detail : (err.detail && err.detail.message) || err.message || 'Software subscription fee is overdue for this establishment.';
         openModal(
           '💳 Software Subscription Fee Required',
           `
@@ -124,7 +132,7 @@ const App = (() => {
               <span style="font-size:44px; display:block; margin-bottom:12px;">🔒</span>
               <h4 style="margin:0 0 10px 0; font-size:16px; font-weight:700; color:var(--danger);">Download Locked</h4>
               <p style="font-size:13px; color:var(--text1); line-height:1.5; margin-bottom:16px;">
-                ${esc(err.detail || err.message || 'Software subscription fee is overdue for this establishment.')}
+                ${esc(bareMsg)}
               </p>
               <div style="background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; font-size:12px; color:var(--text2); text-align:left;">
                 💡 <strong>How to unlock:</strong> Contact your Superadmin or PF Advisor to clear the overdue platform subscription fee. Once recorded, all report and ECR downloads will unlock immediately.
@@ -443,6 +451,206 @@ const App = (() => {
     if (fn) fn();
     // Refresh the current page's own subscription-status banner/badges now that the
     // modal is closing, so "Fees Due" indicators clear without needing a manual reload.
+    const pageAtCloseTime = currentPage;
+    setTimeout(() => {
+      if (pageAtCloseTime === 'reports' && currentPage === 'reports') {
+        try { navigate('reports'); } catch (e) {}
+      }
+    }, 400);
+  }
+
+  /* ── Whole-year / multi-month payment prompt (blocked Form 3A/6A/9/12A/5/10 or whole-year
+     ECR download → breakdown of every unpaid month → pay the combined total in one shot,
+     via either Cashfree or manual UPI/QR → unlock & retry). Mirrors showFeePaymentModal
+     above but pays several SubscriptionFee rows at once via the /pay-all/ endpoints. ── */
+  let _yearModalRetry = null;
+  let _yearPollTimer = null;
+
+  function showYearPaymentModal(detail, retryFn) {
+    _yearModalRetry = retryFn;
+    const rows = detail.unpaid_months || [];
+    const feeIds = rows.map(r => r.fee_id);
+    const total = detail.total_due || 0;
+
+    const rowsHtml = rows.map(r => `
+      <tr>
+        <td style="padding:6px 8px; text-align:left; color:var(--text1);">${esc(r.display)}</td>
+        <td style="padding:6px 8px; text-align:right; color:var(--text1); font-weight:600;">₹${fmt(r.amount_due)}</td>
+      </tr>
+    `).join('');
+
+    const paymentOptionsHtml = `
+      <div id="year-payment-action">
+        <button class="btn btn-primary" style="width:100%;" onclick="App.startYearPayment(${JSON.stringify(feeIds)}, ${total})">💳 Pay ₹${fmt(total)} via Cashfree</button>
+      </div>
+      <div style="display:flex; align-items:center; gap:10px; margin:14px 0; color:var(--text3); font-size:11px;">
+        <div style="flex:1; border-top:1px solid var(--border);"></div>OR<div style="flex:1; border-top:1px solid var(--border);"></div>
+      </div>
+      <button class="btn btn-ghost" style="width:100%;" onclick="App.showYearUPIPanel(${JSON.stringify(feeIds)}, ${total})">📱 Pay via UPI (Manual)</button>
+      <div id="year-upi-panel" style="margin-top:12px; text-align:left;"></div>
+    `;
+
+    openModal(
+      '💳 Download Blocked — Subscription Fee Due',
+      `
+        <div style="text-align:center; padding:8px;">
+          <span style="font-size:40px; display:block; margin-bottom:10px;">🔒</span>
+          <h4 style="margin:0 0 6px 0; font-size:16px; font-weight:700; color:var(--danger);">Download blocked — subscription fee due for ${rows.length} month${rows.length === 1 ? '' : 's'}</h4>
+          <p style="font-size:13px; color:var(--text2); margin-bottom:14px;">Settle the total below to unlock this download immediately — you can pay for all ${rows.length} month${rows.length === 1 ? '' : 's'} in one payment.</p>
+          <table style="width:100%; border-collapse:collapse; margin-bottom:10px; font-size:13px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-sm); overflow:hidden;">
+            <thead>
+              <tr style="background:var(--bg3);">
+                <th style="padding:6px 8px; text-align:left; color:var(--text3); font-size:11px; text-transform:uppercase;">Month</th>
+                <th style="padding:6px 8px; text-align:right; color:var(--text3); font-size:11px; text-transform:uppercase;">Amount Due</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+            <tfoot>
+              <tr style="border-top:2px solid var(--border);">
+                <td style="padding:8px; text-align:left; font-weight:700; color:var(--text1);">Total Due</td>
+                <td style="padding:8px; text-align:right; font-weight:800; font-size:16px; color:var(--danger);">₹${fmt(total)}</td>
+              </tr>
+            </tfoot>
+          </table>
+          ${paymentOptionsHtml}
+          <div id="year-payment-status" style="margin-top:12px; font-size:12px; color:var(--text2); min-height:16px;"></div>
+        </div>
+      `,
+      '<button class="btn btn-ghost" onclick="App.closeModal()">Close</button>'
+    );
+  }
+
+  async function showYearUPIPanel(feeIds, total) {
+    const panel = document.getElementById('year-upi-panel');
+    if (!panel) return;
+    panel.innerHTML = `<div style="text-align:center; padding:10px;"><div class="spinner" style="margin:0 auto;"></div></div>`;
+
+    let upi;
+    try {
+      upi = await get('/api/upi-settings');
+    } catch (e) {
+      panel.innerHTML = `<p style="font-size:12px; color:var(--text3); text-align:center;">Could not load UPI details. Please try again.</p>`;
+      return;
+    }
+
+    if (!upi.upi_id) {
+      panel.innerHTML = `<p style="font-size:12px; color:var(--text3); text-align:center;">UPI payment is not set up yet — please use Cashfree above.</p>`;
+      return;
+    }
+
+    const estCode = currentEstablishment.code || '';
+    const note = `Annual Return ${estCode} — ${feeIds.length} months`;
+    const upiLink = `upi://pay?pa=${encodeURIComponent(upi.upi_id)}&pn=${encodeURIComponent(upi.upi_name || '')}&am=${encodeURIComponent(total)}&cu=INR&tn=${encodeURIComponent(note)}`;
+
+    panel.innerHTML = `
+      <div style="background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; font-size:13px;">
+        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span style="color:var(--text2);">Pay to UPI ID</span><strong style="font-family:monospace;">${esc(upi.upi_id)}</strong></div>
+        ${upi.upi_name ? `<div style="display:flex; justify-content:space-between; margin-bottom:8px;"><span style="color:var(--text2);">Payee Name</span><strong>${esc(upi.upi_name)}</strong></div>` : ''}
+        <div style="text-align:center; margin-bottom:10px;">
+          <div id="year-upi-qr-canvas" style="display:inline-block; background:#fff; padding:8px; border-radius:4px;"></div>
+          <p id="year-upi-qr-fallback" style="display:none; font-size:11px; color:var(--text3);">QR code unavailable — use the link below or enter the UPI ID manually.</p>
+          <p style="margin:6px 0 0 0; font-size:11px; color:var(--text3);">Scan with any UPI app to pay ₹${fmt(total)} (covers all ${feeIds.length} months)</p>
+        </div>
+        <a href="${upiLink}" class="btn btn-ghost btn-sm" style="width:100%; display:block; box-sizing:border-box; margin-bottom:10px;">📲 Open in UPI App (on mobile)</a>
+        <div class="form-group" style="margin-bottom:8px;">
+          <label class="form-label" style="font-weight:600; font-size:12px;">UTR / Transaction Reference No.</label>
+          <input type="text" id="year-utr-input" class="form-input" placeholder="e.g. 123456789012">
+        </div>
+        <button class="btn btn-primary" style="width:100%;" onclick="App.submitYearUTR(${JSON.stringify(feeIds)})">✅ Submit UTR</button>
+      </div>
+    `;
+
+    const qrContainer = document.getElementById('year-upi-qr-canvas');
+    if (qrContainer) {
+      try {
+        if (!window.QRCode) throw new Error('QRCode library not loaded');
+        new window.QRCode(qrContainer, { text: upiLink, width: 180, height: 180 });
+      } catch (e) {
+        qrContainer.style.display = 'none';
+        const fb = document.getElementById('year-upi-qr-fallback');
+        if (fb) fb.style.display = 'block';
+      }
+    }
+  }
+
+  async function submitYearUTR(feeIds) {
+    const input = document.getElementById('year-utr-input');
+    const utr = input ? input.value.trim() : '';
+    if (!utr) { toast('Enter the UTR / transaction reference number', 'error'); return; }
+
+    try {
+      await post('/api/establishment/subscription-fees/pay-all/submit-utr', { fee_ids: feeIds, utr });
+      toast('UTR submitted — awaiting verification');
+      const statusEl = document.getElementById('year-payment-status');
+      if (statusEl) statusEl.innerHTML = '⏳ UTR submitted — awaiting verification by the admin. This will unlock automatically once approved.';
+      const actionEl = document.getElementById('year-payment-action');
+      if (actionEl) actionEl.innerHTML = '';
+      const panel = document.getElementById('year-upi-panel');
+      if (panel) panel.innerHTML = '';
+      _pollYearPaymentStatus(feeIds, 0);
+    } catch (e) {
+      // Handled
+    }
+  }
+
+  async function startYearPayment(feeIds, total) {
+    const actionEl = document.getElementById('year-payment-action');
+    const statusEl = document.getElementById('year-payment-status');
+    if (actionEl) actionEl.innerHTML = `<button class="btn btn-primary" style="width:100%;" disabled>Generating payment link…</button>`;
+
+    try {
+      const res = await post('/api/establishment/subscription-fees/pay-all/create-link', { fee_ids: feeIds });
+      if (actionEl) {
+        actionEl.innerHTML = `<a href="${res.link_url}" target="_blank" rel="noopener" class="btn btn-primary" style="width:100%; display:block; box-sizing:border-box;">🔗 Open Cashfree Payment Page</a>`;
+      }
+      window.open(res.link_url, '_blank');
+      if (statusEl) statusEl.innerHTML = '⏳ Waiting for payment confirmation…';
+      _pollYearPaymentStatus(feeIds, 0);
+    } catch (e) {
+      if (actionEl) actionEl.innerHTML = `<button class="btn btn-primary" style="width:100%;" onclick="App.startYearPayment(${JSON.stringify(feeIds)}, ${total})">💳 Pay ₹${fmt(total)} via Cashfree</button>`;
+    }
+  }
+
+  function _pollYearPaymentStatus(feeIds, attempt) {
+    clearTimeout(_yearPollTimer);
+    if (attempt > 40) { // ~2 minutes at 3s intervals
+      const statusEl = document.getElementById('year-payment-status');
+      if (statusEl) {
+        statusEl.innerHTML = `Still waiting for confirmation. <button class="btn btn-ghost btn-sm" onclick="App.checkYearPaymentNow(${JSON.stringify(feeIds)})">🔄 Refresh Status</button>`;
+      }
+      return;
+    }
+    _yearPollTimer = setTimeout(async () => {
+      const paid = await checkYearPaymentNow(feeIds, true);
+      if (!paid) _pollYearPaymentStatus(feeIds, attempt + 1);
+    }, 3000);
+  }
+
+  async function checkYearPaymentNow(feeIds, silent = false) {
+    try {
+      const res = await post('/api/establishment/subscription-fees/pay-all/refresh-status', { fee_ids: feeIds });
+      if (res.is_paid) {
+        clearTimeout(_yearPollTimer);
+        const statusEl = document.getElementById('year-payment-status');
+        const actionEl = document.getElementById('year-payment-action');
+        if (statusEl) statusEl.innerHTML = '✅ Payment confirmed!';
+        if (actionEl) actionEl.innerHTML = `<button class="btn btn-success" style="width:100%;" onclick="App.completeYearPaymentDownload()">⬇️ Download Now</button>`;
+        toast('Payment confirmed — download unlocked!');
+        try { if (window.Challans && Challans.loadSubscriptionBanner) Challans.loadSubscriptionBanner(); } catch (e) {}
+        return true;
+      }
+      if (!silent) toast('Still awaiting payment.', 'info');
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function completeYearPaymentDownload() {
+    closeModal();
+    const fn = _yearModalRetry;
+    _yearModalRetry = null;
+    if (fn) fn();
     const pageAtCloseTime = currentPage;
     setTimeout(() => {
       if (pageAtCloseTime === 'reports' && currentPage === 'reports') {
@@ -1223,6 +1431,8 @@ const App = (() => {
     showVersionHistory, downloadFile,
     showFeePaymentModal, startFeePayment, checkFeePaymentNow, completeFeePaymentDownload,
     showUPIFeePanel, submitFeeUTR,
+    showYearPaymentModal, startYearPayment, checkYearPaymentNow, completeYearPaymentDownload,
+    showYearUPIPanel, submitYearUTR,
     showAdvanceUPIPanel, submitAdvanceUTR,
     checkCashfreeReturnStatus, checkAdvanceCreditReturnStatus,
     getToken, getCurrentUser, isSuperadmin, getCurrentEstablishmentId, setActiveEstablishment,
