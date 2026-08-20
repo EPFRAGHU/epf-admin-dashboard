@@ -964,7 +964,7 @@ const Admin = (() => {
                 </td>
                 <td>
                   <strong>${App.esc(v.display_name)}</strong>
-                  <div style="font-size:10px; color:var(--text3);">FY ${App.esc(v.financial_year)}</div>
+                  <div style="font-size:10px; color:var(--text3);">${v.financial_year ? `FY ${App.esc(v.financial_year)}` : 'via manual UPI/QR'}</div>
                 </td>
                 <td class="num" style="font-weight:700; color:var(--primary);">₹${App.fmt(v.amount_due)}</td>
                 <td><span style="font-family:monospace; font-size:12px;">${App.esc(v.submitted_utr || '—')}</span></td>
@@ -976,8 +976,8 @@ const Admin = (() => {
                 <td>
                   ${v.payment_status === 'pending_verification' ? `
                     <div style="display:flex; gap:6px;">
-                      <button class="btn btn-primary btn-sm" style="background:var(--green); border-color:var(--green);" onclick="Admin.approvePaymentVerification(${v.id})">Approve</button>
-                      <button class="btn btn-ghost btn-sm" style="color:var(--danger);" onclick="Admin.confirmRejectPaymentVerification(${v.id})">Reject</button>
+                      <button class="btn btn-primary btn-sm" style="background:var(--green); border-color:var(--green);" onclick="Admin.approvePaymentVerification('${v.id}')">Approve</button>
+                      <button class="btn btn-ghost btn-sm" style="color:var(--danger);" onclick="Admin.confirmRejectPaymentVerification('${v.id}')">Reject</button>
                     </div>
                   ` : v.rejection_reason ? `<span style="font-size:11px; color:var(--text3);" title="${App.esc(v.rejection_reason)}">Reason: ${App.esc(v.rejection_reason)}</span>` : '—'}
                 </td>
@@ -1031,7 +1031,7 @@ const Admin = (() => {
     `;
     const footerHtml = `
       <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
-      <button class="btn btn-primary" style="background:var(--danger); border-color:var(--danger);" onclick="Admin.rejectPaymentVerification(${feeId})">Reject Payment</button>
+      <button class="btn btn-primary" style="background:var(--danger); border-color:var(--danger);" onclick="Admin.rejectPaymentVerification('${feeId}')">Reject Payment</button>
     `;
     App.openModal('Reject UTR Submission', bodyHtml, footerHtml, false, true);
   }

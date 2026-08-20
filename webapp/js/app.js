@@ -315,6 +315,74 @@ const App = (() => {
     }
   }
 
+  /* ── Manual UPI/QR panel for the Add Advance Credit modal (my-establishments.js) —
+     mirrors showUPIFeePanel/submitFeeUTR above but posts to the advance-credit
+     submit-utr endpoint and has no year/month context. ── */
+  async function showAdvanceUPIPanel(estCode, amount) {
+    const panel = document.getElementById('adv-upi-panel');
+    if (!panel) return;
+    panel.innerHTML = `<div style="text-align:center; padding:10px;"><div class="spinner" style="margin:0 auto;"></div></div>`;
+
+    let upi;
+    try {
+      upi = await get('/api/upi-settings');
+    } catch (e) {
+      panel.innerHTML = `<p style="font-size:12px; color:var(--text3); text-align:center;">Could not load UPI details. Please try again.</p>`;
+      return;
+    }
+
+    if (!upi.upi_id) {
+      panel.innerHTML = `<p style="font-size:12px; color:var(--text3); text-align:center;">UPI payment is not set up yet — please use Cashfree above.</p>`;
+      return;
+    }
+
+    const upiLink = `upi://pay?pa=${encodeURIComponent(upi.upi_id)}&pn=${encodeURIComponent(upi.upi_name || '')}&am=${encodeURIComponent(amount)}&cu=INR&tn=${encodeURIComponent('Advance Credit ' + estCode)}`;
+
+    panel.innerHTML = `
+      <div style="background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; font-size:13px;">
+        <div style="display:flex; justify-content:space-between; margin-bottom:4px;"><span style="color:var(--text2);">Pay to UPI ID</span><strong style="font-family:monospace;">${esc(upi.upi_id)}</strong></div>
+        ${upi.upi_name ? `<div style="display:flex; justify-content:space-between; margin-bottom:8px;"><span style="color:var(--text2);">Payee Name</span><strong>${esc(upi.upi_name)}</strong></div>` : ''}
+        <div style="text-align:center; margin-bottom:10px;">
+          <div id="adv-upi-qr-canvas" style="display:inline-block; background:#fff; padding:8px; border-radius:4px;"></div>
+          <p id="adv-upi-qr-fallback" style="display:none; font-size:11px; color:var(--text3);">QR code unavailable — use the link below or enter the UPI ID manually.</p>
+          <p style="margin:6px 0 0 0; font-size:11px; color:var(--text3);">Scan with any UPI app to pay ₹${fmt(amount)}</p>
+        </div>
+        <a href="${upiLink}" class="btn btn-ghost btn-sm" style="width:100%; display:block; box-sizing:border-box; margin-bottom:10px;">📲 Open in UPI App (on mobile)</a>
+        <div class="form-group" style="margin-bottom:8px;">
+          <label class="form-label" style="font-weight:600; font-size:12px;">UTR / Transaction Reference No.</label>
+          <input type="text" id="adv-utr-input" class="form-input" placeholder="e.g. 123456789012">
+        </div>
+        <button class="btn btn-primary" style="width:100%;" onclick="App.submitAdvanceUTR(${amount})">✅ Submit UTR</button>
+      </div>
+    `;
+
+    const qrContainer = document.getElementById('adv-upi-qr-canvas');
+    if (qrContainer) {
+      try {
+        if (!window.QRCode) throw new Error('QRCode library not loaded');
+        new window.QRCode(qrContainer, { text: upiLink, width: 180, height: 180 });
+      } catch (e) {
+        qrContainer.style.display = 'none';
+        const fb = document.getElementById('adv-upi-qr-fallback');
+        if (fb) fb.style.display = 'block';
+      }
+    }
+  }
+
+  async function submitAdvanceUTR(amount) {
+    const input = document.getElementById('adv-utr-input');
+    const utr = input ? input.value.trim() : '';
+    if (!utr) { toast('Enter the UTR / transaction reference number', 'error'); return; }
+
+    try {
+      await post('/api/establishment/advance-payment/submit-utr', { amount, utr });
+      toast('UTR submitted — awaiting verification');
+      closeModal();
+    } catch (e) {
+      // Handled
+    }
+  }
+
   async function startFeePayment(year, month, amount) {
     const actionEl = document.getElementById('fee-payment-action');
     const statusEl = document.getElementById('fee-payment-status');
@@ -1155,6 +1223,7 @@ const App = (() => {
     showVersionHistory, downloadFile,
     showFeePaymentModal, startFeePayment, checkFeePaymentNow, completeFeePaymentDownload,
     showUPIFeePanel, submitFeeUTR,
+    showAdvanceUPIPanel, submitAdvanceUTR,
     checkCashfreeReturnStatus, checkAdvanceCreditReturnStatus,
     getToken, getCurrentUser, isSuperadmin, getCurrentEstablishmentId, setActiveEstablishment,
     get currentPage() { return currentPage; },

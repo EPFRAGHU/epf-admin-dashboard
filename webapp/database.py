@@ -120,7 +120,13 @@ class AdvanceCreditLedger(Base):
     payment_reference = Column(String(255), nullable=True)  # manual UPI ref, or Cashfree payment id once confirmed
     notes = Column(Text, nullable=True)
     applied_to_fee_id = Column(Integer, ForeignKey("subscription_fees.id", ondelete="SET NULL"), nullable=True)  # only on 'applied' entries
-    status = Column(String(20), nullable=False, default="manual")  # 'pending' | 'confirmed' | 'manual'
+    status = Column(String(20), nullable=False, default="manual")  # 'pending' | 'confirmed' | 'manual' | 'pending_verification' | 'rejected'
+    submitted_utr = Column(String(255), nullable=True)   # UTR entered by the consultant/employer via the manual UPI/QR path
+    submitted_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    submitted_at = Column(DateTime(timezone=True), nullable=True)
+    verified_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    rejection_reason = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     establishment = relationship("Establishment")

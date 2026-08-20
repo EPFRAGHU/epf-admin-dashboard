@@ -494,6 +494,20 @@ def _run_startup_migrations():
                 _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN verified_by INTEGER;")
                 _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN verified_at TIMESTAMP;")
                 _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN rejection_reason TEXT;")
+                # UPI payment path columns on advance_credit_ledger (same pattern as subscription_fees above)
+                _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN IF NOT EXISTS submitted_utr VARCHAR(255);")
+                _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN IF NOT EXISTS submitted_by INTEGER REFERENCES users(id) ON DELETE SET NULL;")
+                _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMPTZ;")
+                _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN IF NOT EXISTS verified_by INTEGER REFERENCES users(id) ON DELETE SET NULL;")
+                _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;")
+                _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN IF NOT EXISTS rejection_reason TEXT;")
+                # SQLite fallbacks
+                _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN submitted_utr VARCHAR(255);")
+                _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN submitted_by INTEGER;")
+                _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN submitted_at TIMESTAMP;")
+                _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN verified_by INTEGER;")
+                _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN verified_at TIMESTAMP;")
+                _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN rejection_reason TEXT;")
         except Exception as e:
             print(f"  [WARN] DDL check error: {e}")
 
@@ -788,6 +802,10 @@ class PaymentsSaveIn(BaseModel):
 
 # UPI Payment Path Schemas
 class SubmitUTRIn(BaseModel):
+    utr: str
+
+class AdvanceSubmitUTRIn(BaseModel):
+    amount: float
     utr: str
 
 class ApprovePaymentIn(BaseModel):
@@ -2225,6 +2243,18 @@ async def admin_refresh_subscription_fee_status(
 # These allow consultants/employers to submit UTR for manual UPI payments,
 # and superadmin to approve/reject those submissions.
 
+def _utr_already_submitted(db: Session, utr: str, exclude_fee_id: Optional[int] = None) -> bool:
+    """A UTR is a bank-issued transaction reference -- the same one should never be
+    submitted twice, whether for two different fees or reused across the subscription-fee
+    and advance-credit flows. Checks both tables."""
+    fee_q = db.query(SubscriptionFee).filter(SubscriptionFee.submitted_utr == utr)
+    if exclude_fee_id:
+        fee_q = fee_q.filter(SubscriptionFee.id != exclude_fee_id)
+    if fee_q.first():
+        return True
+    return db.query(AdvanceCreditLedger).filter(AdvanceCreditLedger.submitted_utr == utr).first() is not None
+
+
 @app.post("/api/subscription-fees/{fee_id}/submit-utr")
 async def submit_utr(
     fee_id: int,
@@ -2251,6 +2281,9 @@ async def submit_utr(
     if not utr:
         raise HTTPException(400, "UTR cannot be empty")
 
+    if _utr_already_submitted(db, utr, exclude_fee_id=fee.id):
+        raise HTTPException(400, "This UTR has already been submitted for verification.")
+
     fee.payment_status = "pending_verification"
     fee.submitted_utr = utr
     fee.submitted_by = current_user.id
@@ -2267,6 +2300,30 @@ async def submit_utr(
     return {"ok": True, "payment_status": "pending_verification"}
 
 
+_LEDGER_STATUS_DISPLAY = {
+    "pending_verification": "pending_verification",
+    "confirmed": "paid",
+    "rejected": "unpaid",
+    "pending": "unpaid",
+    "manual": "paid",
+}
+
+
+def _split_verification_id(item_id: str) -> Tuple[str, int]:
+    """Payment-verification queue items are composite ids ('fee-5' / 'adv-12') so the
+    approve/reject endpoints can tell which table a row came from. A bare integer is
+    still accepted for backward compatibility with any old bookmarked links -- it's
+    always treated as a subscription-fee id, matching this endpoint's original (and only
+    prior) behavior."""
+    if item_id.startswith("fee-"):
+        return "fee", int(item_id[4:])
+    if item_id.startswith("adv-"):
+        return "adv", int(item_id[4:])
+    if item_id.isdigit():
+        return "fee", int(item_id)
+    raise HTTPException(400, "Invalid verification id")
+
+
 @app.get("/api/admin/payment-verifications")
 async def payment_verifications(
     status: str = Query("pending_verification"),
@@ -2275,38 +2332,38 @@ async def payment_verifications(
     admin: User = Depends(get_superadmin),
     db: Session = Depends(get_db)
 ):
-    """Superadmin lists subscription fees awaiting UTR verification."""
-    query = db.query(SubscriptionFee)
+    """Superadmin lists subscription fees AND advance-credit top-ups awaiting UTR
+    verification via the manual UPI/QR path, merged into a single queue."""
+    fee_q = db.query(SubscriptionFee)
+    ledger_q = db.query(AdvanceCreditLedger).filter(AdvanceCreditLedger.entry_type == "topup")
 
     if status == "pending_verification":
-        query = query.filter(SubscriptionFee.payment_status == "pending_verification")
+        fee_q = fee_q.filter(SubscriptionFee.payment_status == "pending_verification")
+        ledger_q = ledger_q.filter(AdvanceCreditLedger.status == "pending_verification")
     elif status == "paid":
-        query = query.filter(SubscriptionFee.payment_status == "paid")
+        fee_q = fee_q.filter(SubscriptionFee.payment_status == "paid")
+        ledger_q = ledger_q.filter(AdvanceCreditLedger.status == "confirmed")
     elif status == "unpaid":
-        query = query.filter(SubscriptionFee.payment_status == "unpaid")
+        fee_q = fee_q.filter(SubscriptionFee.payment_status == "unpaid")
+        ledger_q = ledger_q.filter(AdvanceCreditLedger.status == "rejected")
 
-    total = query.count()
-    offset = (page - 1) * limit
+    fee_rows = fee_q.all()
+    ledger_rows = ledger_q.all()
 
-    rows = query.order_by(
-        SubscriptionFee.submitted_at.desc().nullslast(),
-        SubscriptionFee.id.desc()
-    ).offset(offset).limit(limit).all()
-
-    est_ids = list({r.establishment_id for r in rows})
+    est_ids = {r.establishment_id for r in fee_rows} | {r.establishment_id for r in ledger_rows}
     ests_map = {e.id: e for e in db.query(Establishment).filter(Establishment.id.in_(est_ids)).all()} if est_ids else {}
 
-    submitted_by_ids = list({r.submitted_by for r in rows if r.submitted_by})
-    submitted_map = {u.id: u for u in db.query(User).filter(User.id.in_(submitted_by_ids)).all()} if submitted_by_ids else {}
-
-    verified_by_ids = list({r.verified_by for r in rows if r.verified_by})
-    verified_map = {u.id: u for u in db.query(User).filter(User.id.in_(verified_by_ids)).all()} if verified_by_ids else {}
+    user_ids = (
+        {r.submitted_by for r in fee_rows if r.submitted_by} | {r.verified_by for r in fee_rows if r.verified_by} |
+        {r.submitted_by for r in ledger_rows if r.submitted_by} | {r.verified_by for r in ledger_rows if r.verified_by}
+    )
+    users_map = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()} if user_ids else {}
 
     items = []
-    for r in rows:
+    for r in fee_rows:
         est = ests_map.get(r.establishment_id)
-        submitted_by_user = submitted_map.get(r.submitted_by) if r.submitted_by else None
-        verified_by_user = verified_map.get(r.verified_by) if r.verified_by else None
+        submitted_by_user = users_map.get(r.submitted_by) if r.submitted_by else None
+        verified_by_user = users_map.get(r.verified_by) if r.verified_by else None
 
         yf = r.financial_year.split("-")[0]
         yt = str(int(yf) + 1)
@@ -2314,7 +2371,8 @@ async def payment_verifications(
         display_name = f"{MONTH_FULL.get(r.month.upper(), r.month)} {cal_yr}"
 
         items.append({
-            "id": r.id,
+            "id": f"fee-{r.id}",
+            "source": "subscription_fee",
             "establishment_id": r.establishment_id,
             "establishment_code": est.code if est else "",
             "establishment_name": est.name if est else "",
@@ -2332,74 +2390,159 @@ async def payment_verifications(
             "verified_by_name": verified_by_user.name if verified_by_user else "",
             "verified_at": r.verified_at.isoformat() if r.verified_at else "",
             "rejection_reason": r.rejection_reason or "",
+            "_sort_dt": r.submitted_at.isoformat() if r.submitted_at else "",
         })
 
-    return {"items": items, "total": total, "page": page, "limit": limit}
+    for r in ledger_rows:
+        est = ests_map.get(r.establishment_id)
+        submitted_by_user = users_map.get(r.submitted_by) if r.submitted_by else None
+        verified_by_user = users_map.get(r.verified_by) if r.verified_by else None
+        sort_dt = r.submitted_at or r.created_at
+
+        items.append({
+            "id": f"adv-{r.id}",
+            "source": "advance_credit",
+            "establishment_id": r.establishment_id,
+            "establishment_code": est.code if est else "",
+            "establishment_name": est.name if est else "",
+            "financial_year": None,
+            "month": None,
+            "display_name": "Advance Credit Top-up",
+            "amount_due": r.amount,
+            "payment_status": _LEDGER_STATUS_DISPLAY.get(r.status, r.status),
+            "submitted_utr": r.submitted_utr or "",
+            "submitted_by": r.submitted_by,
+            "submitted_by_name": submitted_by_user.name if submitted_by_user else "",
+            "submitted_by_email": submitted_by_user.email if submitted_by_user else "",
+            "submitted_at": r.submitted_at.isoformat() if r.submitted_at else "",
+            "verified_by": r.verified_by,
+            "verified_by_name": verified_by_user.name if verified_by_user else "",
+            "verified_at": r.verified_at.isoformat() if r.verified_at else "",
+            "rejection_reason": r.rejection_reason or "",
+            "_sort_dt": sort_dt.isoformat() if sort_dt else "",
+        })
+
+    items.sort(key=lambda it: it["_sort_dt"], reverse=True)
+    total = len(items)
+    offset = (page - 1) * limit
+    page_items = items[offset:offset + limit]
+    for it in page_items:
+        it.pop("_sort_dt", None)
+
+    return {"items": page_items, "total": total, "page": page, "limit": limit}
 
 
-@app.post("/api/admin/payment-verifications/{fee_id}/approve")
+@app.post("/api/admin/payment-verifications/{item_id}/approve")
 async def approve_payment(
-    fee_id: int,
+    item_id: str,
     d: ApprovePaymentIn,
     admin: User = Depends(get_superadmin),
     db: Session = Depends(get_db)
 ):
-    """Superadmin approves a UTR submission, marking the fee as paid."""
-    fee = db.query(SubscriptionFee).filter(SubscriptionFee.id == fee_id).first()
-    if not fee:
-        raise HTTPException(404, "Subscription fee not found")
+    """Superadmin approves a UTR submission -- marks a subscription fee as paid, or
+    confirms an advance-credit top-up and credits the establishment's balance."""
+    kind, real_id = _split_verification_id(item_id)
 
-    if fee.payment_status != "pending_verification":
-        raise HTTPException(400, "Only pending_verification fees can be approved")
+    if kind == "fee":
+        fee = db.query(SubscriptionFee).filter(SubscriptionFee.id == real_id).first()
+        if not fee:
+            raise HTTPException(404, "Subscription fee not found")
 
-    fee.payment_status = "paid"
-    fee.is_paid = True
-    fee.verified_by = admin.id
-    fee.verified_at = datetime.now(timezone.utc)
-    fee.payment_reference = fee.submitted_utr
-    fee.paid_date = date.today().strftime("%d-%m-%Y")
-    db.commit()
+        if fee.payment_status != "pending_verification":
+            raise HTTPException(400, "Only pending_verification fees can be approved")
 
-    est = db.query(Establishment).filter(Establishment.id == fee.establishment_id).first()
-    log_activity(
-        db, admin.id, fee.establishment_id, "utr_approved",
-        f"Approved UTR payment for {fee.month} {fee.financial_year} — {est.name if est else ''}: {fee.submitted_utr}",
-        {"financial_year": fee.financial_year, "month": fee.month, "utr": fee.submitted_utr}
-    )
+        fee.payment_status = "paid"
+        fee.is_paid = True
+        fee.verified_by = admin.id
+        fee.verified_at = datetime.now(timezone.utc)
+        fee.payment_reference = fee.submitted_utr
+        fee.paid_date = date.today().strftime("%d-%m-%Y")
+        db.commit()
 
-    return {"ok": True, "payment_status": "paid"}
+        est = db.query(Establishment).filter(Establishment.id == fee.establishment_id).first()
+        log_activity(
+            db, admin.id, fee.establishment_id, "utr_approved",
+            f"Approved UTR payment for {fee.month} {fee.financial_year} — {est.name if est else ''}: {fee.submitted_utr}",
+            {"financial_year": fee.financial_year, "month": fee.month, "utr": fee.submitted_utr}
+        )
+
+        return {"ok": True, "payment_status": "paid"}
+
+    ledger_row = db.query(AdvanceCreditLedger).filter(AdvanceCreditLedger.id == real_id).first()
+    if not ledger_row:
+        raise HTTPException(404, "Advance credit entry not found")
+    if ledger_row.status != "pending_verification":
+        raise HTTPException(400, "Only pending_verification entries can be approved")
+
+    ledger_row.verified_by = admin.id
+    ledger_row.verified_at = datetime.now(timezone.utc)
+    _confirm_advance_credit_ledger_row(db, ledger_row, payment_ref=ledger_row.submitted_utr, source="manual_utr")
+
+    est = db.query(Establishment).filter(Establishment.id == ledger_row.establishment_id).first()
+    return {"ok": True, "payment_status": "paid", "advance_credit_balance": est.advance_credit_balance if est else None}
 
 
-@app.post("/api/admin/payment-verifications/{fee_id}/reject")
+@app.post("/api/admin/payment-verifications/{item_id}/reject")
 async def reject_payment(
-    fee_id: int,
+    item_id: str,
     d: RejectPaymentIn,
     admin: User = Depends(get_superadmin),
     db: Session = Depends(get_db)
 ):
-    """Superadmin rejects a UTR submission with a reason."""
-    fee = db.query(SubscriptionFee).filter(SubscriptionFee.id == fee_id).first()
-    if not fee:
-        raise HTTPException(404, "Subscription fee not found")
+    """Superadmin rejects a UTR submission with a reason -- for a subscription fee, it
+    goes back to unpaid for resubmission; for an advance-credit top-up, the ledger row is
+    marked rejected (the balance is never touched) and the consultant can submit a fresh
+    top-up."""
+    kind, real_id = _split_verification_id(item_id)
 
-    if fee.payment_status != "pending_verification":
-        raise HTTPException(400, "Only pending_verification fees can be rejected")
+    if kind == "fee":
+        fee = db.query(SubscriptionFee).filter(SubscriptionFee.id == real_id).first()
+        if not fee:
+            raise HTTPException(404, "Subscription fee not found")
+
+        if fee.payment_status != "pending_verification":
+            raise HTTPException(400, "Only pending_verification fees can be rejected")
+
+        reason = d.rejection_reason.strip()
+        if not reason:
+            raise HTTPException(400, "Rejection reason is required")
+
+        fee.payment_status = "unpaid"
+        fee.rejection_reason = reason
+        fee.verified_by = admin.id
+        fee.verified_at = datetime.now(timezone.utc)
+        db.commit()
+
+        est = db.query(Establishment).filter(Establishment.id == fee.establishment_id).first()
+        log_activity(
+            db, admin.id, fee.establishment_id, "utr_rejected",
+            f"Rejected UTR for {fee.month} {fee.financial_year} — {est.name if est else ''}: {reason}",
+            {"financial_year": fee.financial_year, "month": fee.month, "utr": fee.submitted_utr, "reason": reason}
+        )
+
+        return {"ok": True, "payment_status": "unpaid", "rejection_reason": reason}
+
+    ledger_row = db.query(AdvanceCreditLedger).filter(AdvanceCreditLedger.id == real_id).first()
+    if not ledger_row:
+        raise HTTPException(404, "Advance credit entry not found")
+    if ledger_row.status != "pending_verification":
+        raise HTTPException(400, "Only pending_verification entries can be rejected")
 
     reason = d.rejection_reason.strip()
     if not reason:
         raise HTTPException(400, "Rejection reason is required")
 
-    fee.payment_status = "unpaid"
-    fee.rejection_reason = reason
-    fee.verified_by = admin.id
-    fee.verified_at = datetime.now(timezone.utc)
+    ledger_row.status = "rejected"
+    ledger_row.rejection_reason = reason
+    ledger_row.verified_by = admin.id
+    ledger_row.verified_at = datetime.now(timezone.utc)
     db.commit()
 
-    est = db.query(Establishment).filter(Establishment.id == fee.establishment_id).first()
+    est = db.query(Establishment).filter(Establishment.id == ledger_row.establishment_id).first()
     log_activity(
-        db, admin.id, fee.establishment_id, "utr_rejected",
-        f"Rejected UTR for {fee.month} {fee.financial_year} — {est.name if est else ''}: {reason}",
-        {"financial_year": fee.financial_year, "month": fee.month, "utr": fee.submitted_utr, "reason": reason}
+        db, admin.id, ledger_row.establishment_id, "utr_rejected",
+        f"Rejected UTR for advance-credit top-up of ₹{ledger_row.amount} — {est.name if est else ''}: {reason}",
+        {"amount": ledger_row.amount, "utr": ledger_row.submitted_utr, "reason": reason}
     )
 
     return {"ok": True, "payment_status": "unpaid", "rejection_reason": reason}
@@ -2549,9 +2692,10 @@ async def admin_refresh_advance_credit_status(
     return {"ok": True, "status": ledger_row.status, "advance_credit_balance": est.advance_credit_balance if est else None}
 
 
-def _confirm_advance_credit_ledger_row(db: Session, ledger_row: AdvanceCreditLedger, payment_ref: str):
-    """Shared confirmation logic used by both the webhook and the manual refresh button.
-    Idempotent -- a no-op if the row is already confirmed."""
+def _confirm_advance_credit_ledger_row(db: Session, ledger_row: AdvanceCreditLedger, payment_ref: str, source: str = "cashfree"):
+    """Shared confirmation logic used by the Cashfree webhook, the manual refresh button,
+    and superadmin approval of a manually-submitted UTR. Idempotent -- a no-op if the row
+    is already confirmed."""
     if ledger_row.status == "confirmed":
         return
     est = db.query(Establishment).filter(Establishment.id == ledger_row.establishment_id).first()
@@ -2564,14 +2708,15 @@ def _confirm_advance_credit_ledger_row(db: Session, ledger_row: AdvanceCreditLed
     est.advance_credit_balance = round(old_balance + ledger_row.amount, 2)
     db.commit()
 
+    via = "Cashfree" if source == "cashfree" else "manual UTR verification"
     log_activity(
-        db, None, est.id, "advance_payment_received",
-        f"Advance subscription payment of ₹{ledger_row.amount} received via Cashfree for {est.name} ({est.code}) "
+        db, ledger_row.verified_by, est.id, "advance_payment_received",
+        f"Advance subscription payment of ₹{ledger_row.amount} received via {via} for {est.name} ({est.code}) "
         f"— Ref: {payment_ref}. New balance: ₹{est.advance_credit_balance}",
         {
             "amount": ledger_row.amount, "payment_reference": payment_ref,
             "old_balance": old_balance, "new_balance": est.advance_credit_balance,
-            "code": est.code, "source": "cashfree", "cashfree_order_id": ledger_row.cashfree_order_id
+            "code": est.code, "source": source, "cashfree_order_id": ledger_row.cashfree_order_id
         }
     )
 
@@ -3600,6 +3745,46 @@ async def establishment_refresh_advance_credit_status(
     return {"ok": True, "status": ledger_row.status, "amount": ledger_row.amount, "advance_credit_balance": est_obj.advance_credit_balance}
 
 
+@app.post("/api/establishment/advance-payment/submit-utr")
+async def consultant_submit_advance_utr(
+    d: AdvanceSubmitUTRIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Manual-UPI/QR alternative to the Cashfree advance-credit top-up above -- the
+    consultant pays via the establishment's UPI QR code directly and submits the UTR for
+    superadmin verification, same flow as the per-month subscription-fee UTR path."""
+    require_feature_enabled(db, "advance_credit_enabled", "Advance credit")
+    est_obj, project = active
+    if d.amount <= 0:
+        raise HTTPException(400, "Amount must be positive")
+
+    utr = d.utr.strip()
+    if not utr:
+        raise HTTPException(400, "UTR cannot be empty")
+
+    if _utr_already_submitted(db, utr):
+        raise HTTPException(400, "This UTR has already been submitted for verification.")
+
+    ledger_row = AdvanceCreditLedger(
+        establishment_id=est_obj.id, entry_type="topup", amount=d.amount,
+        status="pending_verification", submitted_utr=utr,
+        submitted_by=current_user.id, submitted_at=datetime.now(timezone.utc),
+    )
+    db.add(ledger_row)
+    db.commit()
+    db.refresh(ledger_row)
+
+    log_activity(
+        db, current_user.id, est_obj.id, "utr_submitted",
+        f"Submitted UTR for advance-credit top-up of ₹{d.amount} — {est_obj.name} ({est_obj.code}): {utr}",
+        {"amount": d.amount, "utr": utr}
+    )
+
+    return {"ok": True, "status": "pending_verification", "ledger_id": ledger_row.id}
+
+
 # ── Org Structure Endpoints ───────────────────────────────────────────────
 @app.get("/api/org-structure")
 async def get_org_structure(active: Tuple[Establishment, Project] = Depends(get_active_establishment)):
@@ -4288,6 +4473,7 @@ async def bulk_month_wages(
 async def del_wages(
     key: str,
     acc: str,
+    month_idx: Optional[int] = None,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -4300,6 +4486,37 @@ async def del_wages(
     idx = next((i for i, e in enumerate(yr.entries) if e.member_id == acc), None)
     if idx is None:
         raise HTTPException(404, "Entry not found")
+
+    if month_idx is not None:
+        if not (0 <= month_idx <= 11):
+            raise HTTPException(400, "Invalid month index")
+        month_label = MONTHS[month_idx]
+        remit = next(
+            (r for r in yr.remittances if isinstance(r, dict) and r.get("month_label") == month_label),
+            None
+        )
+        if remit and (remit.get("trrn") or remit.get("crrn")):
+            raise HTTPException(
+                409,
+                f"Cannot delete: {month_label} (FY {key}) has already been filed "
+                f"(TRRN: {remit.get('trrn') or '—'}, CRRN: {remit.get('crrn') or '—'}). "
+                f"A filed month's wage data cannot be deleted."
+            )
+        entry = yr.entries[idx]
+        entry.wages[month_idx] = 0
+        entry.gross_wages[month_idx] = 0
+        entry.ncp_days[month_idx] = 0
+        if not any(entry.wages) and not any(entry.gross_wages) and not any(entry.ncp_days):
+            project.remove_entry(key, idx)
+        save_establishment_project(db, est_obj, project)
+        sync_subscription_fees_for_year(db, est_obj, project, key)
+        log_activity(
+            db, est_obj.user_id, est_obj.id, "wage_month_deleted",
+            f"Deleted {month_label} wage entry for member {acc} (FY {key}) in {project.name}",
+            {"year_key": key, "month_idx": month_idx, "member_id": acc, "establishment_name": project.name}
+        )
+        return {"ok": True}
+
     project.remove_entry(key, idx)
     save_establishment_project(db, est_obj, project)
     return {"ok": True}

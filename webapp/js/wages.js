@@ -969,6 +969,7 @@ App.registerPage('wage-entry', async (container) => {
         <div class="form-group" style="margin-bottom: 0; display:flex; gap:8px;">
           <input type="text" class="form-input" id="bulk-add-uan" placeholder="Enter UAN to add employee..." style="width:280px">
           <button class="btn btn-secondary" onclick="addEmployeeByUAN()">Add Employee</button>
+          <button class="btn btn-danger" onclick="deleteSelectedWageEntries()">🗑️ Delete Selected</button>
         </div>
       </div>
     </div>
@@ -978,6 +979,7 @@ App.registerPage('wage-entry', async (container) => {
         <table class="wage-table">
           <thead style="position: sticky; top: 0; background: var(--bg2); z-index: 10;">
             <tr>
+              <th style="width:32px"><input type="checkbox" id="bulk-select-all" onchange="toggleSelectAllWageRows(this)" title="Select all on this page"></th>
               <th class="txt" style="width:60px">Sl No.</th>
               <th class="txt" style="width:150px">UAN</th>
               <th class="txt" style="min-width:280px">Name & Options</th>
@@ -1015,6 +1017,56 @@ window.bulkTableVisibleIds = [];
 window.bulkTableManualIds = [];
 let currentBulkPage = 1;
 const BULK_PAGE_SIZE = 50;
+
+window.toggleSelectAllWageRows = (headerChk) => {
+  document.querySelectorAll('.b-select-row').forEach(cb => { cb.checked = headerChk.checked; });
+};
+
+function dropWageRowFromView(memberId) {
+  delete bulkTableState[memberId];
+  window.bulkTableVisibleIds = window.bulkTableVisibleIds.filter(id => id !== memberId);
+  window.bulkTableManualIds = window.bulkTableManualIds.filter(id => id !== memberId);
+}
+
+window.deleteWageMonthEntry = async (memberId, name) => {
+  if (!confirm(`Remove ${name}'s wage entry for this month? This cannot be undone.`)) return;
+  const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
+  try {
+    await App.del(`/api/years/${currentYearKey}/wages/${encodeURIComponent(memberId)}?month_idx=${monthIdx}`);
+    dropWageRowFromView(memberId);
+    renderMonthlyTable();
+    App.toast(`${name}'s wage entry removed for this month.`);
+  } catch (e) {
+    App.toast(e.message || 'Could not remove wage entry', 'error');
+  }
+};
+
+window.deleteSelectedWageEntries = async () => {
+  const checked = Array.from(document.querySelectorAll('.b-select-row:checked')).map(cb => cb.dataset.id);
+  if (checked.length === 0) {
+    return App.toast('Select at least one employee to remove.', 'error');
+  }
+  if (!confirm(`Remove wage entries for ${checked.length} selected employee(s) for this month? This cannot be undone.`)) return;
+
+  const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
+  let removed = 0;
+  const blocked = [];
+  for (const memberId of checked) {
+    const master = (window._masterEmployees || []).find(m => m.member_id === memberId);
+    const label = master ? master.name : memberId;
+    try {
+      await App.del(`/api/years/${currentYearKey}/wages/${encodeURIComponent(memberId)}?month_idx=${monthIdx}`);
+      dropWageRowFromView(memberId);
+      removed++;
+    } catch (e) {
+      blocked.push(`${label}: ${e.message || 'blocked'}`);
+    }
+  }
+
+  renderMonthlyTable();
+  if (removed) App.toast(`Removed ${removed} wage entr${removed === 1 ? 'y' : 'ies'} for this month.`);
+  if (blocked.length) App.toast(`${blocked.length} could not be removed — ${blocked.join('; ')}`, 'error');
+};
 
 window.openExitModalForWageRow = (memberId) => {
   syncBulkTableState(); // preserve any unsaved edits on other rows before the modal state takes over
@@ -1265,6 +1317,7 @@ window.renderMonthlyTable = () => {
 
     html += `
             <tr class="bulk-row" data-id="${App.esc(master.member_id)}" data-ceiling="${r.wage_ceilings ? r.wage_ceilings[monthIdx] : 15000}">
+              <td style="text-align:center"><input type="checkbox" class="b-select-row" data-id="${App.esc(master.member_id)}"></td>
               <td style="text-align:center">${start + idx + 1}</td>
               <td>${App.esc(master.uan || '-')}</td>
               <td>
@@ -1277,6 +1330,7 @@ window.renderMonthlyTable = () => {
                   <label style="cursor:pointer; display:inline-flex; align-items:center; gap:3px;" title="Higher EPF (Employer Share)"><input type="checkbox" class="b-higher-er" ${higher_er ? 'checked' : ''}> Higher EPF (ER)</label>
                   <label style="cursor:pointer; display:inline-flex; align-items:center; gap:3px;" title="Age > 58 (EPS = 0)"><input type="checkbox" class="b-age58" ${age58 ? 'checked' : ''}> Age > 58</label>
                   <button type="button" class="btn btn-ghost btn-xs" style="padding:1px 6px; font-size:10px;" onclick="openExitModalForWageRow('${App.esc(master.member_id)}')" title="Set or edit Date of Exit &amp; Reason of Leaving">🚪 ${master.doe ? 'Edit Exit' : 'Mark Exit'}</button>
+                  <button type="button" class="btn btn-ghost btn-xs" style="padding:1px 6px; font-size:10px; color:var(--red);" onclick="deleteWageMonthEntry('${App.esc(master.member_id)}', '${App.esc(master.name)}')" title="Remove this employee's wage entry for this month">🗑️ Remove</button>
                 </div>
               </td>
               <td style="text-align:center" class="b-dim">${daysInMonth}</td>

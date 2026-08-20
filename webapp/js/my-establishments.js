@@ -176,16 +176,33 @@ const MyEstablishments = (() => {
             <label class="form-label" style="font-weight:600;">Amount (₹)</label>
             <input type="number" min="1" step="1" id="adv-modal-amount" class="form-input" placeholder="e.g. 5000">
           </div>
-          <div class="form-group" style="margin-bottom:4px;">
+          <div class="form-group" style="margin-bottom:14px;">
             <label class="form-label" style="font-weight:600;">Notes (optional)</label>
             <input type="text" id="adv-modal-notes" class="form-input" placeholder="e.g. Lump sum for Apr–Jun">
           </div>
+          <div id="adv-modal-pay-btn-wrap">
+            <button class="btn btn-primary" style="width:100%;" id="adv-modal-pay-btn" onclick="MyEstablishments.submitAdvanceCreditModal(${estId})">💳 Pay via Cashfree</button>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px; margin:14px 0; color:var(--text3); font-size:11px;">
+            <div style="flex:1; border-top:1px solid var(--border);"></div>OR<div style="flex:1; border-top:1px solid var(--border);"></div>
+          </div>
+          <button class="btn btn-ghost" style="width:100%;" onclick="MyEstablishments.openAdvanceUPIPanel('${App.esc(estCode)}')">📱 Pay via UPI (Manual)</button>
+          <div id="adv-upi-panel" style="margin-top:12px; text-align:left;"></div>
           <div id="adv-modal-status" style="margin-top:14px; font-size:12px; color:var(--text2); min-height:16px;"></div>
         </div>
       `,
-      `<button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
-       <button class="btn btn-primary" id="adv-modal-pay-btn" onclick="MyEstablishments.submitAdvanceCreditModal(${estId})">💳 Pay via Cashfree</button>`
+      `<button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>`
     );
+  }
+
+  function openAdvanceUPIPanel(estCode) {
+    const amountEl = document.getElementById('adv-modal-amount');
+    const amount = parseFloat(amountEl ? amountEl.value : '');
+    if (!amount || amount <= 0) {
+      App.toast('Enter a valid amount first', 'error');
+      return;
+    }
+    App.showAdvanceUPIPanel(estCode, amount);
   }
 
   async function submitAdvanceCreditModal(estId) {
@@ -375,6 +392,7 @@ const MyEstablishments = (() => {
     confirmDelete,
     addAdvanceCredit,
     submitAdvanceCreditModal,
+    openAdvanceUPIPanel,
     viewSubscriptionHistory
   };
 })();
