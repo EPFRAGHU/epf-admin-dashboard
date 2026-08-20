@@ -125,3 +125,46 @@ def test_pay_all_overdue_manual_utr_unlocks_every_month_and_download(consultant_
         "fee_ids": fee_ids, "utr": "PAYALL03UTR001"
     })
     assert res.status_code == 400
+
+    # The consultant's own Subscription page immediately reflects all 3 months as paid too --
+    # same SubscriptionFee rows, no separate cache, no lag between this prompt and that page.
+    res = consultant_a.get("/api/establishment/subscription-status?year=2026-27")
+    assert res.status_code == 200
+    sub_status = res.json()
+    assert sub_status["has_overdue"] is False
+    assert sub_status["unpaid_months"] == []
+
+
+def test_all_months_paid_no_prompt_shown(consultant_a):
+    """An establishment with every wage-bearing month already paid must download immediately
+    (200, no 402 at all) -- the breakdown must never appear once nothing is actually unpaid."""
+    est_id = _setup_establishment_with_three_unpaid_months(consultant_a, "PAYALL04")
+
+    res = consultant_a.get("/api/reports/2026-27")
+    assert res.status_code == 402
+    fee_ids = [m["fee_id"] for m in res.json()["detail"]["unpaid_months"]]
+
+    # Pay every unpaid month directly (simulating prior payment via the Subscription page).
+    res = consultant_a.post("/api/establishment/subscription-fees/pay-all/submit-utr", json={
+        "fee_ids": fee_ids, "utr": "PAYALL04UTR001"
+    })
+    assert res.status_code == 200
+
+    from webapp.database import SubscriptionFee, SessionLocal
+    db = SessionLocal()
+    try:
+        for f in db.query(SubscriptionFee).filter(SubscriptionFee.id.in_(fee_ids)).all():
+            f.is_paid = True
+            f.payment_status = "paid"
+        db.commit()
+    finally:
+        db.close()
+
+    # No prompt at all -- the download succeeds immediately.
+    res = consultant_a.get("/api/reports/2026-27")
+    assert res.status_code == 200
+
+    # The Subscription page agrees -- nothing left unpaid.
+    res = consultant_a.get("/api/establishment/subscription-status?year=2026-27")
+    assert res.json()["has_overdue"] is False
+    assert res.json()["unpaid_months"] == []

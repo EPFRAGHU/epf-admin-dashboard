@@ -491,13 +491,13 @@ const App = (() => {
     `;
 
     openModal(
-      '💳 Download Blocked — Subscription Fee Due',
+      '💳 Unpaid Monthly Fees Blocking This Download',
       `
         <div style="text-align:center; padding:8px;">
           <span style="font-size:40px; display:block; margin-bottom:10px;">🔒</span>
-          <h4 style="margin:0 0 6px 0; font-size:16px; font-weight:700; color:var(--danger);">Download blocked — subscription fee due for ${rows.length} month${rows.length === 1 ? '' : 's'}</h4>
+          <h4 style="margin:0 0 6px 0; font-size:16px; font-weight:700; color:var(--danger);">You have ${rows.length} unpaid month${rows.length === 1 ? '' : 's'} blocking this download</h4>
           <p style="font-size:13px; color:var(--text2); margin-bottom:14px;">Settle the total below to unlock this download immediately — you can pay for all ${rows.length} month${rows.length === 1 ? '' : 's'} in one payment.</p>
-          <table style="width:100%; border-collapse:collapse; margin-bottom:10px; font-size:13px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-sm); overflow:hidden;">
+          <table style="width:100%; border-collapse:collapse; margin-bottom:6px; font-size:13px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-sm); overflow:hidden;">
             <thead>
               <tr style="background:var(--bg3);">
                 <th style="padding:6px 8px; text-align:left; color:var(--text3); font-size:11px; text-transform:uppercase;">Month</th>
@@ -512,6 +512,7 @@ const App = (() => {
               </tr>
             </tfoot>
           </table>
+          <p style="font-size:11.5px; color:var(--text3); margin:0 0 14px 0; line-height:1.4;">These are the same monthly fees shown on your Subscription page — paying here settles them all at once instead of one at a time.</p>
           ${paymentOptionsHtml}
           <div id="year-payment-status" style="margin-top:12px; font-size:12px; color:var(--text2); min-height:16px;"></div>
         </div>
