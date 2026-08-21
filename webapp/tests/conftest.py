@@ -57,6 +57,16 @@ class AuthClient:
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_database():
     """Create test database schema before tests and remove SQLite file after all tests."""
+    # A stale test_epf.db can survive a prior interrupted run if the teardown's
+    # unlink() below was silently blocked (e.g. a lingering file handle on Windows).
+    # create_all() alone won't fix a stale/partial schema from that leftover file, so
+    # start every session from a truly clean file to avoid spurious "no such table"
+    # cascades caused by old runs, not the code under test.
+    if TEST_DB_PATH.exists():
+        try:
+            TEST_DB_PATH.unlink()
+        except Exception:
+            pass
     Base.metadata.create_all(bind=engine)
     yield
     Base.metadata.drop_all(bind=engine)
