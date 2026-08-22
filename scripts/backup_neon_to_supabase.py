@@ -28,6 +28,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+from dotenv import load_dotenv
+
+# Harmless in CI (GitHub Actions secrets are already in os.environ, and load_dotenv() never
+# overrides an existing variable) -- lets this also be run locally for manual testing.
+load_dotenv()
+
 LOG_PATH = Path(__file__).resolve().parent.parent / "backup.log"
 
 
