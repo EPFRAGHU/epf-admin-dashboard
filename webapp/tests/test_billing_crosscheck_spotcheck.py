@@ -43,10 +43,10 @@ def test_pay_one_month_reflects_everywhere(consultant_a, superadmin_session, tes
     status_before = consultant_a.get("/api/establishment/subscription-status?year=2026-27").json()
     assert status_before["has_overdue"] is True
     admin_view_before = superadmin_session.get(f"/api/admin/establishments/{est['id']}/subscription-fees?year=2026-27").json()
-    apr_row_before = next(r for r in admin_view_before["months"] if r["month"] == "Apr")
-    assert apr_row_before["is_paid"] is False
+    mar_row_before = next(r for r in admin_view_before["months"] if r["month"] == "Mar")
+    assert mar_row_before["is_paid"] is False
 
-    # --- Pay April via the REAL UTR flow (as if from the Subscription page) ---
+    # --- Pay March via the REAL UTR flow (as if from the Subscription page) ---
     res = consultant_a.post(f"/api/subscription-fees/{fee.id}/submit-utr", json={"utr": "UTR-CROSSCHECK-001"})
     assert res.status_code == 200, res.text
     # Bare integer id is accepted for backward compat -- treated as a subscription-fee id.
@@ -58,17 +58,17 @@ def test_pay_one_month_reflects_everywhere(consultant_a, superadmin_session, tes
     assert res_form.status_code == 200, f"Form download still blocked after payment: {res_form.text}"
 
     status_after = consultant_a.get("/api/establishment/subscription-status?year=2026-27").json()
-    assert not any("April" in m for m in status_after["unpaid_months"]), status_after
+    assert not any("March" in m for m in status_after["unpaid_months"]), status_after
 
     admin_view_after = superadmin_session.get(f"/api/admin/establishments/{est['id']}/subscription-fees?year=2026-27").json()
-    apr_row_after = next(r for r in admin_view_after["months"] if r["month"] == "Apr")
-    assert apr_row_after["is_paid"] is True, admin_view_after
+    mar_row_after = next(r for r in admin_view_after["months"] if r["month"] == "Mar")
+    assert mar_row_after["is_paid"] is True, admin_view_after
 
     ledger = superadmin_session.get("/api/admin/subscription-payments?establishment_id=" + str(est["id"])).json()
-    assert any(p["month"] == "Apr" and p["financial_year"] == "2026-27" for p in ledger["payments"]), ledger
+    assert any(p["month"] == "Mar" and p["financial_year"] == "2026-27" for p in ledger["payments"]), ledger
 
-    print("\n=== All four billing surfaces confirmed paid for Apr 2026-27 ===")
+    print("\n=== All four billing surfaces confirmed paid for Mar 2026-27 ===")
     print("form download:", res_form.status_code)
     print("subscription-status unpaid_months:", status_after["unpaid_months"])
-    print("admin establishment view Apr row:", apr_row_after)
+    print("admin establishment view Mar row:", mar_row_after)
     print("admin ledger match found: True")
