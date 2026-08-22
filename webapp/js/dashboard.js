@@ -79,79 +79,7 @@ App.registerPage('dashboard', async (container) => {
       <div class="table-wrap">
         <table class="est-table">
           <tbody>
-            ${[...data.year_stats].reverse().map(y => {
-                let html = `
-                  <tr>
-                    <td colspan="16" style="background-color: var(--bg); font-weight: 700; padding: 12px; font-size:14px; border-bottom: 1px solid var(--card-border);">
-                      Financial Year: ${y.label} <span class="badge low" style="margin-left: 8px;">${y.scheme}</span>
-                    </td>
-                  </tr>
-                  <tr style="background-color: var(--bg); color: var(--text2); font-size: 11px; text-transform: uppercase; font-weight: 600;">
-                    <td style="padding: 8px 10px; white-space: nowrap;">Month & Year</td>
-                    <td class="num" style="text-align:center; padding: 8px 8px; white-space: nowrap;">Employees</td>
-                    <td class="num" style="padding: 8px 10px; white-space: nowrap;">Gross Wages</td>
-                    <td class="num" style="padding: 8px 10px; white-space: nowrap;">EPF Wages</td>
-                    <td class="num" style="padding: 8px 10px; white-space: nowrap;">EPS Wages</td>
-                    <td class="num" style="padding: 8px 10px; white-space: nowrap;">Worker Share</td>
-                    <td class="num" style="padding: 8px 10px; white-space: nowrap;">Employer Share</td>
-                    <td style="padding: 8px 10px; white-space: nowrap; text-align:center;">TRRN</td>
-                    <td style="padding: 8px 10px; white-space: nowrap; text-align:center;">CRRN</td>
-                    <td style="padding: 8px 10px; white-space: nowrap; text-align:center;">Credit Date</td>
-                    <td class="num" style="padding: 8px 8px; white-space: nowrap;" title="A/C 1: EPF (EE+ER)">A/C 1</td>
-                    <td class="num" style="padding: 8px 8px; white-space: nowrap;" title="A/C 2: Admin Charges">A/C 2</td>
-                    <td class="num" style="padding: 8px 8px; white-space: nowrap;" title="A/C 10: Pension Fund">A/C 10</td>
-                    <td class="num" style="padding: 8px 8px; white-space: nowrap;" title="A/C 21: EDLI">A/C 21</td>
-                    <td class="num" style="padding: 8px 8px; white-space: nowrap;" title="A/C 22: EDLI Admin">A/C 22</td>
-                    <td class="num" style="padding: 8px 12px; font-weight: 700; color: var(--accent); white-space: nowrap;">Total</td>
-                  </tr>
-                `;
-                
-                y.monthly_stats.forEach((m, idx) => {
-                    const trrnHtml = m.trrn ? `<span style="font-family:var(--font-mono); font-weight:600;">${App.esc(m.trrn)}</span>` : `<span class="badge" style="background:var(--bg); color:var(--text3); border:1px solid var(--card-border); font-size:10px;">Not filed</span>`;
-                    const crrnHtml = m.crrn ? `<span style="font-family:var(--font-mono);">${App.esc(m.crrn)}</span>` : `<span style="color:var(--text3);">—</span>`;
-                    const creditDateHtml = m.credit_date ? `${App.esc(m.credit_date)} <span class="badge ok" style="margin-left:4px; font-size:10px; padding:2px 6px;">Filed</span>` : `<span style="color:var(--text3);">—</span>`;
-
-                    html += `<tr>
-                        <td style="font-weight: 500; white-space: nowrap;">${m.month}</td>
-                        <td class="num" style="text-align:center"><a href="#" onclick="event.preventDefault(); window.showMonthEmployees('${y.key}', ${idx}, '${m.month}')" style="color: var(--accent); text-decoration: none; font-weight: bold; padding: 4px 8px; border-radius: 4px; background: var(--accent-glow);">${m.employees}</a></td>
-                        <td class="num">₹${App.fmt(m.gross_wages)}</td>
-                        <td class="num">₹${App.fmt(m.epf_wages)}</td>
-                        <td class="num">₹${App.fmt(m.eps_wages)}</td>
-                        <td class="num" style="color: var(--blue);">₹${App.fmt(m.worker_share)}</td>
-                        <td class="num" style="color: var(--green);">₹${App.fmt(m.employer_share)}</td>
-                        <td style="text-align:center; white-space: nowrap;">${trrnHtml}</td>
-                        <td style="text-align:center; white-space: nowrap;">${crrnHtml}</td>
-                        <td style="text-align:center; white-space: nowrap;">${creditDateHtml}</td>
-                        <td class="num">₹${App.fmt(m.acc_01)}</td>
-                        <td class="num">₹${App.fmt(m.acc_02)}</td>
-                        <td class="num">₹${App.fmt(m.acc_10)}</td>
-                        <td class="num">₹${App.fmt(m.acc_21)}</td>
-                        <td class="num">₹${App.fmt(m.acc_22)}</td>
-                        <td class="num" style="font-weight: 700; color: var(--accent);">₹${App.fmt(m.remit_total)}</td>
-                    </tr>`;
-                });
-                
-                html += `<tr style="background-color: var(--bg); border-top: 2px solid var(--card-border);">
-                    <td style="font-weight: bold; color: var(--text); white-space: nowrap;">Total for ${y.label}</td>
-                    <td style="text-align:center;">-</td>
-                    <td class="num" style="font-weight: bold; color: var(--text);">₹${App.fmt(y.totals.gross_wages)}</td>
-                    <td class="num" style="font-weight: bold; color: var(--text);">₹${App.fmt(y.totals.epf_wages)}</td>
-                    <td class="num" style="font-weight: bold; color: var(--text);">₹${App.fmt(y.totals.eps_wages)}</td>
-                    <td class="num" style="font-weight: bold; color: var(--blue);">₹${App.fmt(y.totals.worker_share)}</td>
-                    <td class="num" style="font-weight: bold; color: var(--green);">₹${App.fmt(y.totals.employer_share)}</td>
-                    <td style="text-align:center; color: var(--text3);">-</td>
-                    <td style="text-align:center; color: var(--text3);">-</td>
-                    <td style="text-align:center; color: var(--text3);">-</td>
-                    <td class="num" style="font-weight: bold; color: var(--text);">₹${App.fmt(y.totals.acc_01)}</td>
-                    <td class="num" style="font-weight: bold; color: var(--text);">₹${App.fmt(y.totals.acc_02)}</td>
-                    <td class="num" style="font-weight: bold; color: var(--text);">₹${App.fmt(y.totals.acc_10)}</td>
-                    <td class="num" style="font-weight: bold; color: var(--text);">₹${App.fmt(y.totals.acc_21)}</td>
-                    <td class="num" style="font-weight: bold; color: var(--text);">₹${App.fmt(y.totals.acc_22)}</td>
-                    <td class="num" style="font-weight: 700; color: var(--accent);">₹${App.fmt(y.totals.remit_total)}</td>
-                </tr>`;
-                
-                return html;
-            }).join('')}
+            ${[...data.year_stats].reverse().map(y => window.renderMonthWiseSummaryRows(y, { compact: false, showYearHeader: true })).join('')}
             <tr style="background: var(--accent); color: #fff; font-weight: 700;">
               <td colspan="15" style="padding: 12px 14px; font-size: 13px; letter-spacing: .3px;">Grand Total — All Years</td>
               <td class="num" style="padding: 12px 14px; font-weight: 800; font-size: 14px; color: #fff;">₹${App.fmt(data.grand_remit_total)}</td>
@@ -283,6 +211,123 @@ window.refreshChartsForTheme = () => {
   if (document.getElementById('chart-contributions') && App.currentPage === 'dashboard') {
     App.navigate('dashboard');
   }
+};
+
+/* ── Month-wise Summary rows — the single source of truth for this table's markup,
+   shared by the Dashboard's own full view and any other page that embeds a compact
+   version (e.g. Monthly Wage Entry). Never duplicate this row-building logic
+   elsewhere; call this instead so every page agrees on the same numbers. ── */
+window.renderMonthWiseSummaryRows = function(y, opts) {
+  opts = opts || {};
+  const compact = !!opts.compact;
+  const showYearHeader = opts.showYearHeader !== false;
+  const highlightMonthIdx = opts.highlightMonthIdx != null ? opts.highlightMonthIdx : null;
+  const colspan = compact ? 5 : 16;
+
+  let html = '';
+
+  if (showYearHeader) {
+    html += `
+      <tr>
+        <td colspan="${colspan}" style="background-color: var(--bg); font-weight: 700; padding: 12px; font-size:14px; border-bottom: 1px solid var(--card-border);">
+          Financial Year: ${y.label} <span class="badge low" style="margin-left: 8px;">${y.scheme}</span>
+        </td>
+      </tr>`;
+  }
+
+  html += compact ? `
+    <tr style="background-color: var(--bg); color: var(--text2); font-size: 10px; text-transform: uppercase; font-weight: 600;">
+      <td style="padding: 6px 8px; white-space: nowrap;">Month</td>
+      <td class="num" style="text-align:center; padding: 6px 6px; white-space: nowrap;">Emp</td>
+      <td class="num" style="padding: 6px 8px; white-space: nowrap;">Gross</td>
+      <td class="num" style="padding: 6px 8px; white-space: nowrap;">EPF</td>
+      <td class="num" style="padding: 6px 8px; white-space: nowrap;">EPS</td>
+    </tr>` : `
+    <tr style="background-color: var(--bg); color: var(--text2); font-size: 11px; text-transform: uppercase; font-weight: 600;">
+      <td style="padding: 8px 10px; white-space: nowrap;">Month & Year</td>
+      <td class="num" style="text-align:center; padding: 8px 8px; white-space: nowrap;">Employees</td>
+      <td class="num" style="padding: 8px 10px; white-space: nowrap;">Gross Wages</td>
+      <td class="num" style="padding: 8px 10px; white-space: nowrap;">EPF Wages</td>
+      <td class="num" style="padding: 8px 10px; white-space: nowrap;">EPS Wages</td>
+      <td class="num" style="padding: 8px 10px; white-space: nowrap;">Worker Share</td>
+      <td class="num" style="padding: 8px 10px; white-space: nowrap;">Employer Share</td>
+      <td style="padding: 8px 10px; white-space: nowrap; text-align:center;">TRRN</td>
+      <td style="padding: 8px 10px; white-space: nowrap; text-align:center;">CRRN</td>
+      <td style="padding: 8px 10px; white-space: nowrap; text-align:center;">Credit Date</td>
+      <td class="num" style="padding: 8px 8px; white-space: nowrap;" title="A/C 1: EPF (EE+ER)">A/C 1</td>
+      <td class="num" style="padding: 8px 8px; white-space: nowrap;" title="A/C 2: Admin Charges">A/C 2</td>
+      <td class="num" style="padding: 8px 8px; white-space: nowrap;" title="A/C 10: Pension Fund">A/C 10</td>
+      <td class="num" style="padding: 8px 8px; white-space: nowrap;" title="A/C 21: EDLI">A/C 21</td>
+      <td class="num" style="padding: 8px 8px; white-space: nowrap;" title="A/C 22: EDLI Admin">A/C 22</td>
+      <td class="num" style="padding: 8px 12px; font-weight: 700; color: var(--accent); white-space: nowrap;">Total</td>
+    </tr>`;
+
+  y.monthly_stats.forEach((m, idx) => {
+    const isHighlighted = highlightMonthIdx === idx;
+    const rowStyle = isHighlighted ? 'background: var(--accent-glow); box-shadow: inset 3px 0 0 var(--accent);' : '';
+
+    if (compact) {
+      html += `<tr style="${rowStyle}">
+          <td style="font-weight: ${isHighlighted ? '700' : '500'}; white-space: nowrap; padding: 5px 8px; font-size:11px;">${m.month}</td>
+          <td class="num" style="text-align:center; padding: 4px 6px;"><a href="#" onclick="event.preventDefault(); window.showMonthEmployees('${y.key}', ${idx}, '${m.month}')" style="color: var(--accent); text-decoration: none; font-weight: bold; padding: 2px 6px; border-radius: 4px; background: var(--accent-glow); font-size:11px;">${m.employees}</a></td>
+          <td class="num" style="padding: 5px 8px; font-size:11px;">₹${App.fmt(m.gross_wages)}</td>
+          <td class="num" style="padding: 5px 8px; font-size:11px;">₹${App.fmt(m.epf_wages)}</td>
+          <td class="num" style="padding: 5px 8px; font-size:11px;">₹${App.fmt(m.eps_wages)}</td>
+      </tr>`;
+    } else {
+      const trrnHtml = m.trrn ? `<span style="font-family:var(--font-mono); font-weight:600;">${App.esc(m.trrn)}</span>` : `<span class="badge" style="background:var(--bg); color:var(--text3); border:1px solid var(--card-border); font-size:10px;">Not filed</span>`;
+      const crrnHtml = m.crrn ? `<span style="font-family:var(--font-mono);">${App.esc(m.crrn)}</span>` : `<span style="color:var(--text3);">—</span>`;
+      const creditDateHtml = m.credit_date ? `${App.esc(m.credit_date)} <span class="badge ok" style="margin-left:4px; font-size:10px; padding:2px 6px;">Filed</span>` : `<span style="color:var(--text3);">—</span>`;
+
+      html += `<tr style="${rowStyle}">
+          <td style="font-weight: 500; white-space: nowrap;">${m.month}</td>
+          <td class="num" style="text-align:center"><a href="#" onclick="event.preventDefault(); window.showMonthEmployees('${y.key}', ${idx}, '${m.month}')" style="color: var(--accent); text-decoration: none; font-weight: bold; padding: 4px 8px; border-radius: 4px; background: var(--accent-glow);">${m.employees}</a></td>
+          <td class="num">₹${App.fmt(m.gross_wages)}</td>
+          <td class="num">₹${App.fmt(m.epf_wages)}</td>
+          <td class="num">₹${App.fmt(m.eps_wages)}</td>
+          <td class="num" style="color: var(--blue);">₹${App.fmt(m.worker_share)}</td>
+          <td class="num" style="color: var(--green);">₹${App.fmt(m.employer_share)}</td>
+          <td style="text-align:center; white-space: nowrap;">${trrnHtml}</td>
+          <td style="text-align:center; white-space: nowrap;">${crrnHtml}</td>
+          <td style="text-align:center; white-space: nowrap;">${creditDateHtml}</td>
+          <td class="num">₹${App.fmt(m.acc_01)}</td>
+          <td class="num">₹${App.fmt(m.acc_02)}</td>
+          <td class="num">₹${App.fmt(m.acc_10)}</td>
+          <td class="num">₹${App.fmt(m.acc_21)}</td>
+          <td class="num">₹${App.fmt(m.acc_22)}</td>
+          <td class="num" style="font-weight: 700; color: var(--accent);">₹${App.fmt(m.remit_total)}</td>
+      </tr>`;
+    }
+  });
+
+  html += compact ? `
+    <tr style="background-color: var(--bg); border-top: 2px solid var(--card-border);">
+      <td style="font-weight: bold; color: var(--text); white-space: nowrap; padding: 5px 8px; font-size:11px;">Total</td>
+      <td style="text-align:center; font-size:11px;">-</td>
+      <td class="num" style="font-weight: bold; color: var(--text); padding: 5px 8px; font-size:11px;">₹${App.fmt(y.totals.gross_wages)}</td>
+      <td class="num" style="font-weight: bold; color: var(--text); padding: 5px 8px; font-size:11px;">₹${App.fmt(y.totals.epf_wages)}</td>
+      <td class="num" style="font-weight: bold; color: var(--text); padding: 5px 8px; font-size:11px;">₹${App.fmt(y.totals.eps_wages)}</td>
+    </tr>` : `
+    <tr style="background-color: var(--bg); border-top: 2px solid var(--card-border);">
+      <td style="font-weight: bold; color: var(--text); white-space: nowrap;">Total for ${y.label}</td>
+      <td style="text-align:center;">-</td>
+      <td class="num" style="font-weight: bold; color: var(--text);">₹${App.fmt(y.totals.gross_wages)}</td>
+      <td class="num" style="font-weight: bold; color: var(--text);">₹${App.fmt(y.totals.epf_wages)}</td>
+      <td class="num" style="font-weight: bold; color: var(--text);">₹${App.fmt(y.totals.eps_wages)}</td>
+      <td class="num" style="font-weight: bold; color: var(--blue);">₹${App.fmt(y.totals.worker_share)}</td>
+      <td class="num" style="font-weight: bold; color: var(--green);">₹${App.fmt(y.totals.employer_share)}</td>
+      <td style="text-align:center; color: var(--text3);">-</td>
+      <td style="text-align:center; color: var(--text3);">-</td>
+      <td style="text-align:center; color: var(--text3);">-</td>
+      <td class="num" style="font-weight: bold; color: var(--text);">₹${App.fmt(y.totals.acc_01)}</td>
+      <td class="num" style="font-weight: bold; color: var(--text);">₹${App.fmt(y.totals.acc_02)}</td>
+      <td class="num" style="font-weight: bold; color: var(--text);">₹${App.fmt(y.totals.acc_10)}</td>
+      <td class="num" style="font-weight: bold; color: var(--text);">₹${App.fmt(y.totals.acc_21)}</td>
+      <td class="num" style="font-weight: bold; color: var(--text);">₹${App.fmt(y.totals.acc_22)}</td>
+      <td class="num" style="font-weight: 700; color: var(--accent);">₹${App.fmt(y.totals.remit_total)}</td>
+    </tr>`;
+
+  return html;
 };
 
 let currentDashboardMonthEmps = [];

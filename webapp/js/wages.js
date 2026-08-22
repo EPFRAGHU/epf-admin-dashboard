@@ -963,15 +963,21 @@ App.registerPage('wage-entry', async (container) => {
     </div>
 
     <div class="card" style="margin-bottom:16px">
-      <div style="display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:16px;">
-        <div class="form-group" style="margin-bottom: 0;">
+      <div style="display:flex; align-items:flex-start; flex-wrap:nowrap; gap:16px;">
+        <div class="form-group" style="margin-bottom: 0; flex-shrink:0;">
           <label class="form-label">Select Month</label>
           <select class="form-select" id="bulk-month-select" onchange="initBulkTableState()" style="width:200px">
             ${monthOptions}
           </select>
         </div>
-        <div class="form-group" style="margin-bottom: 0; display:flex; gap:8px;">
-          <input type="text" class="form-input" id="bulk-add-uan" placeholder="Enter UAN to add employee..." style="width:280px">
+        <div style="flex:1 1 auto; min-width:0; padding-top:2px;">
+          <div style="font-size:10px; color:var(--text3); font-weight:600; text-transform:uppercase; letter-spacing:0.4px; margin-bottom:4px;">📊 Month-wise Summary</div>
+          <div id="wage-entry-month-summary" style="max-height:220px; overflow:auto; border:1px solid var(--card-border); border-radius:var(--radius-sm);">
+            <div style="padding:10px; font-size:11px; color:var(--text3); text-align:center;">Loading…</div>
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom: 0; display:flex; flex-direction:row; flex-wrap:wrap; gap:8px; flex-shrink:0; max-width:280px;">
+          <input type="text" class="form-input" id="bulk-add-uan" placeholder="Enter UAN to add employee..." style="width:100%;">
           <button class="btn btn-secondary" onclick="addEmployeeByUAN()">Add Employee</button>
           <button class="btn btn-danger" onclick="deleteSelectedWageEntries()">🗑️ Delete Selected</button>
         </div>
@@ -1009,11 +1015,52 @@ App.registerPage('wage-entry', async (container) => {
 
   document.getElementById('bulk-month-select').value = defaultMonthIdx;
   initBulkTableState();
+  renderWageEntryMonthSummary();
 });
 
 window.switchWageEntryYear = () => {
   currentYearKey = document.getElementById('wage-entry-year-select').value;
   App.navigate('wage-entry');
+};
+
+/* ── Month-wise Summary mini-table — reuses window.renderMonthWiseSummaryRows()
+   from dashboard.js (the same function/data the Dashboard page uses) so this can
+   never disagree with the Dashboard's numbers for the same establishment/year. ── */
+let wageEntrySummaryYearData = null;
+
+async function renderWageEntryMonthSummary() {
+  const container = document.getElementById('wage-entry-month-summary');
+  if (!container) return;
+  try {
+    const data = await App.get('/api/dashboard');
+    wageEntrySummaryYearData = (data.year_stats || []).find(y => y.key === currentYearKey) || null;
+    const monthSelect = document.getElementById('bulk-month-select');
+    const monthIdx = monthSelect ? parseInt(monthSelect.value, 10) : null;
+    renderWageEntrySummaryTableHtml(monthIdx);
+  } catch (e) {
+    container.innerHTML = `<div style="padding:10px; font-size:11px; color:var(--text3); text-align:center;">Could not load summary.</div>`;
+  }
+}
+
+function renderWageEntrySummaryTableHtml(highlightMonthIdx) {
+  const container = document.getElementById('wage-entry-month-summary');
+  if (!container) return;
+  if (!wageEntrySummaryYearData) {
+    container.innerHTML = `<div style="padding:10px; font-size:11px; color:var(--text3); text-align:center;">No data for ${App.esc(currentYearKey)}.</div>`;
+    return;
+  }
+  const rowsHtml = window.renderMonthWiseSummaryRows(wageEntrySummaryYearData, {
+    compact: true,
+    showYearHeader: false,
+    highlightMonthIdx: highlightMonthIdx != null && !isNaN(highlightMonthIdx) ? highlightMonthIdx : null
+  });
+  container.innerHTML = `<table class="est-table" style="margin:0;"><tbody>${rowsHtml}</tbody></table>`;
+}
+
+// Cheap re-render (no refetch) used when only the selected month changes.
+window.refreshWageEntrySummaryHighlight = (monthIdx) => {
+  if (!wageEntrySummaryYearData) return;
+  renderWageEntrySummaryTableHtml(monthIdx);
 };
 
 let bulkTableState = {};
@@ -1165,6 +1212,7 @@ window.addEmployeeByUAN = () => {
 
 window.initBulkTableState = () => {
   const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
+  window.refreshWageEntrySummaryHighlight(monthIdx);
   syncBulkTableState(); // Sync current state before re-initializing (if navigating months)
 
   const allEmps = window._masterEmployees || [];
