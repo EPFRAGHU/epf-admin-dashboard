@@ -535,6 +535,9 @@ def _run_startup_migrations():
                 _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN verified_by INTEGER;")
                 _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN verified_at TIMESTAMP;")
                 _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN rejection_reason TEXT;")
+                # Server-side logout/session-revocation cutoff (see User.token_valid_after)
+                _try_ddl(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_valid_after TIMESTAMPTZ;")
+                _try_ddl(conn, "ALTER TABLE users ADD COLUMN token_valid_after TIMESTAMP;")
         except Exception as e:
             print(f"  [WARN] DDL check error: {e}")
 
@@ -1012,7 +1015,17 @@ async def get_me(current_user: User = Depends(get_current_user)):
 
 
 @app.post("/api/auth/logout")
-async def logout():
+async def logout(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # JWTs here are stateless (no session table), so "logout" means: any token issued
+    # before right now is no longer valid, checked on every request in get_current_user().
+    # This invalidates every device/session for this user, not just the one that clicked
+    # Logout -- the standard, safe behavior for stateless JWTs without a per-token
+    # blacklist/refresh-token subsystem.
+    current_user.token_valid_after = datetime.utcnow()
+    db.commit()
     return {"ok": True, "message": "Logged out successfully"}
 
 

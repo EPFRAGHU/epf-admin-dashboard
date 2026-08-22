@@ -31,6 +31,14 @@ class User(Base):
     default_flat_fee_per_establishment = Column(Float, nullable=True)  # ₹/month, only meaningful when default_billing_mode='flat_fee'
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # Server-side logout/session-revocation cutoff. JWTs are otherwise fully stateless (no
+    # session table, no blacklist) -- any token whose "iat" (issued-at) claim predates this
+    # timestamp is rejected in get_current_user(), regardless of its own exp claim. Logging
+    # out sets this to "now", which invalidates every token issued before that moment across
+    # every device/session for this user -- the standard, safe behavior for a stateless-JWT
+    # logout, since there is no per-token identifier to revoke individually without adding a
+    # much larger token-blacklist/refresh-token subsystem.
+    token_valid_after = Column(DateTime(timezone=True), nullable=True)
 
     establishments = relationship("Establishment", back_populates="user", cascade="all, delete-orphan")
 

@@ -1,6 +1,7 @@
 import os
 import json
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 import jwt
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -34,7 +35,11 @@ def create_access_token(user_id: int, email: str, role: str) -> str:
         "email": email,
         "role": role,
         "exp": datetime.utcnow() + timedelta(days=JWT_EXP_DAYS),
-        "iat": datetime.utcnow(),
+        # A plain float (not a datetime) so PyJWT preserves sub-second precision instead of
+        # truncating to whole seconds -- needed so token_valid_after (logout cutoff, stored
+        # with microsecond precision) can distinguish a token issued a few ms before logout
+        # from one issued a few ms after, even within the same wall-clock second.
+        "iat": time.time(),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
@@ -74,6 +79,20 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="User account not found.")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="User account has been deactivated.")
+
+    if user.token_valid_after is not None and "iat" in payload:
+        # Logout (and any other "kill all sessions" action) sets token_valid_after to the
+        # moment it happens. Any token issued (iat) before that moment is stale, regardless
+        # of its own exp -- this is how a stateless JWT with no blacklist/session table gets
+        # real logout semantics. iat is a sub-second-precision naive-UTC unix timestamp (see
+        # create_access_token); token_valid_after may come back tz-aware (Postgres TIMESTAMPTZ)
+        # or naive (SQLite) depending on backend, so normalize to naive UTC before comparing.
+        token_issued_at = datetime.utcfromtimestamp(payload["iat"])
+        cutoff = user.token_valid_after
+        if cutoff.tzinfo is not None:
+            cutoff = cutoff.astimezone(timezone.utc).replace(tzinfo=None)
+        if token_issued_at < cutoff:
+            raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
 
     return user
 

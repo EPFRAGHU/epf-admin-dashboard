@@ -266,6 +266,40 @@ def test_login_rejects_wrong_password(client, consultant_a):
     assert "token" not in res_non_existent.json()
 
 
+def test_logout_invalidates_token_server_side(consultant_a):
+    """
+    Security regression test: /api/auth/logout must genuinely invalidate the calling
+    user's token server-side (via token_valid_after), not just tell the frontend to
+    forget it. Before the fix, logout was a complete no-op and a captured token stayed
+    valid for its full 7-day lifetime after "logging out".
+    """
+    # 1. Token works before logout
+    res_before = consultant_a.get("/api/auth/me")
+    assert res_before.status_code == 200
+
+    # 2. Call logout with that same token
+    res_logout = consultant_a.post("/api/auth/logout")
+    assert res_logout.status_code == 200
+    assert res_logout.json().get("ok") is True
+
+    # 3. The SAME (pre-logout) token must now be rejected
+    res_after = consultant_a.get("/api/auth/me")
+    assert res_after.status_code == 401, (
+        f"Token issued before logout still works after logout: {res_after.status_code} {res_after.text}"
+    )
+
+    # 4. A fresh login (new token) must still work -- logout invalidates old tokens,
+    # it doesn't lock the account out
+    res_login = consultant_a.client.post("/api/auth/login", json={
+        "email": "consultant_a@testepf.com",
+        "password": "PasswordA@123"
+    })
+    assert res_login.status_code == 200
+    new_token = res_login.json()["token"]
+    res_new = consultant_a.client.get("/api/auth/me", headers={"Authorization": f"Bearer {new_token}"})
+    assert res_new.status_code == 200
+
+
 def test_passwords_are_hashed(superadmin_session, test_db):
     """
     Verify that user passwords are encrypted/hashed using a secure algorithm
