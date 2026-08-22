@@ -1945,9 +1945,10 @@ const Admin = (() => {
     currentSubscriptionYear = fy;
 
     App.openModal(
-      `Software Subscription Fees: ${App.esc(estName)}`,
+      `Software Subscription Fees: ${App.esc(estName)} <span style="font-size:13px; font-weight:600; color:var(--text2); font-family:monospace;">(${App.esc(estCode)})</span>`,
       `<div class="page-loading"><div class="spinner"></div><p>Loading subscription fee records for FY ${fy}…</p></div>`,
       '',
+      true,
       true
     );
 
@@ -2025,10 +2026,7 @@ const Admin = (() => {
       <div style="margin-bottom:14px; background:var(--bg2); padding:14px 18px; border-radius:var(--radius-sm); border:1px solid var(--border);">
         <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
           <div>
-            <div style="font-weight:700; color:var(--text1); font-size:17px;">
-              Establishment: <span style="color:var(--primary);">${App.esc(est.name)}</span> <span style="font-size:13px; font-weight:600; color:var(--text2); font-family:monospace;">(${App.esc(est.code)})</span>
-            </div>
-            <div style="font-size:12px; color:var(--text2); margin-top:2px;">
+            <div style="font-size:13px; color:var(--text2);">
               Account Holder: <strong>${App.esc(con.name || 'Unassigned')}</strong> (${App.esc(con.email || '—')})${con && con.role ? ` ${roleBadgeHtml(con.role)}` : ''}
             </div>
           </div>
@@ -2779,9 +2777,10 @@ const Admin = (() => {
     currentPaymentYear = fy;
 
     App.openModal(
-      `Monthly EPF Remittances: ${App.esc(estName)}`,
+      `Monthly EPF Remittances: ${App.esc(estName)} <span style="font-size:13px; font-weight:600; color:var(--text2); font-family:monospace;">(${App.esc(estCode)})</span>`,
       `<div class="page-loading"><div class="spinner"></div><p>Loading remittance records for FY ${fy}…</p></div>`,
       '',
+      true,
       true
     );
 
@@ -2817,8 +2816,7 @@ const Admin = (() => {
     const bodyHtml = `
       <div style="margin-bottom:16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; background:var(--bg2); padding:12px 16px; border-radius:var(--radius-sm); border:1px solid var(--border);">
         <div>
-          <div style="font-weight:700; color:var(--text1); font-size:16px;">Establishment: <span style="color:var(--primary);">${App.esc(est.name)}</span> <span style="font-size:13px; font-weight:600; color:var(--text2); font-family:monospace;">(${App.esc(est.code)})</span></div>
-          <div style="font-size:12px; color:var(--text2); margin-top:2px;">Track and update 12-month EPFO payment / TRRN remittance compliance</div>
+          <div style="font-size:13px; color:var(--text2);">Track and update 12-month EPFO payment / TRRN remittance compliance</div>
         </div>
         <div style="display:flex; align-items:center; gap:8px;">
           <label style="font-size:13px; font-weight:600;">Financial Year:</label>
