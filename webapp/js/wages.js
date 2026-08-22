@@ -972,7 +972,7 @@ App.registerPage('wage-entry', async (container) => {
         </div>
         <div style="flex:1 1 auto; min-width:0; padding-top:2px;">
           <div style="font-size:10px; color:var(--text3); font-weight:600; text-transform:uppercase; letter-spacing:0.4px; margin-bottom:4px;">📊 Month-wise Summary</div>
-          <div id="wage-entry-month-summary" style="max-height:220px; overflow:auto; border:1px solid var(--card-border); border-radius:var(--radius-sm);">
+          <div id="wage-entry-month-summary" style="overflow-x:auto; overflow-y:hidden; border:1px solid var(--card-border); border-radius:var(--radius-sm);">
             <div style="padding:10px; font-size:11px; color:var(--text3); text-align:center;">Loading…</div>
           </div>
         </div>
@@ -1023,10 +1023,13 @@ window.switchWageEntryYear = () => {
   App.navigate('wage-entry');
 };
 
-/* ── Month-wise Summary mini-table — reuses window.renderMonthWiseSummaryRows()
-   from dashboard.js (the same function/data the Dashboard page uses) so this can
-   never disagree with the Dashboard's numbers for the same establishment/year. ── */
+/* ── Month-wise Summary mini-table — rotated (months as columns) specifically for
+   this narrow horizontal space; the Dashboard's own table is built the other way
+   round (months as rows) and isn't reusable for this layout. Reuses the SAME data
+   source (/api/dashboard, same year_stats[].monthly_stats[] the Dashboard reads)
+   so the figures can never disagree -- only the arrangement differs. ── */
 let wageEntrySummaryYearData = null;
+const WAGE_ENTRY_MONTH_ABBR = ['MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC', 'JAN', 'FEB'];
 
 async function renderWageEntryMonthSummary() {
   const container = document.getElementById('wage-entry-month-summary');
@@ -1049,12 +1052,49 @@ function renderWageEntrySummaryTableHtml(highlightMonthIdx) {
     container.innerHTML = `<div style="padding:10px; font-size:11px; color:var(--text3); text-align:center;">No data for ${App.esc(currentYearKey)}.</div>`;
     return;
   }
-  const rowsHtml = window.renderMonthWiseSummaryRows(wageEntrySummaryYearData, {
-    compact: true,
-    showYearHeader: false,
-    highlightMonthIdx: highlightMonthIdx != null && !isNaN(highlightMonthIdx) ? highlightMonthIdx : null
-  });
-  container.innerHTML = `<table class="est-table" style="margin:0;"><tbody>${rowsHtml}</tbody></table>`;
+  const y = wageEntrySummaryYearData;
+  const months = y.monthly_stats;
+  const yKey = y.key;
+  const hi = highlightMonthIdx != null && !isNaN(highlightMonthIdx) ? highlightMonthIdx : null;
+
+  const stickyLabelStyle = 'position:sticky; left:0; z-index:1; background:var(--bg2); text-align:left; white-space:nowrap; padding:4px 8px; font-weight:600;';
+  const colStyle = (idx) => `padding:4px 6px; text-align:right; white-space:nowrap; ${idx === hi ? 'background:var(--accent-glow); box-shadow:inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent);' : ''}`;
+
+  const headerCells = months.map((m, idx) => `<th style="${colStyle(idx)} font-weight:700; text-transform:uppercase;" title="${App.esc(m.month)}">${WAGE_ENTRY_MONTH_ABBR[idx]}</th>`).join('');
+
+  const empCells = months.map((m, idx) => `<td style="${colStyle(idx)}"><a href="#" onclick="event.preventDefault(); window.showMonthEmployees('${yKey}', ${idx}, '${App.esc(m.month)}')" style="color:var(--accent); text-decoration:none; font-weight:700;">${m.employees}</a></td>`).join('');
+  const grossCells = months.map((m, idx) => `<td style="${colStyle(idx)}">₹${App.fmt(m.gross_wages)}</td>`).join('');
+  const epfCells = months.map((m, idx) => `<td style="${colStyle(idx)}">₹${App.fmt(m.epf_wages)}</td>`).join('');
+  const epsCells = months.map((m, idx) => `<td style="${colStyle(idx)}">₹${App.fmt(m.eps_wages)}</td>`).join('');
+
+  container.innerHTML = `
+    <table class="est-table" style="margin:0; font-size:11px; border-collapse:separate; border-spacing:0;">
+      <thead>
+        <tr style="background:var(--bg2); color:var(--text2);">
+          <th style="${stickyLabelStyle} text-transform:uppercase; font-size:10px;"></th>
+          ${headerCells}
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td style="${stickyLabelStyle}">Employees</td>
+          ${empCells}
+        </tr>
+        <tr>
+          <td style="${stickyLabelStyle}">Gross Wages</td>
+          ${grossCells}
+        </tr>
+        <tr>
+          <td style="${stickyLabelStyle}">EPF Wages</td>
+          ${epfCells}
+        </tr>
+        <tr>
+          <td style="${stickyLabelStyle}">EPS Wages</td>
+          ${epsCells}
+        </tr>
+      </tbody>
+    </table>
+  `;
 }
 
 // Cheap re-render (no refetch) used when only the selected month changes.
