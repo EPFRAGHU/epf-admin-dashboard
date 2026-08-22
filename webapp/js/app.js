@@ -992,6 +992,15 @@ const App = (() => {
       return;
     }
 
+    // Replace whatever's currently in #content (the login form, on a fresh doLogin(),
+    // or nothing yet on first page load) with a loading state right away -- init() makes
+    // several sequential awaited requests below (verify session, establishments, the
+    // page itself) before navigate() finally renders real content, and without this the
+    // stale login form stayed on screen the whole time, making a successful login look
+    // like it hadn't done anything for a few seconds.
+    const contentEl = document.getElementById('content');
+    if (contentEl) contentEl.innerHTML = '<div class="page-loading"><div class="spinner"></div><p>Loading…</p></div>';
+
     // Verify session
     try {
       const meRes = await get('/api/auth/me');
