@@ -31,13 +31,14 @@ App.registerPage('establishment', async (container) => {
         let wageGridHtml = `<span style="font-size:11px; color:var(--text3);">No years yet</span>`;
         if (eItem.wage_grid && eItem.wage_grid.length > 0) {
           wageGridHtml = '<div class="est-wage-grid">' + eItem.wage_grid.map(yr => {
+            const monthHeader = yr.months.map(m => `<div class="month-box-label">${App.esc(m.month.toUpperCase())}</div>`).join('');
             const boxes = yr.months.map(m => {
               const cls = m.has_wages ? 'green' : 'red';
               const title = m.has_wages ? `${m.label}: wages entered for ${m.employees} employee(s)` : `${m.label}: no wages entered`;
               const countText = m.has_wages ? m.employees : '';
               return `<div class="month-box ${cls}" title="${App.esc(title)}">${countText}</div>`;
             }).join('');
-            return `<div class="est-wage-year"><span style="font-weight:600; min-width:46px; color:var(--text2);">${App.esc(yr.year)}</span><div class="est-wage-boxes">${boxes}</div></div>`;
+            return `<div class="est-wage-year"><span style="font-weight:600; min-width:46px; color:var(--text2);">${App.esc(yr.year)}</span><div><div class="est-wage-boxes est-wage-header">${monthHeader}</div><div class="est-wage-boxes">${boxes}</div></div></div>`;
           }).join('') + '</div>';
         }
 
