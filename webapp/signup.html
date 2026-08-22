@@ -59,12 +59,15 @@
           </div>
         </div>
 
-        <div style="display:flex; align-items:flex-start; gap:8px; margin-bottom:20px;">
+        <div style="display:flex; align-items:flex-start; gap:8px; margin-bottom:6px;">
           <input type="checkbox" id="su-agree" style="width:16px; height:16px; margin-top:2px; cursor:pointer;" onchange="Signup.onAgreeChange()">
           <label for="su-agree" style="font-size:12px; color:var(--text2); line-height:1.5; cursor:pointer;">
             I agree to the <a href="/terms" target="_blank" rel="noopener" style="color:var(--primary);">Terms of Service</a> and <a href="/privacy" target="_blank" rel="noopener" style="color:var(--primary);">Privacy Policy</a>
             <span style="color:var(--red);">(required to submit)</span>
           </label>
+        </div>
+        <div style="margin:0 0 20px 24px; font-size:11px; color:var(--text3);">
+          Subscription fees are also subject to our <a href="/refund" target="_blank" rel="noopener" style="color:var(--text3);">Refund Policy</a>.
         </div>
 
         <form id="signup-form" onsubmit="event.preventDefault(); Signup.submit();">

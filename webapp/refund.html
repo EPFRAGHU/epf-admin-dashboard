@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Refund Policy — EPF Admin Dashboard</title>
+  <script>
+    (function() {
+      const saved = localStorage.getItem('epf_theme');
+      const theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/epfo-app-theme.css">
+  <style>
+    body { background: var(--bg); min-height: 100vh; padding: 40px 20px; }
+    .legal-wrap { max-width: 720px; margin: 0 auto; }
+    .legal-wrap h1 { font-size: 24px; font-weight: 800; color: var(--text1); margin: 0 0 4px 0; }
+    .legal-wrap .meta { font-size: 12px; color: var(--text3); margin-bottom: 16px; }
+    .legal-wrap .legal-nav { font-size: 12px; margin-bottom: 24px; }
+    .legal-wrap .legal-nav a { color: var(--text2); text-decoration: none; }
+    .legal-wrap .legal-nav a:hover { color: var(--primary); text-decoration: underline; }
+    .legal-wrap .legal-nav .current { color: var(--primary); font-weight: 600; }
+    .legal-wrap h2 { font-size: 15px; font-weight: 700; color: var(--text1); margin: 24px 0 8px 0; }
+    .legal-wrap p { font-size: 13px; color: var(--text2); line-height: 1.6; margin: 0 0 10px 0; }
+    .legal-wrap ul { margin: 0 0 10px 0; padding-left: 20px; }
+    .legal-wrap li { font-size: 13px; color: var(--text2); line-height: 1.6; margin-bottom: 4px; }
+    .legal-wrap strong { color: var(--text1); }
+  </style>
+</head>
+<body>
+  <div class="legal-wrap">
+    <a href="/signup" style="font-size:12px; color:var(--primary); text-decoration:none;">← Back to Sign Up</a>
+    <h1 style="margin-top:16px;">Refund Policy</h1>
+    <div class="meta"><strong>Effective Date:</strong> 22-08-2026 &nbsp;·&nbsp; <strong>Last Updated:</strong> 22-08-2026</div>
+    <div class="legal-nav"><a href="/terms">Terms of Service</a> &nbsp;·&nbsp; <a href="/privacy">Privacy Policy</a> &nbsp;·&nbsp; <span class="current">Refund Policy</span></div>
+
+    <p>This Refund Policy applies to subscription fees paid for use of the EPF Admin Dashboard platform (the "Service"), operated by Digital Solutions Services.</p>
+
+    <h2>1. How Billing Works</h2>
+    <p>Subscription fees are calculated on a <strong>usage basis</strong> — for each Establishment, each month, the fee is based on the number of employees for whom wage data was actually entered that month (i.e., the same employee set reflected in that month's ECR). This means a billed month reflects service that has already been used, not a fee paid in advance for a future period.</p>
+
+    <h2>2. General Policy: No Refunds for Billed Periods</h2>
+    <p>Because fees are calculated based on actual usage already recorded in the system for that month, <strong>we do not offer refunds for subscription fees already paid for a completed billing period.</strong> Once a month's fee has been paid and the corresponding data/downloads for that period have been made available, that transaction is final.</p>
+
+    <h2>3. Exceptions</h2>
+    <p>We will consider a refund, in whole or in part, in the following circumstances:</p>
+    <ul>
+      <li><strong>Duplicate or erroneous charge</strong> — if you were charged more than once for the same Establishment and month, or charged an incorrect amount due to a verified system error on our part.</li>
+      <li><strong>Service was not delivered</strong> — if a payment was processed but you were unable to access the corresponding download/output due to a verified fault in the Service (not due to your own account, network, or browser issues).</li>
+      <li><strong>Advance credit not yet used</strong> — if you have added advance credit to an Establishment's account (a prepaid balance) and wish to withdraw the <strong>unused portion</strong> before it has been applied to any month's fee, this may be refunded on request, at our discretion, less any payment processing fees already incurred.</li>
+    </ul>
+
+    <h2>4. How to Request a Refund</h2>
+    <p>To request a refund under one of the exceptions above, contact us at info@digitalsolutions.services within <strong>15 days</strong> of the charge, including:</p>
+    <ul>
+      <li>The Establishment name and PF code affected</li>
+      <li>The month/financial year the charge relates to</li>
+      <li>The payment reference or transaction ID (available in your Subscription page)</li>
+      <li>A brief description of the issue</li>
+    </ul>
+    <p>We will review each request individually and respond within a reasonable time. Approved refunds will be processed back to the original payment method through our payment processor (Cashfree Payments) and may take a few business days to reflect, depending on your bank.</p>
+
+    <h2>5. Non-Payment and Access Restriction (Not a Cancellation)</h2>
+    <p>If a month's fee is left unpaid, we restrict the ability to <strong>download</strong> generated documents (ECR, statutory forms) for that period until payment is made — your data entry and existing records remain accessible and unaffected. This restriction is not a service cancellation and does not itself trigger any refund obligation, since no fee was charged for the unpaid, undelivered period.</p>
+
+    <h2>6. Account Closure</h2>
+    <p>If you close your account, any subscription fees already paid for completed months are non-refundable per Section 2 above. Any unused advance credit balance may be refunded per Section 3, upon request.</p>
+
+    <h2>7. Changes to This Policy</h2>
+    <p>We may update this Refund Policy from time to time. Material changes will be notified within the Service or by email.</p>
+
+    <h2>8. Contact</h2>
+    <p>For refund requests or questions about this policy, contact:<br>info@digitalsolutions.services<br>[BUSINESS ADDRESS]</p>
+  </div>
+</body>
+</html>

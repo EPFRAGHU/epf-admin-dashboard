@@ -18,34 +18,98 @@
     body { background: var(--bg); min-height: 100vh; padding: 40px 20px; }
     .legal-wrap { max-width: 720px; margin: 0 auto; }
     .legal-wrap h1 { font-size: 24px; font-weight: 800; color: var(--text1); margin: 0 0 4px 0; }
-    .legal-wrap .meta { font-size: 12px; color: var(--text3); margin-bottom: 24px; }
+    .legal-wrap .meta { font-size: 12px; color: var(--text3); margin-bottom: 16px; }
+    .legal-wrap .legal-nav { font-size: 12px; margin-bottom: 24px; }
+    .legal-wrap .legal-nav a { color: var(--text2); text-decoration: none; }
+    .legal-wrap .legal-nav a:hover { color: var(--primary); text-decoration: underline; }
+    .legal-wrap .legal-nav .current { color: var(--primary); font-weight: 600; }
     .legal-wrap h2 { font-size: 15px; font-weight: 700; color: var(--text1); margin: 24px 0 8px 0; }
     .legal-wrap p { font-size: 13px; color: var(--text2); line-height: 1.6; margin: 0 0 10px 0; }
-    .legal-wrap .placeholder-note { background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); border-radius: var(--radius-sm); padding: 12px 16px; font-size: 12px; color: var(--text1); margin-bottom: 24px; }
+    .legal-wrap ul { margin: 0 0 10px 0; padding-left: 20px; }
+    .legal-wrap li { font-size: 13px; color: var(--text2); line-height: 1.6; margin-bottom: 4px; }
+    .legal-wrap strong { color: var(--text1); }
   </style>
 </head>
 <body>
   <div class="legal-wrap">
     <a href="/signup" style="font-size:12px; color:var(--primary); text-decoration:none;">← Back to Sign Up</a>
     <h1 style="margin-top:16px;">Terms of Service</h1>
-    <div class="meta">Placeholder document — replace with your reviewed Terms of Service before going live.</div>
+    <div class="meta"><strong>Effective Date:</strong> 22-08-2026 &nbsp;·&nbsp; <strong>Last Updated:</strong> 22-08-2026</div>
+    <div class="legal-nav"><span class="current">Terms of Service</span> &nbsp;·&nbsp; <a href="/privacy">Privacy Policy</a> &nbsp;·&nbsp; <a href="/refund">Refund Policy</a></div>
 
-    <div class="placeholder-note">⚠️ This is generic scaffolding text, not legal advice. Have counsel review and replace this page before this signup flow is used with real prospective customers.</div>
+    <p>These Terms of Service ("Terms") govern your access to and use of the EPF Admin Dashboard platform (the "Service"), operated by Digital Solutions Services ("we," "us," "our"). By creating an account or using the Service, you ("Consultant," "you," "your") agree to be bound by these Terms.</p>
 
-    <h2>1. Acceptance of Terms</h2>
-    <p>By creating an account on the EPF Admin Dashboard, you agree to use the platform in accordance with these Terms of Service and all applicable statutory requirements governing Employees' Provident Fund administration.</p>
+    <h2>1. What the Service Is</h2>
+    <p>The Service is a compliance-management tool that helps Consultants (typically EPF/HR consultants, accountants, or compliance professionals) manage Provident Fund (PF) compliance data for one or more Establishments they represent. The Service allows you to:</p>
+    <ul>
+      <li>Maintain employee master records and monthly wage data for each Establishment</li>
+      <li>Generate Electronic Challan-cum-Return (ECR) text files and statutory forms (Form 3A, 6A, 9, 5, 10, 12A) based on the data you enter</li>
+      <li>Track EPF/EPS/EDLI contribution calculations and remittance records</li>
+      <li>Manage multiple Establishments under a single account</li>
+    </ul>
+    <p><strong>The Service is a calculation and document-generation tool. It is not a substitute for professional judgment, and it does not file anything with the Employees' Provident Fund Organisation (EPFO) on your behalf.</strong> You are solely responsible for reviewing all generated output for accuracy before using it for any statutory filing or submission.</p>
 
-    <h2>2. Account Responsibility</h2>
-    <p>You are responsible for the accuracy of the establishment and employee data you enter, and for keeping your login credentials confidential.</p>
+    <h2>2. Your Account and Responsibilities</h2>
+    <ul>
+      <li>You must provide accurate information when creating your account and keep your login credentials confidential. You are responsible for all activity under your account.</li>
+      <li>You are responsible for the accuracy of all data you enter — employee records, wages, and any figures used to generate statutory documents. We do not independently verify the data you input.</li>
+      <li>You represent that you are authorized (by each Establishment you add to the platform) to process that Establishment's employee data for PF compliance purposes.</li>
+      <li>You must comply with all applicable laws, including the Employees' Provident Funds and Miscellaneous Provisions Act, 1952, and any data protection laws applicable to the employee information you process.</li>
+    </ul>
 
-    <h2>3. Subscription Fees</h2>
-    <p>Use of the platform is subject to the subscription fee terms communicated to you separately, including any free trial period granted at the administrator's discretion.</p>
+    <h2>3. Subscription Fees and Billing</h2>
+    <ul>
+      <li>Use of the Service for each Establishment is subject to a monthly subscription fee, calculated per employee for whom wage data is entered that month (the same employee count reflected in that month's ECR), at the rate applicable to that Establishment.</li>
+      <li>Rates may vary by Establishment size or by arrangement with your account, at our discretion, and are shown to you within the Service before charges are incurred.</li>
+      <li>Fees are billed and collected through our third-party payment processor. By making a payment, you also agree to that processor's applicable terms.</li>
+      <li><strong>Non-payment consequence:</strong> If a month's subscription fee remains unpaid beyond the applicable grace period, we may restrict your ability to <strong>download</strong> generated documents (ECR files, Form 3A/6A/9/12A/5/10) for the affected Establishment and period, until payment is made. <strong>We will not restrict your ability to enter, view, or edit your data</strong> during this period — only the download/output function is affected.</li>
+      <li>We do not access, alter, or hold your data hostage for non-payment. Restricting downloads is limited strictly to the specific unpaid period(s).</li>
+    </ul>
 
-    <h2>4. Approval of Access</h2>
-    <p>New account requests are reviewed and approved manually. Submitting this form does not itself grant access to the platform.</p>
+    <h2>4. Refunds</h2>
+    <p>See our separate <a href="/refund" style="color:var(--primary);">Refund Policy</a>, which is incorporated into these Terms by reference.</p>
 
-    <h2>5. Changes</h2>
-    <p>These terms may be updated from time to time. Continued use of the platform after a change constitutes acceptance of the revised terms.</p>
+    <h2>5. Data Ownership</h2>
+    <ul>
+      <li>You (and, through you, the Establishments you represent) retain ownership of all data you enter into the Service — employee records, wages, and generated documents.</li>
+      <li>We do not sell, rent, or use your data (or your Establishments' employee data) for any purpose other than providing and improving the Service, as described in our <a href="/privacy" style="color:var(--primary);">Privacy Policy</a>.</li>
+      <li>If you close your account, you may request export of your data; see our Privacy Policy for details on data retention and deletion.</li>
+    </ul>
+
+    <h2>6. Acceptable Use</h2>
+    <p>You agree not to:</p>
+    <ul>
+      <li>Use the Service to process data for any Establishment or employee you are not authorized to represent</li>
+      <li>Attempt to access another Consultant's data or Establishments</li>
+      <li>Reverse-engineer, scrape, or interfere with the Service's normal operation</li>
+      <li>Use the Service for any unlawful purpose</li>
+    </ul>
+
+    <h2>7. Service Availability</h2>
+    <p>We aim to keep the Service available and reliable but do not guarantee uninterrupted access. We may perform maintenance, updates, or, in rare cases, experience downtime. We are not liable for losses arising from temporary unavailability of the Service.</p>
+
+    <h2>8. Limitation of Liability</h2>
+    <p>To the maximum extent permitted by law:</p>
+    <ul>
+      <li>The Service is provided "as is." While we take reasonable care in how calculations are performed, <strong>you are responsible for independently verifying all generated figures and documents before relying on them for statutory compliance.</strong></li>
+      <li>We are not liable for any penalty, interest, fine, or other consequence arising from an incorrect or late statutory filing, whether or not related to data or documents generated through the Service.</li>
+      <li>Our total liability to you for any claim arising from your use of the Service is limited to the subscription fees you paid us in the three (3) months preceding the claim.</li>
+    </ul>
+
+    <h2>9. Termination</h2>
+    <ul>
+      <li>You may stop using the Service and close your account at any time.</li>
+      <li>We may suspend or terminate access for violation of these Terms, non-payment beyond a reasonable period, or misuse of the platform, with notice where practicable.</li>
+    </ul>
+
+    <h2>10. Changes to These Terms</h2>
+    <p>We may update these Terms from time to time. Material changes will be notified within the Service or by email. Continued use after changes take effect constitutes acceptance.</p>
+
+    <h2>11. Governing Law</h2>
+    <p>These Terms are governed by the laws of India. Any disputes shall be subject to the exclusive jurisdiction of the courts at Bhubaneswar, Odisha.</p>
+
+    <h2>12. Contact</h2>
+    <p>For questions about these Terms, contact us at: info@digitalsolutions.services<br>[BUSINESS ADDRESS]</p>
   </div>
 </body>
 </html>

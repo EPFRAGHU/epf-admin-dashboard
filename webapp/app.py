@@ -726,6 +726,11 @@ async def privacy_page():
     return (WEB / "privacy.html").read_text(encoding="utf-8")
 
 
+@app.get("/refund", response_class=HTMLResponse)
+async def refund_page():
+    return (WEB / "refund.html").read_text(encoding="utf-8")
+
+
 # ── Schemas ────────────────────────────────────────────────────────────────
 class LoginIn(BaseModel):
     email: str

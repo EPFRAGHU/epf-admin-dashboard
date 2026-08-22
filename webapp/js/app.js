@@ -1119,6 +1119,14 @@ const App = (() => {
           <div style="text-align:center; margin-top:20px;">
             <a href="/signup" style="font-size:12px; color:var(--text3); text-decoration:none;">New Consultant or Employer? Request access</a>
           </div>
+
+          <div style="text-align:center; margin-top:20px; padding-top:16px; border-top:1px solid var(--card-border); font-size:11px; color:var(--text3);">
+            <a href="/terms" target="_blank" rel="noopener" style="color:var(--text3); text-decoration:none;">Terms of Service</a>
+            <span style="margin:0 6px;">·</span>
+            <a href="/privacy" target="_blank" rel="noopener" style="color:var(--text3); text-decoration:none;">Privacy Policy</a>
+            <span style="margin:0 6px;">·</span>
+            <a href="/refund" target="_blank" rel="noopener" style="color:var(--text3); text-decoration:none;">Refund Policy</a>
+          </div>
         </div>
       </div>
     `;
