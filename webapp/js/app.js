@@ -92,7 +92,7 @@ const App = (() => {
     }
   }
 
-  async function downloadFile(url, defaultFilename = 'download', monthCtx = null) {
+  async function downloadFile(url, defaultFilename = 'download', monthCtx = null, onHeaders = null) {
     try {
       const headers = {};
       const token = getToken();
@@ -156,6 +156,12 @@ const App = (() => {
       if (disp && disp.includes('filename=')) {
         const match = disp.match(/filename="?([^";]+)"?/);
         if (match && match[1]) filename = match[1].trim();
+      }
+
+      // Lets a caller inspect response headers (e.g. a custom "which items were skipped
+      // and why" header) before the blob-save/toast happens below.
+      if (typeof onHeaders === 'function') {
+        try { onHeaders(res.headers); } catch (_) {}
       }
 
       const blob = await res.blob();

@@ -4986,6 +4986,79 @@ def generate_employee_report(
     return FileResponse(path, filename=fname, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
+@app.get("/api/reports/employee/{member_id:path}/form3a-multi-year")
+def generate_employee_form3a_multi_year(
+    member_id: str,
+    years: Optional[str] = Query(None, description="Comma-separated financial year keys, e.g. 2023-24,2024-25,2025-26"),
+    from_year: Optional[str] = Query(None, description="Range start year key, used with to_year if 'years' isn't given"),
+    to_year: Optional[str] = Query(None, description="Range end year key, used with from_year if 'years' isn't given"),
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """One employee's Form 3A across several financial years, combined into a single PDF.
+    Reuses pdf_engine.generate_form_3a_multi_year_pdf, which itself reuses the exact same
+    per-employee block-builder as the single-year endpoint above -- no separate Form 3A
+    calculation logic exists here."""
+    require_permission(db, current_user, "forms.download")
+    est_obj, project = active
+    acc = normalize_member_id(member_id)
+
+    if years:
+        year_keys = [y.strip() for y in years.split(',') if y.strip()]
+    elif from_year and to_year:
+        all_keys = project.year_keys_sorted()
+        if from_year not in all_keys or to_year not in all_keys:
+            raise HTTPException(400, "from_year/to_year must be existing financial year keys")
+        start_idx, end_idx = sorted((all_keys.index(from_year), all_keys.index(to_year)))
+        year_keys = all_keys[start_idx:end_idx + 1]
+    else:
+        raise HTTPException(400, "Provide either 'years' (comma-separated) or both 'from_year' and 'to_year'")
+
+    if not year_keys:
+        raise HTTPException(400, "No financial years specified")
+
+    # Same download-gating rule as every other /api/reports/... endpoint, scoped to only the
+    # years actually requested here (not every year on file, since this request doesn't touch
+    # those).
+    if current_user.role != "superadmin":
+        unpaid_detail = []
+        for yk in year_keys:
+            if yk in project.years:
+                unpaid_detail.extend(get_unpaid_months_detail_for_year(db, est_obj, project, yk))
+        if unpaid_detail:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=_year_payment_required_detail(unpaid_detail, None)
+            )
+
+    master = project.get_master(acc)
+    emp_name = (master.name if master else None) or "Employee"
+
+    import pdf_engine
+    tmp = tempfile.mkdtemp()
+    safe = emp_name.replace("/", "-").replace("\\", "-").strip() or "Employee"
+    fname = f"{safe}_Form3A_MultiYear.pdf"
+    path = os.path.join(tmp, fname)
+
+    try:
+        result = pdf_engine.generate_form_3a_multi_year_pdf(project, year_keys, acc, path)
+    except Exception as e:
+        raise HTTPException(500, f"PDF generation failed: {str(e)}")
+
+    if not result["generated_years"]:
+        reasons = "; ".join(f"{s['year']}: {s['reason']}" for s in result["skipped_years"])
+        raise HTTPException(404, f"Form 3A could not be generated for any of the requested years — {reasons}")
+
+    return FileResponse(
+        result["path"], filename=fname, media_type="application/pdf",
+        headers={
+            "X-Generated-Years": ",".join(result["generated_years"]),
+            "X-Skipped-Years": json.dumps(result["skipped_years"]),
+        }
+    )
+
+
 @app.get("/api/reports/form9/download")
 def report_form9(
     format: str = 'excel',

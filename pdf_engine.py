@@ -141,6 +141,145 @@ def generate_form_9_pdf(project, filepath: str, member_ids: Optional[Set[str]] =
 # --------------------------------------------------------------------------
 # Form 3A
 # --------------------------------------------------------------------------
+FORM_3A_MONTHS = ["Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]
+
+
+def _build_form_3a_employee_block(est, emp, aw):
+    """Builds the flowables for ONE employee's Form 3A for ONE financial year (est is already
+    scoped to that year via project.build_establishment_for_year). This is the single source
+    of the Form 3A layout/formula -- shared by generate_form_3a_pdf (one year, many employees)
+    and generate_form_3a_multi_year_pdf (one employee, many years) so neither reimplements it
+    a second time. `aw` is the usable page width (doc.pagesize[0] - margins)."""
+    block = []
+
+    # Header
+    block.append(Paragraph("(For Un-exempted Establishments only)", style_normal))
+    block.append(Paragraph("FORM - 3A(R)", style_title))
+    block.append(Paragraph("THE EMPLOYEE'S PROVIDENT FUND SCHEME, 1952 (PARA 35 & 43)", style_subtitle))
+    block.append(Paragraph("THE EMPLOYEE'S PENSION SCHEME, 1995 (PARAGRAPH 20(4))", style_subtitle))
+    block.append(Paragraph(f"<i>Contribution Card for the currency period April, {est.year_from} to March, {est.year_to}</i>", style_header))
+    block.append(Spacer(1, 12))
+
+    # Info Table
+    member_id_display = emp.member_id or ""
+    if emp.uan:
+        member_id_display += f"  (UAN: {emp.uan})"
+
+    rate_val = est.statutory_rate_text if est.is_post_1997 else f"{est.statutory_rate}%"
+
+    info_data = [
+        [Paragraph("1.", style_cell_left), Paragraph("Member ID", style_cell_left), Paragraph(":", style_cell_left), Paragraph(f"<b>{member_id_display}</b>", style_cell_left)],
+        [Paragraph("2.", style_cell_left), Paragraph("Name of the Member", style_cell_left), Paragraph(":", style_cell_left), Paragraph(f"<b>{emp.name or ''}</b>", style_cell_left)],
+        [Paragraph("3.", style_cell_left), Paragraph("Father's Name", style_cell_left), Paragraph(":", style_cell_left), Paragraph(emp.father_name or "", style_cell_left)],
+        [Paragraph("4.", style_cell_left), Paragraph("Name & Address of the Establishment", style_cell_left), Paragraph(":", style_cell_left), Paragraph(f"{est.name}, {est.address}", style_cell_left)],
+        [Paragraph("", style_cell_left), Paragraph("Code No. of the Establishment", style_cell_left), Paragraph(":", style_cell_left), Paragraph(f"<b>{est.code}</b>", style_cell_left)],
+        [Paragraph("5.", style_cell_left), Paragraph("Statutory Rate of Contribution", style_cell_left), Paragraph(":", style_cell_left), Paragraph(rate_val, style_cell_left)],
+        [Paragraph("", style_cell_left), Paragraph("Voluntary higher rate of employee's contribution, if any", style_cell_left), Paragraph(":", style_cell_left), Paragraph("", style_cell_left)]
+    ]
+    info_table = Table(info_data, colWidths=[30, 200, 20, 350], hAlign='LEFT')
+    info_table.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ('LEFTPADDING', (0,0), (0,-1), 0)
+    ]))
+    block.append(info_table)
+    block.append(Spacer(1, 12))
+
+    # 12-Month Table
+    w_epf_rate, w_eps_rate = est.worker_epf_rate, est.worker_eps_rate
+    e_epf_rate, e_eps_rate = est.employer_epf_rate, est.employer_eps_rate
+    eps_label = est.eps_label
+
+    table_data = [
+        [
+            Paragraph("Month", style_cell_bold),
+            Paragraph("Wages", style_cell_bold),
+            Paragraph("WORKER'S SHARE", style_cell_bold), "", "",
+            Paragraph("EMPLOYER'S SHARE", style_cell_bold), "", "",
+            Paragraph("REFUND OF<br/>ADVANCES", style_cell_bold),
+            Paragraph("NCP<br/>DAYS", style_cell_bold),
+            Paragraph("REMARKS", style_cell_bold)
+        ],
+        [
+            "", "",
+            Paragraph(f"EPF {w_epf_rate:g}%", style_cell_bold),
+            Paragraph(f"{eps_label} {w_eps_rate:g}%", style_cell_bold),
+            Paragraph("TOTAL", style_cell_bold),
+            Paragraph(f"EPF {e_epf_rate:g}%", style_cell_bold),
+            Paragraph(f"{eps_label} {e_eps_rate:g}%", style_cell_bold),
+            Paragraph("TOTAL", style_cell_bold),
+            "", "", ""
+        ]
+    ]
+
+    month_rows = emp.month_rows(w_epf_rate, w_eps_rate, e_epf_rate, e_eps_rate)
+    for i, m in enumerate(FORM_3A_MONTHS):
+        wages, w_epf, w_eps, w_total, e_epf, e_eps, e_total = month_rows[i]
+        table_data.append([
+            Paragraph(m, style_cell),
+            Paragraph(str(int(round(wages))) if wages else "", style_cell_right),
+            Paragraph(str(int(round(w_epf))) if w_epf else "", style_cell_right),
+            Paragraph(str(int(round(w_eps))) if w_eps else "", style_cell_right),
+            Paragraph(str(int(round(w_total))) if w_total else "", style_cell_right),
+            Paragraph(str(int(round(e_epf))) if e_epf else "", style_cell_right),
+            Paragraph(str(int(round(e_eps))) if e_eps else "", style_cell_right),
+            Paragraph(str(int(round(e_total))) if e_total else "", style_cell_right),
+            Paragraph("", style_cell), Paragraph("", style_cell), Paragraph("", style_cell)
+        ])
+
+    wt, w_epf_t, w_eps_t, w_tot_t, e_epf_t, e_eps_t, e_tot_t = emp.annual_totals(
+        w_epf_rate, w_eps_rate, e_epf_rate, e_eps_rate)
+
+    table_data.append([
+        Paragraph("Total", style_cell_bold),
+        Paragraph(str(int(round(wt))) if wt else "", style_cell_right),
+        Paragraph(str(int(round(w_epf_t))) if w_epf_t else "", style_cell_right),
+        Paragraph(str(int(round(w_eps_t))) if w_eps_t else "", style_cell_right),
+        Paragraph(str(int(round(w_tot_t))) if w_tot_t else "", style_cell_right),
+        Paragraph(str(int(round(e_epf_t))) if e_epf_t else "", style_cell_right),
+        Paragraph(str(int(round(e_eps_t))) if e_eps_t else "", style_cell_right),
+        Paragraph(str(int(round(e_tot_t))) if e_tot_t else "", style_cell_right),
+        Paragraph("", style_cell), Paragraph("", style_cell), Paragraph("", style_cell)
+    ])
+
+    t_weights = [0.1, 0.1, 0.09, 0.09, 0.09, 0.09, 0.09, 0.09, 0.08, 0.08, 0.1]
+    t_col_widths = [w * aw for w in t_weights]
+
+    table = Table(table_data, colWidths=t_col_widths)
+    tstyle = _default_table_style()
+    tstyle.add('SPAN', (0,0), (0,1))
+    tstyle.add('SPAN', (1,0), (1,1))
+    tstyle.add('SPAN', (2,0), (4,0))
+    tstyle.add('SPAN', (5,0), (7,0))
+    tstyle.add('SPAN', (8,0), (8,1))
+    tstyle.add('SPAN', (9,0), (9,1))
+    tstyle.add('SPAN', (10,0), (10,1))
+    tstyle.add('BACKGROUND', (0,0), (-1,1), colors.lightgrey)
+    table.setStyle(tstyle)
+    block.append(table)
+
+    block.append(Spacer(1, 12))
+
+    # Footer
+    cert1 = "Certified that the total amount of contribution indicated in this card has already been remitted in full in EPF A/c. No. 1 and A/c No. 10 vide note below."
+    block.append(Paragraph(cert1, style_cell_left))
+
+    block.append(Spacer(1, 6))
+    block.append(Paragraph(f"(a) Date of leaving Service: {emp.doe or ''}                                (b) Reason for leaving service: {emp.reason_leaving or ''}", style_cell_left))
+    block.append(Spacer(1, 6))
+
+    cert2 = "Certified that the difference between the total of the contributions shown under Cols. 3 & 4 of the above table and that arrived at on the total wages shown in Col. 2 at the prescribed rate is solely due to the rounding off of contribution to the nearest rupee under the rules."
+    block.append(Paragraph(cert2, style_cell_left))
+    block.append(Spacer(1, 24))
+
+    sig_data = [
+        [Paragraph("Date:", style_cell_left), Paragraph("Signature of the Employer with seal", style_cell_right)]
+    ]
+    sig_table = Table(sig_data, colWidths=[aw/2, aw/2])
+    block.append(sig_table)
+
+    return block
+
+
 def generate_form_3a_pdf(project, year_key: str, filepath: str, member_ids: Optional[Set[str]] = None):
     doc = _build_pdf_doc(filepath, orientation="portrait")
     story = []
@@ -150,149 +289,66 @@ def generate_form_3a_pdf(project, year_key: str, filepath: str, member_ids: Opti
     employees = [emp for emp in employees if sum(w or 0 for w in (emp.wages or [])) > 0]
     if member_ids is not None:
         employees = [emp for emp in employees if emp.member_id in member_ids]
-    
+
     if not employees:
         story.append(Paragraph("No employees with wages found for this currency period.", style_title))
         doc.build(story)
         return filepath
-    
-    MONTHS = ["Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]
-    
+
+    aw = doc.pagesize[0] - doc.rightMargin - doc.leftMargin
+
     for emp_idx, emp in enumerate(employees):
-        block = []
-        
-        # Header
-        block.append(Paragraph("(For Un-exempted Establishments only)", style_normal))
-        block.append(Paragraph("FORM - 3A(R)", style_title))
-        block.append(Paragraph("THE EMPLOYEE'S PROVIDENT FUND SCHEME, 1952 (PARA 35 & 43)", style_subtitle))
-        block.append(Paragraph("THE EMPLOYEE'S PENSION SCHEME, 1995 (PARAGRAPH 20(4))", style_subtitle))
-        block.append(Paragraph(f"<i>Contribution Card for the currency period April, {est.year_from} to March, {est.year_to}</i>", style_header))
-        block.append(Spacer(1, 12))
-        
-        # Info Table
-        member_id_display = emp.member_id or ""
-        if emp.uan:
-            member_id_display += f"  (UAN: {emp.uan})"
-            
-        rate_val = est.statutory_rate_text if est.is_post_1997 else f"{est.statutory_rate}%"
-        
-        info_data = [
-            [Paragraph("1.", style_cell_left), Paragraph("Member ID", style_cell_left), Paragraph(":", style_cell_left), Paragraph(f"<b>{member_id_display}</b>", style_cell_left)],
-            [Paragraph("2.", style_cell_left), Paragraph("Name of the Member", style_cell_left), Paragraph(":", style_cell_left), Paragraph(f"<b>{emp.name or ''}</b>", style_cell_left)],
-            [Paragraph("3.", style_cell_left), Paragraph("Father's Name", style_cell_left), Paragraph(":", style_cell_left), Paragraph(emp.father_name or "", style_cell_left)],
-            [Paragraph("4.", style_cell_left), Paragraph("Name & Address of the Establishment", style_cell_left), Paragraph(":", style_cell_left), Paragraph(f"{est.name}, {est.address}", style_cell_left)],
-            [Paragraph("", style_cell_left), Paragraph("Code No. of the Establishment", style_cell_left), Paragraph(":", style_cell_left), Paragraph(f"<b>{est.code}</b>", style_cell_left)],
-            [Paragraph("5.", style_cell_left), Paragraph("Statutory Rate of Contribution", style_cell_left), Paragraph(":", style_cell_left), Paragraph(rate_val, style_cell_left)],
-            [Paragraph("", style_cell_left), Paragraph("Voluntary higher rate of employee's contribution, if any", style_cell_left), Paragraph(":", style_cell_left), Paragraph("", style_cell_left)]
-        ]
-        info_table = Table(info_data, colWidths=[30, 200, 20, 350], hAlign='LEFT')
-        info_table.setStyle(TableStyle([
-            ('VALIGN', (0,0), (-1,-1), 'TOP'),
-            ('LEFTPADDING', (0,0), (0,-1), 0)
-        ]))
-        block.append(info_table)
-        block.append(Spacer(1, 12))
-        
-        # 12-Month Table
-        w_epf_rate, w_eps_rate = est.worker_epf_rate, est.worker_eps_rate
-        e_epf_rate, e_eps_rate = est.employer_epf_rate, est.employer_eps_rate
-        eps_label = est.eps_label
-        
-        table_data = [
-            [
-                Paragraph("Month", style_cell_bold),
-                Paragraph("Wages", style_cell_bold),
-                Paragraph("WORKER'S SHARE", style_cell_bold), "", "",
-                Paragraph("EMPLOYER'S SHARE", style_cell_bold), "", "",
-                Paragraph("REFUND OF<br/>ADVANCES", style_cell_bold),
-                Paragraph("NCP<br/>DAYS", style_cell_bold),
-                Paragraph("REMARKS", style_cell_bold)
-            ],
-            [
-                "", "", 
-                Paragraph(f"EPF {w_epf_rate:g}%", style_cell_bold),
-                Paragraph(f"{eps_label} {w_eps_rate:g}%", style_cell_bold),
-                Paragraph("TOTAL", style_cell_bold),
-                Paragraph(f"EPF {e_epf_rate:g}%", style_cell_bold),
-                Paragraph(f"{eps_label} {e_eps_rate:g}%", style_cell_bold),
-                Paragraph("TOTAL", style_cell_bold),
-                "", "", ""
-            ]
-        ]
-        
-        month_rows = emp.month_rows(w_epf_rate, w_eps_rate, e_epf_rate, e_eps_rate)
-        for i, m in enumerate(MONTHS):
-            wages, w_epf, w_eps, w_total, e_epf, e_eps, e_total = month_rows[i]
-            table_data.append([
-                Paragraph(m, style_cell),
-                Paragraph(str(int(round(wages))) if wages else "", style_cell_right),
-                Paragraph(str(int(round(w_epf))) if w_epf else "", style_cell_right),
-                Paragraph(str(int(round(w_eps))) if w_eps else "", style_cell_right),
-                Paragraph(str(int(round(w_total))) if w_total else "", style_cell_right),
-                Paragraph(str(int(round(e_epf))) if e_epf else "", style_cell_right),
-                Paragraph(str(int(round(e_eps))) if e_eps else "", style_cell_right),
-                Paragraph(str(int(round(e_total))) if e_total else "", style_cell_right),
-                Paragraph("", style_cell), Paragraph("", style_cell), Paragraph("", style_cell)
-            ])
-            
-        wt, w_epf_t, w_eps_t, w_tot_t, e_epf_t, e_eps_t, e_tot_t = emp.annual_totals(
-            w_epf_rate, w_eps_rate, e_epf_rate, e_eps_rate)
-            
-        table_data.append([
-            Paragraph("Total", style_cell_bold),
-            Paragraph(str(int(round(wt))) if wt else "", style_cell_right),
-            Paragraph(str(int(round(w_epf_t))) if w_epf_t else "", style_cell_right),
-            Paragraph(str(int(round(w_eps_t))) if w_eps_t else "", style_cell_right),
-            Paragraph(str(int(round(w_tot_t))) if w_tot_t else "", style_cell_right),
-            Paragraph(str(int(round(e_epf_t))) if e_epf_t else "", style_cell_right),
-            Paragraph(str(int(round(e_eps_t))) if e_eps_t else "", style_cell_right),
-            Paragraph(str(int(round(e_tot_t))) if e_tot_t else "", style_cell_right),
-            Paragraph("", style_cell), Paragraph("", style_cell), Paragraph("", style_cell)
-        ])
-        
-        aw = doc.pagesize[0] - doc.rightMargin - doc.leftMargin
-        t_weights = [0.1, 0.1, 0.09, 0.09, 0.09, 0.09, 0.09, 0.09, 0.08, 0.08, 0.1]
-        t_col_widths = [w * aw for w in t_weights]
-        
-        table = Table(table_data, colWidths=t_col_widths)
-        tstyle = _default_table_style()
-        tstyle.add('SPAN', (0,0), (0,1))
-        tstyle.add('SPAN', (1,0), (1,1))
-        tstyle.add('SPAN', (2,0), (4,0))
-        tstyle.add('SPAN', (5,0), (7,0))
-        tstyle.add('SPAN', (8,0), (8,1))
-        tstyle.add('SPAN', (9,0), (9,1))
-        tstyle.add('SPAN', (10,0), (10,1))
-        tstyle.add('BACKGROUND', (0,0), (-1,1), colors.lightgrey)
-        table.setStyle(tstyle)
-        block.append(table)
-        
-        block.append(Spacer(1, 12))
-        
-        # Footer
-        cert1 = "Certified that the total amount of contribution indicated in this card has already been remitted in full in EPF A/c. No. 1 and A/c No. 10 vide note below."
-        block.append(Paragraph(cert1, style_cell_left))
-        
-        block.append(Spacer(1, 6))
-        block.append(Paragraph(f"(a) Date of leaving Service: {emp.doe or ''}                                (b) Reason for leaving service: {emp.reason_leaving or ''}", style_cell_left))
-        block.append(Spacer(1, 6))
-        
-        cert2 = "Certified that the difference between the total of the contributions shown under Cols. 3 & 4 of the above table and that arrived at on the total wages shown in Col. 2 at the prescribed rate is solely due to the rounding off of contribution to the nearest rupee under the rules."
-        block.append(Paragraph(cert2, style_cell_left))
-        block.append(Spacer(1, 24))
-        
-        sig_data = [
-            [Paragraph("Date:", style_cell_left), Paragraph("Signature of the Employer with seal", style_cell_right)]
-        ]
-        sig_table = Table(sig_data, colWidths=[aw/2, aw/2])
-        block.append(sig_table)
-        
+        block = _build_form_3a_employee_block(est, emp, aw)
         story.append(KeepTogether(block))
         if emp_idx < len(employees) - 1:
             story.append(PageBreak())
-            
+
     doc.build(story)
     return filepath
+
+
+def generate_form_3a_multi_year_pdf(project, year_keys, member_id: str, filepath: str) -> dict:
+    """One employee, multiple financial years, combined into a single PDF -- one Form 3A
+    page-block per requested year, in the given order, built with the exact same
+    _build_form_3a_employee_block() used by the single-year generator above. Years where this
+    employee has no wage data (not yet joined, already left, or the year doesn't exist at all)
+    are skipped rather than producing a blank/erroring page; the caller gets back which years
+    actually made it into the PDF and which were skipped and why, so nothing goes missing
+    silently."""
+    doc = _build_pdf_doc(filepath, orientation="portrait")
+    story = []
+    aw = doc.pagesize[0] - doc.rightMargin - doc.leftMargin
+
+    generated_years = []
+    skipped_years = []
+
+    for year_key in year_keys:
+        if year_key not in project.years:
+            skipped_years.append({"year": year_key, "reason": "Financial year not found"})
+            continue
+
+        est = project.build_establishment_for_year(year_key)
+        employees = project.build_employees_for_year(year_key)
+        emp = next((e for e in employees if e.member_id == member_id), None)
+        if not emp:
+            skipped_years.append({"year": year_key, "reason": "Employee not on record for this year"})
+            continue
+
+        total_w = sum(w or 0 for w in (emp.wages or []))
+        if total_w <= 0:
+            skipped_years.append({"year": year_key, "reason": "No wage data for this employee in this year"})
+            continue
+
+        if generated_years:
+            story.append(PageBreak())
+        story.append(KeepTogether(_build_form_3a_employee_block(est, emp, aw)))
+        generated_years.append(year_key)
+
+    if not generated_years:
+        return {"generated_years": [], "skipped_years": skipped_years, "path": None}
+
+    doc.build(story)
+    return {"generated_years": generated_years, "skipped_years": skipped_years, "path": filepath}
 
 # --------------------------------------------------------------------------
 # Form 6A

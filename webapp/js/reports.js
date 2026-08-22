@@ -406,6 +406,58 @@ App.registerPage('reports', async (container) => {
               await loadEmployeeHistory(member_id);
           });
           
+          // Financial years run Apr-Mar; given an ISO date string, returns the calendar year
+          // the FY containing that date STARTS in (e.g. 15-Feb-2026 -> FY 2025-26 -> 2025).
+          function fyStartYearOf(isoDateStr) {
+              if (!isoDateStr) return null;
+              const d = new Date(isoDateStr);
+              if (isNaN(d.getTime())) return null;
+              const y = d.getFullYear();
+              const m = d.getMonth() + 1; // 1-12
+              return m >= 4 ? y : y - 1;
+          }
+
+          // Builds the "Download Form 3A Across Multiple Years" picker for the employee
+          // currently shown, restricted to the financial years that actually fall within
+          // their tenure (DOJ onward, DOE if they've left) rather than every year the system
+          // has ever tracked -- avoids offering years before they even existed in the system.
+          function renderMultiYearForm3APicker(member_id, profile, allYears) {
+              const dojFy = fyStartYearOf(profile.doj);
+              const doeFy = fyStartYearOf(profile.doe);
+              const eligible = allYears.filter(y => {
+                  const yf = parseInt(y.year_from, 10);
+                  if (dojFy != null && yf < dojFy) return false;
+                  if (doeFy != null && yf > doeFy) return false;
+                  return true;
+              });
+
+              if (eligible.length === 0) {
+                  return '';
+              }
+
+              const tenureText = profile.doj
+                  ? `On record from <strong>${App.esc(profile.doj)}</strong>${profile.doe ? ` to <strong>${App.esc(profile.doe)}</strong>` : ' (active)'}.`
+                  : '';
+
+              return `
+                <div class="card" style="margin-top:16px; padding:16px;">
+                  <div style="font-weight:600; font-size:14px; margin-bottom:4px;">📑 Download Form 3A Across Multiple Years</div>
+                  <div style="font-size:12px; color:var(--text2); margin-bottom:10px;">
+                      ${tenureText} Select the financial years to combine into one PDF:
+                  </div>
+                  <div id="f3a-multi-year-checks" style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
+                      ${eligible.map(y => `
+                        <label style="display:flex; align-items:center; gap:5px; font-size:12px; background:var(--bg2); border:1px solid var(--card-border); border-radius:6px; padding:5px 10px; cursor:pointer;">
+                          <input type="checkbox" class="f3a-multi-year-cb" value="${App.esc(y.key)}" checked> ${App.esc(y.label)}
+                        </label>
+                      `).join('')}
+                  </div>
+                  <button class="btn btn-primary btn-sm" onclick="window.downloadMultiYearForm3A('${App.esc(member_id)}', '${App.esc(profile.name || 'Employee')}')">📄 Download Multi-Year Form 3A</button>
+                  <div id="f3a-multi-year-status" style="font-size:11px; color:var(--text3); margin-top:8px;"></div>
+                </div>
+              `;
+          }
+
           async function loadEmployeeHistory(member_id) {
               const view = document.getElementById('r-emp-history-view');
               if(!member_id) {
@@ -419,7 +471,8 @@ App.registerPage('reports', async (container) => {
 
               try {
                   const data = await App.get(`/api/reports/employee_wage_history/${encodeURIComponent(member_id)}`);
-                  view.innerHTML = window.renderEmployeeWageHistoryHtml(data, { showEstablishmentHeader: true, showPdfButton: true });
+                  view.innerHTML = window.renderEmployeeWageHistoryHtml(data, { showEstablishmentHeader: true, showPdfButton: true })
+                    + renderMultiYearForm3APicker(member_id, data.profile, years);
               } catch(err) {
                   view.innerHTML = `<div style="color:var(--red); padding:16px;">Error loading history: ${err.message}</div>`;
               }
@@ -433,6 +486,34 @@ window.downloadEmployeeWageHistoryPDF = (memberId, empName, uan) => {
   const safeUan = (uan && uan.trim() !== "") ? uan.trim() : "NO_UAN";
   App.toast('Generating PDF…', 'info');
   App.downloadFile(`/api/reports/employee_wage_history/${encodeURIComponent(memberId)}/pdf`, `${safeName}_${safeUan}_WageHistory.pdf`);
+};
+
+window.downloadMultiYearForm3A = (memberId, empName) => {
+  const checked = Array.from(document.querySelectorAll('.f3a-multi-year-cb:checked')).map(cb => cb.value);
+  const statusEl = document.getElementById('f3a-multi-year-status');
+
+  if (checked.length === 0) {
+    App.toast('Select at least one financial year first.', 'error');
+    return;
+  }
+
+  const safeName = (empName || "Employee").replace(/[^a-zA-Z0-9 ]/g, "").trim() || "Employee";
+  App.toast('Generating multi-year Form 3A…', 'info');
+  if (statusEl) statusEl.textContent = '';
+
+  const url = `/api/reports/employee/${encodeURIComponent(memberId)}/form3a-multi-year?years=${encodeURIComponent(checked.join(','))}`;
+  App.downloadFile(url, `${safeName}_Form3A_MultiYear.pdf`, null, (headers) => {
+    if (!statusEl) return;
+    let skipped = [];
+    try { skipped = JSON.parse(headers.get('X-Skipped-Years') || '[]'); } catch (_) {}
+    const generated = (headers.get('X-Generated-Years') || '').split(',').filter(Boolean);
+
+    const parts = [];
+    if (generated.length) parts.push(`✓ Included: ${generated.join(', ')}`);
+    if (skipped.length) parts.push(`⚠ Skipped: ${skipped.map(s => `${s.year} (${s.reason})`).join('; ')}`);
+    statusEl.textContent = parts.join(' — ');
+    statusEl.style.color = skipped.length ? 'var(--amber)' : 'var(--text3)';
+  });
 };
 
 const ECR_MONTH_SHORT_NAMES = ['Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb'];
