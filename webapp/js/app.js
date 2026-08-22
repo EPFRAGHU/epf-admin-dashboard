@@ -6,6 +6,7 @@ const App = (() => {
   let currentPage = 'dashboard';
   let currentEstablishment = { id: null, name: '', code: '' };
   let currentUser = null;
+  let currentVersionInfo = null;
 
   /* ── Auth getters & helpers ──────────────────────────────────── */
   function getToken() {
@@ -1001,6 +1002,7 @@ const App = (() => {
     if (topbar) topbar.style.display = 'flex';
 
     renderSidebarNav();
+    refreshVersionBadge();
 
     const handledCashfreeReturn = await _handleCashfreeReturn();
 
@@ -1317,110 +1319,74 @@ const App = (() => {
     }
   }
 
-  /* ── Version History & Changelog ─────────────────────────────── */
-  const versionHistory = [
-    {
-      version: 'v2.1.0',
-      dateTime: '15-08-2026 23:55 IST',
-      badge: 'Major Milestone',
-      badgeClass: 'high',
-      isLatest: true,
-      title: 'Subscription Billing, Cashfree Payments & Wage History PDF Export',
-      changes: [
-        'Fixed A/C 1 and A/C 22 statutory remittance miscalculations on the Challans page (EPS double-subtraction, post-2017 EDLI admin minimum applied incorrectly); added Gross/EPF/EPS/EDLI wage breakdown columns.',
-        'New Software Subscription Fee tracker (separate from EPF statutory payments) with 3-tier rate resolution, download-gating on unpaid/overdue months, and a superadmin cross-consultant Subscription Payments ledger.',
-        'Advance Credit system: consultants can prepay a lump sum that auto-applies to future months as wage data arrives, with a per-establishment Subscription History page.',
-        'Real Cashfree Payment Links integration for subscription fees and advance-credit top-ups, with webhook-verified payment confirmation and an in-app return flow.',
-        'Employee Wage History report redesigned with a full EE/ER/EPS contribution breakdown per year, plus a new server-side ReportLab PDF export with repeating headers, page numbers, and pagination that never splits a year across pages.'
-      ]
-    },
-    {
-      version: 'v2.0.0',
-      dateTime: '15-08-2026 08:30 IST',
-      badge: 'Major Milestone',
-      badgeClass: 'high',
-      isLatest: false,
-      title: 'Multi-Tenant Architecture, Server Auth & Superadmin Payment Compliance',
-      changes: [
-        'Complete multi-tenant isolation with secure JWT server-side authentication and per-request tenant data scoping.',
-        'Superadmin Control Center with real-time KPI overview, consultant CRUD management, and establishment drilldowns.',
-        '12-Month EPF Payment Compliance Grid (March to February) tracking paid amounts, remittance dates, and TRRNs.',
-        'Consultant Multi-Establishment Hub allowing seamless 1-click establishment switching and zero data contamination.',
-        'Automated database migration preserving all legacy establishment projects and employee records.'
-      ]
-    },
-    {
-      version: 'v1.6.0',
-      dateTime: '14-08-2026 04:47 IST',
-      badge: 'Production',
-      badgeClass: 'low',
-      isLatest: false,
-      title: 'Zero-Wage Auto-Filter, Rupee Precision & Left Panel Live Version Tracking',
-      changes: [
-        'Form 3A and Form 6A automatically filter out employees with zero total wages without altering PDF grid structure.',
-        'Wages and statutory contributions strictly rendered and saved as whole rupee integers with zero decimal artifacts.',
-        'Left side panel live version indicator updated with project timeline progression tracking.',
-        'Render cloud deployment dependencies synchronized with ReportLab and Pandas native acceleration.'
-      ]
-    },
-    {
-      version: 'v1.5.0',
-      dateTime: '14-08-2026 02:55 IST',
-      badge: 'High Performance',
-      badgeClass: 'low',
-      isLatest: false,
-      title: 'Direct ReportLab Native PDF Engine & EPFO v3.0 ECR Generator',
-      changes: [
-        'Ultra-fast native ReportLab PDF generator replacing external desktop dependencies.',
-        'Perfect layout compliance for Form 3A, Form 6A, Form 12A, Form 9, Form 5, and Form 10.',
-        'Integrated ECR (Electronic Challan cum Return) text file generator conforming strictly to EPFO v3.0 standard with Higher EPF split.',
-        'Enhanced Form 12A Grand Total row span calculation and TRRN/CRRN proximity formatting.'
-      ]
+  /* ── Version History & Changelog ─────────────────────────────────────────
+     Sourced live from git (webapp/version_info.py, GET /api/version) rather than
+     a hand-maintained list -- every commit that reaches origin/main shows up here
+     automatically on the next deploy restart, with no version string to remember
+     to bump by hand. */
+  async function refreshVersionBadge() {
+    try {
+      currentVersionInfo = await get('/api/version');
+      const tag = document.getElementById('version-badge-tag');
+      const meta = document.getElementById('version-badge-meta');
+      const count = document.getElementById('version-badge-count');
+      const container = document.getElementById('version-badge-container');
+      if (tag) tag.textContent = currentVersionInfo.version;
+      if (meta) meta.innerHTML = `<span>⏱️ ${esc(currentVersionInfo.commit_date_display)} · ${esc(currentVersionInfo.short_hash)}</span>`;
+      if (count) count.textContent = `${currentVersionInfo.history.length} Recent Commit${currentVersionInfo.history.length === 1 ? '' : 's'}`;
+      if (container) container.title = `Build #${currentVersionInfo.commit_count != null ? currentVersionInfo.commit_count : '?'} (${currentVersionInfo.short_hash}) — click to view recent commit history`;
+    } catch (e) {
+      // Non-critical -- badge just keeps its placeholder text on failure.
     }
-  ];
+  }
 
-  function showVersionHistory() {
+  async function showVersionHistory() {
+    if (!currentVersionInfo) {
+      try { currentVersionInfo = await get('/api/version'); } catch (e) { currentVersionInfo = null; }
+    }
+    if (!currentVersionInfo) {
+      openModal('Version History', '<p style="color:var(--text2); font-size:13px;">Could not load version history.</p>', '<button class="btn btn-primary" onclick="App.closeModal()">Close</button>');
+      return;
+    }
+    const info = currentVersionInfo;
+    const oldest = info.history[info.history.length - 1];
+    const newest = info.history[0];
+
     const bodyHtml = `
       <div style="max-height: 520px; overflow-y: auto; padding-right: 6px;">
         <div style="background: linear-gradient(135deg, var(--bg2) 0%, var(--card) 100%); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 18px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px;">
           <div>
-            <div style="font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px;">Project Progression Timeline</div>
+            <div style="font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.5px;">Recent Commit History</div>
             <div style="font-size: 14px; font-weight: 700; color: var(--text1); margin-top: 2px;">
-              <span style="color: var(--primary);">v1.0.0</span> (11-08-2026) <span style="color: var(--text3); margin: 0 4px;">➔</span> <span style="color: var(--green);">v2.1.0 Subscription Billing & Cashfree</span> (15-08-2026)
+              ${oldest ? `<span style="color: var(--primary);">${esc(oldest.hash)}</span> (${esc(oldest.date_display)}) <span style="color: var(--text3); margin: 0 4px;">➔</span> ` : ''}<span style="color: var(--green);">${esc(info.short_hash)}</span> (${esc(info.commit_date_display)})
             </div>
           </div>
           <div style="display: flex; gap: 8px;">
             <div style="background: var(--card); border: 1px solid var(--card-border); padding: 6px 12px; border-radius: var(--radius-sm); text-align: center;">
-              <div style="font-size: 10px; color: var(--text3); font-weight: 500;">Milestones</div>
-              <div style="font-size: 13px; font-weight: 700; color: var(--primary);">${versionHistory.length}+ Releases</div>
+              <div style="font-size: 10px; color: var(--text3); font-weight: 500;">Branch</div>
+              <div style="font-size: 13px; font-weight: 700; color: var(--primary);">${esc(info.branch)}</div>
             </div>
             <div style="background: var(--card); border: 1px solid var(--card-border); padding: 6px 12px; border-radius: var(--radius-sm); text-align: center;">
-              <div style="font-size: 10px; color: var(--text3); font-weight: 500;">Current State</div>
-              <div style="font-size: 13px; font-weight: 700; color: var(--green);">v2.1.0 Active</div>
+              <div style="font-size: 10px; color: var(--text3); font-weight: 500;">Current Build</div>
+              <div style="font-size: 13px; font-weight: 700; color: var(--green);">${esc(info.version)}</div>
             </div>
           </div>
         </div>
 
-        <div style="display: flex; flex-direction: column; gap: 14px;">
-          ${versionHistory.map(v => `
-            <div class="card" style="padding: 15px 18px; border-left: 4px solid ${v.isLatest ? 'var(--green)' : 'var(--card-border)'}; background: var(--bg2); position: relative;">
-              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
-                <div style="display:flex; align-items:center; gap: 8px;">
-                  <strong style="font-size: 16px; color: ${v.isLatest ? 'var(--primary)' : 'var(--text1)'}">${v.version}</strong>
-                  <span class="badge ${v.badgeClass}" style="font-size:10px">${v.badge}</span>
-                </div>
-                <span style="font-size: 12px; color: var(--text3); font-weight: 600; background: var(--card); padding: 2px 8px; border-radius: 4px; border: 1px solid var(--card-border);">⏱️ ${v.dateTime}</span>
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          ${info.history.map(h => `
+            <div class="card" style="padding: 12px 16px; border-left: 4px solid ${h === newest ? 'var(--green)' : 'var(--card-border)'}; background: var(--bg2); display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+              <div style="font-size: 13px; color: var(--text1); flex: 1; min-width: 200px;">${esc(h.message)}</div>
+              <div style="display:flex; align-items:center; gap:8px; white-space:nowrap;">
+                <span class="badge low" style="font-size:10px; font-family:monospace;">${esc(h.hash)}</span>
+                <span style="font-size: 11px; color: var(--text3); font-weight: 600;">${esc(h.date_display)}</span>
               </div>
-              <div style="font-size: 13px; font-weight: 600; color: var(--text1); margin-bottom: 8px;">${v.title}</div>
-              <ul style="margin: 0; padding-left: 18px; font-size: 12px; color: var(--text2); line-height: 1.6;">
-                ${v.changes.map(c => `<li style="margin-bottom: 4px;">${c}</li>`).join('')}
-              </ul>
             </div>
-          `).join('')}
+          `).join('') || '<p style="color:var(--text2); font-size:13px;">No commit history available.</p>'}
         </div>
       </div>
     `;
-    openModal('EPF Manager · Version History & Enterprise Changelog', bodyHtml, '<button class="btn btn-primary" onclick="App.closeModal()">Close</button>', true);
+    openModal('EPF Manager · Recent Commit History', bodyHtml, '<button class="btn btn-primary" onclick="App.closeModal()">Close</button>', true);
   }
 
   return {

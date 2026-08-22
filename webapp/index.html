@@ -65,17 +65,17 @@
             <div class="sidebar-footer">
                 <button class="btn btn-primary btn-sm" style="width:100%; margin-bottom:8px" onclick="App.showProjectManager()">📂 Switch Establishment</button>
                 <button class="btn btn-danger btn-sm" style="width:100%; margin-bottom:8px" onclick="App.logout()">🚪 Logout</button>
-                <div class="version-badge-container" onclick="App.showVersionHistory()" title="Click to view full Version History & Changelog (v1.5.0 to v2.1.0)" style="cursor: pointer; margin-top: 8px; padding: 8px 10px; border-radius: var(--radius-sm); transition: all var(--transition); border: 1px dashed var(--border); background: var(--bg2); text-align: left;">
+                <div class="version-badge-container" id="version-badge-container" onclick="App.showVersionHistory()" title="Click to view recent commit history" style="cursor: pointer; margin-top: 8px; padding: 8px 10px; border-radius: var(--radius-sm); transition: all var(--transition); border: 1px dashed var(--border); background: var(--bg2); text-align: left;">
                     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px;">
-                        <span style="font-size: 12px; font-weight: 800; color: var(--primary); letter-spacing: 0.3px;">v2.1.0</span>
-                        <span class="badge high" style="font-size: 9px; padding: 1px 6px; font-weight: 700;">Present</span>
+                        <span id="version-badge-tag" style="font-size: 12px; font-weight: 800; color: var(--primary); letter-spacing: 0.3px;">v…</span>
+                        <span class="badge high" style="font-size: 9px; padding: 1px 6px; font-weight: 700;">Live</span>
                     </div>
-                    <div style="font-size: 10px; color: var(--text3); display: flex; align-items: center; gap: 4px; margin-bottom: 4px;">
-                        <span>⏱️ 11-08-2026 → 15-08-2026</span>
+                    <div id="version-badge-meta" style="font-size: 10px; color: var(--text3); display: flex; align-items: center; gap: 4px; margin-bottom: 4px;">
+                        <span>Loading…</span>
                     </div>
                     <div style="font-size: 10px; color: var(--primary); font-weight: 600; display: flex; align-items: center; justify-content: space-between; padding-top: 4px; border-top: 1px solid var(--card-border);">
                         <span>📜 Version History</span>
-                        <span style="font-size: 9px; color: var(--text3); background: var(--card); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--card-border);">4 Releases</span>
+                        <span id="version-badge-count" style="font-size: 9px; color: var(--text3); background: var(--card); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--card-border);">…</span>
                     </div>
                 </div>
             </div>

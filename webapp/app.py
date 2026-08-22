@@ -42,6 +42,7 @@ from .auth import (
 
 from . import cashfree_client
 from . import google_oauth
+from . import version_info
 
 def log_activity(
     db: Session,
@@ -427,7 +428,7 @@ def _year_payment_required_detail(unpaid_rows: List[dict], financial_year: Optio
     }
 
 # ── App setup ──────────────────────────────────────────────────────────────
-app = FastAPI(title="EPF Admin Dashboard", version="2.1.0")
+app = FastAPI(title="EPF Admin Dashboard", version=version_info.get_version_info()["version"])
 
 # Required by Authlib's OAuth client to stash the Google auth state/nonce (and, for the
 # signup flow, the role/establishment fields chosen before redirecting to Google) across
@@ -701,6 +702,12 @@ def on_startup():
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return (WEB / "index.html").read_text(encoding="utf-8")
+
+
+# ── App Version (no auth required — sourced live from git, not a hand-edited string) ──
+@app.get("/api/version")
+async def get_app_version():
+    return version_info.get_version_info()
 
 
 # ── Public Signup / Terms / Privacy Pages (no auth required) ───────────────
