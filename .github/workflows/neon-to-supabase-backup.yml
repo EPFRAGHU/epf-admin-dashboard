@@ -2,8 +2,8 @@ name: Nightly Neon → Supabase Backup
 
 on:
   schedule:
-    # 02:00 UTC daily (07:30 IST) -- outside typical usage hours.
-    - cron: '0 2 * * *'
+    # 20:30 UTC daily = 02:00 IST (GitHub Actions cron always runs in UTC; IST is UTC+5:30).
+    - cron: '30 20 * * *'
   workflow_dispatch: {}   # lets you trigger a one-off run from the Actions tab to test it
 
 jobs:
