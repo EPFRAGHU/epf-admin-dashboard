@@ -1103,6 +1103,36 @@ window.refreshWageEntrySummaryHighlight = (monthIdx) => {
   renderWageEntrySummaryTableHtml(monthIdx);
 };
 
+/* ── Per-employee wage history popup — opened from the UAN link on each Wage
+   Entry row. Reuses the existing Employee Wage History report's data source
+   (/api/reports/employee_wage_history/{member_id}) and its shared rendering
+   function (window.renderEmployeeWageHistoryHtml from reports.js), scoped to
+   the financial year currently open on this page. Deliberately a modal, not
+   a page navigation -- App.openModal only touches the #modal element, so any
+   unsaved wage entries still typed into other rows on this page are untouched. ── */
+window.showEmployeeWageHistoryPopup = async (memberId, empName) => {
+  App.openModal(
+    `Wage History: ${App.esc(empName)}`,
+    `<div class="page-loading"><div class="spinner"></div><p>Loading wage history…</p></div>`,
+    `<button class="btn btn-ghost" onclick="App.closeModal()">Close</button>`,
+    true
+  );
+  try {
+    const data = await App.get(`/api/reports/employee_wage_history/${encodeURIComponent(memberId)}`);
+    const yearFrom = (currentYearKey || '').split('-')[0];
+    const bodyHtml = window.renderEmployeeWageHistoryHtml(data, {
+      showEstablishmentHeader: false,
+      showPdfButton: true,
+      yearFilterFrom: yearFrom
+    });
+    const modalBody = document.querySelector('#modal .modal-body');
+    if (modalBody) modalBody.innerHTML = bodyHtml;
+  } catch (e) {
+    const modalBody = document.querySelector('#modal .modal-body');
+    if (modalBody) modalBody.innerHTML = `<div style="color:var(--red); padding:16px;">Error loading history: ${App.esc(e.message)}</div>`;
+  }
+};
+
 let bulkTableState = {};
 window.bulkTableVisibleIds = [];
 window.bulkTableManualIds = [];
@@ -1411,7 +1441,7 @@ window.renderMonthlyTable = () => {
             <tr class="bulk-row" data-id="${App.esc(master.member_id)}" data-ceiling="${r.wage_ceilings ? r.wage_ceilings[monthIdx] : 15000}">
               <td style="text-align:center"><input type="checkbox" class="b-select-row" data-id="${App.esc(master.member_id)}"></td>
               <td style="text-align:center">${start + idx + 1}</td>
-              <td>${App.esc(master.uan || '-')}</td>
+              <td>${master.uan ? `<a href="#" onclick="event.preventDefault(); window.showEmployeeWageHistoryPopup('${App.esc(master.member_id)}', '${App.esc(master.name)}')" style="color:var(--accent); text-decoration:none; font-weight:600;" title="View full wage history for ${App.esc(master.name)}">${App.esc(master.uan)}</a>` : '-'}</td>
               <td>
                 <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
                   <div style="font-weight:500;">${App.esc(master.name)}</div>

@@ -2,6 +2,144 @@
    Reports — Generate and download official EPFO forms
    ================================================================ */
 
+/* ── Employee Wage History rendering — the single source of truth for this
+   report's markup, shared by the full Reports page view and any other page
+   that embeds it (e.g. the Wage Entry page's per-employee popup). Both read
+   the same /api/reports/employee_wage_history/{member_id} payload through
+   this same function, so the figures can never disagree between the two. ── */
+window.renderEmployeeWageHistoryHtml = function(data, opts) {
+  opts = opts || {};
+  const showEstablishmentHeader = opts.showEstablishmentHeader !== false;
+  const showPdfButton = opts.showPdfButton !== false;
+  // A single financial year's "year_from" (e.g. "2026") to restrict the table
+  // to -- used by the Wage Entry popup so it only shows the year currently
+  // open on that page, instead of this employee's full multi-year history.
+  const yearFilterFrom = opts.yearFilterFrom || null;
+
+  const p = data.profile;
+  let html = '';
+
+  if (showEstablishmentHeader) {
+    html += `
+      <div style="text-align:center; margin-bottom:16px; border-bottom:2px solid var(--border); padding-bottom:12px;">
+        <h2 style="margin:0; font-size:18px; font-weight:700; color:var(--text1); text-transform:uppercase;">${App.esc(data.establishment?.name || 'ESTABLISHMENT NAME')}</h2>
+        <div style="font-size:13px; font-weight:600; color:var(--text2); margin-top:4px;">Code: ${App.esc(data.establishment?.code || 'EST-CODE')}</div>
+      </div>
+    `;
+  }
+
+  html += `
+    <div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:16px; margin-bottom:16px;">
+      <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:16px; margin-bottom:16px;">
+        <div>
+          <div style="font-weight:600; color:var(--text1); font-size:16px;">${App.esc(p.name)}</div>
+          <div style="font-size:12px; color:var(--text2); margin-top:2px;">S/D of: ${App.esc(p.father_name)}</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:12px; color:var(--text2);">UAN: <span style="color:var(--text1); font-weight:500">${App.esc(p.uan) || '-'}</span></div>
+          <div style="font-size:12px; color:var(--text2);">Member ID: <span style="color:var(--text1); font-weight:500">${App.esc(p.member_id)}</span></div>
+        </div>
+      </div>
+
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:12px; font-size:12px;">
+        <div><div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Date of Birth</div><div style="color:var(--text1); font-weight:500">${App.esc(p.dob)}</div></div>
+        <div><div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Date of Joining</div><div style="color:var(--text1); font-weight:500">${App.esc(p.doj)}</div></div>
+        <div><div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Date of Leaving</div><div style="color:var(--text1); font-weight:500">${App.esc(p.doe) || '-'}</div></div>
+        <div><div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Reason of Leaving</div><div style="color:var(--text1); font-weight:500">${App.esc(p.reason_leaving) || '-'}</div></div>
+      </div>
+    </div>
+  `;
+
+  // "year" comes back as "{year_from}-{year_to}" (e.g. "2026-2027"), not the
+  // short "2026-27" key used elsewhere in the app -- match on the year_from
+  // segment only so this doesn't depend on that formatting.
+  const years = yearFilterFrom ? data.years.filter(y => y.year.split('-')[0] === yearFilterFrom) : data.years;
+
+  if (years.length === 0) {
+    html += `<div style="text-align:center; padding:24px; color:var(--text3);">No wage records found${yearFilterFrom ? ' for this financial year' : ''}.</div>`;
+  } else {
+    // Row helper: one row = one label in col 1 + 12 month values + a year-total.
+    // valueStyle carries the per-row font weight/size/color (Wages dominant,
+    // EE/ER/EPS muted, Total set apart); dividerStyle (if any) is layered on
+    // top so it applies uniformly across every column in that row.
+    const wyhRow = (label, monthVals, totalVal, valueStyle, dividerStyle) => {
+      const cellStyle = `text-align:right; ${valueStyle}${dividerStyle || ''}`;
+      let tds = '';
+      for (let i = 0; i < 12; i++) {
+        tds += `<td style="${cellStyle}">${monthVals[i] != null ? Math.round(monthVals[i]) : 0}</td>`;
+      }
+      return `
+        <tr>
+          <td style="white-space:nowrap; ${valueStyle}${dividerStyle || ''}">${label}</td>
+          ${tds}
+          <td style="${cellStyle}">${Math.round(totalVal || 0)}</td>
+        </tr>
+      `;
+    };
+
+    const WAGES_STYLE = 'font-weight:700; font-size:13px; color:var(--text1);';
+    const CONTRIB_STYLE = 'font-weight:500; font-size:11px; color:var(--text3);';
+    const TOTAL_STYLE = 'font-weight:700; font-size:12px; color:var(--primary);';
+    // Both internal dividers share the exact same weight/color; the
+    // year-to-year boundary (below) is visibly stronger by comparison.
+    const DIVIDER = 'border-top:1px solid var(--card-border);';
+
+    let trs = '';
+    years.forEach(y => {
+      trs += `
+        <tr>
+          <td colspan="14" style="background:var(--bg2); font-weight:700; font-size:13px; color:var(--text1); padding:10px 8px; border-top:2px solid var(--card-border); -webkit-print-color-adjust:exact; print-color-adjust:exact;">FY ${App.esc(y.year)}</td>
+        </tr>
+      `;
+      trs += wyhRow('Wages', y.wages, y.total, WAGES_STYLE, '');
+      trs += wyhRow('EE', y.ee_epf || Array(12).fill(0), y.ee_epf_total, CONTRIB_STYLE, DIVIDER);
+      trs += wyhRow('ER', y.er_epf || Array(12).fill(0), y.er_epf_total, CONTRIB_STYLE, '');
+      trs += wyhRow('EPS', y.er_eps || Array(12).fill(0), y.er_eps_total, CONTRIB_STYLE, '');
+      trs += wyhRow('Total', y.month_total || Array(12).fill(0), y.month_total_total, TOTAL_STYLE, DIVIDER);
+
+      const flags = [];
+      if (y.higher_epf_ee) flags.push('(Higher EPF - EE)');
+      if (y.higher_epf_er) flags.push('(Higher EPF - ER)');
+      if (y.age_crosses_58) flags.push('(Age 58+ applied)');
+      if (flags.length > 0) {
+        trs += `
+          <tr>
+            <td colspan="14" style="font-style:italic; font-size:10px; color:var(--text3); border:none !important; padding:3px 8px 12px 8px;">${flags.join(' ')}</td>
+          </tr>
+        `;
+      }
+    });
+
+    html += `
+      <div style="overflow-x:auto;">
+        <table class="data-table" style="width:100%; font-size:12px; border-collapse:collapse;">
+          <thead>
+            <tr>
+              <th></th>
+              <th style="text-align:right">Mar</th><th style="text-align:right">Apr</th><th style="text-align:right">May</th><th style="text-align:right">Jun</th>
+              <th style="text-align:right">Jul</th><th style="text-align:right">Aug</th><th style="text-align:right">Sep</th><th style="text-align:right">Oct</th>
+              <th style="text-align:right">Nov</th><th style="text-align:right">Dec</th><th style="text-align:right">Jan</th><th style="text-align:right">Feb</th>
+              <th style="text-align:right">Total</th>
+            </tr>
+          </thead>
+          <tbody>${trs}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  if (showPdfButton) {
+    html = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;" class="no-print">
+        <div style="font-size:16px; font-weight:600;">Wage History Report</div>
+        <button class="btn btn-primary" onclick="window.downloadEmployeeWageHistoryPDF('${App.esc(p.member_id)}', '${App.esc(p.name)}', '${App.esc(p.uan || '')}')">🖨️ Print / Save as PDF</button>
+      </div>
+    ` + html;
+  }
+
+  return html;
+};
+
 App.registerPage('reports', async (container) => {
   const [{ years }, orgData, subStatus] = await Promise.all([
     App.get('/api/years'),
@@ -275,121 +413,13 @@ App.registerPage('reports', async (container) => {
                   view.innerHTML = '';
                   return;
               }
-              
+
               view.style.display = 'block';
               view.innerHTML = '<div style="color:var(--text2); padding:16px;">Loading history...</div>';
-              
+
               try {
                   const data = await App.get(`/api/reports/employee_wage_history/${encodeURIComponent(member_id)}`);
-                  const p = data.profile;
-                  let html = `
-                    <div style="text-align:center; margin-bottom:16px; border-bottom:2px solid var(--border); padding-bottom:12px;">
-                      <h2 style="margin:0; font-size:18px; font-weight:700; color:var(--text1); text-transform:uppercase;">${App.esc(data.establishment?.name || 'ESTABLISHMENT NAME')}</h2>
-                      <div style="font-size:13px; font-weight:600; color:var(--text2); margin-top:4px;">Code: ${App.esc(data.establishment?.code || 'EST-CODE')}</div>
-                    </div>
-                    <div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:16px; margin-bottom:16px;">
-                      <div style="display:flex; justify-content:space-between; flex-wrap:wrap; gap:16px; margin-bottom:16px;">
-                        <div>
-                          <div style="font-weight:600; color:var(--text1); font-size:16px;">${App.esc(p.name)}</div>
-                          <div style="font-size:12px; color:var(--text2); margin-top:2px;">S/D of: ${App.esc(p.father_name)}</div>
-                        </div>
-                        <div style="text-align:right;">
-                          <div style="font-size:12px; color:var(--text2);">UAN: <span style="color:var(--text1); font-weight:500">${App.esc(p.uan) || '-'}</span></div>
-                          <div style="font-size:12px; color:var(--text2);">Member ID: <span style="color:var(--text1); font-weight:500">${App.esc(p.member_id)}</span></div>
-                        </div>
-                      </div>
-                      
-                      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:12px; font-size:12px;">
-                        <div><div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Date of Birth</div><div style="color:var(--text1); font-weight:500">${App.esc(p.dob)}</div></div>
-                        <div><div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Date of Joining</div><div style="color:var(--text1); font-weight:500">${App.esc(p.doj)}</div></div>
-                        <div><div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Date of Leaving</div><div style="color:var(--text1); font-weight:500">${App.esc(p.doe) || '-'}</div></div>
-                        <div><div style="color:var(--text3); font-size:10px; text-transform:uppercase;">Reason of Leaving</div><div style="color:var(--text1); font-weight:500">${App.esc(p.reason_leaving) || '-'}</div></div>
-                      </div>
-                    </div>
-                  `;
-                  
-                  if(data.years.length === 0) {
-                      html += `<div style="text-align:center; padding:24px; color:var(--text3);">No wage records found.</div>`;
-                  } else {
-                      // Row helper: one row = one label in col 1 + 12 month values + a year-total.
-                      // valueStyle carries the per-row font weight/size/color (Wages dominant,
-                      // EE/ER/EPS muted, Total set apart); dividerStyle (if any) is layered on
-                      // top so it applies uniformly across every column in that row.
-                      const wyhRow = (label, monthVals, totalVal, valueStyle, dividerStyle) => {
-                          const cellStyle = `text-align:right; ${valueStyle}${dividerStyle || ''}`;
-                          let tds = '';
-                          for (let i = 0; i < 12; i++) {
-                              tds += `<td style="${cellStyle}">${monthVals[i] != null ? Math.round(monthVals[i]) : 0}</td>`;
-                          }
-                          return `
-                            <tr>
-                              <td style="white-space:nowrap; ${valueStyle}${dividerStyle || ''}">${label}</td>
-                              ${tds}
-                              <td style="${cellStyle}">${Math.round(totalVal || 0)}</td>
-                            </tr>
-                          `;
-                      };
-
-                      const WAGES_STYLE = 'font-weight:700; font-size:13px; color:var(--text1);';
-                      const CONTRIB_STYLE = 'font-weight:500; font-size:11px; color:var(--text3);';
-                      const TOTAL_STYLE = 'font-weight:700; font-size:12px; color:var(--primary);';
-                      // Both internal dividers share the exact same weight/color; the
-                      // year-to-year boundary (below) is visibly stronger by comparison.
-                      const DIVIDER = 'border-top:1px solid var(--card-border);';
-
-                      let trs = '';
-                      data.years.forEach(y => {
-                          trs += `
-                            <tr>
-                              <td colspan="14" style="background:var(--bg2); font-weight:700; font-size:13px; color:var(--text1); padding:10px 8px; border-top:2px solid var(--card-border); -webkit-print-color-adjust:exact; print-color-adjust:exact;">FY ${App.esc(y.year)}</td>
-                            </tr>
-                          `;
-                          trs += wyhRow('Wages', y.wages, y.total, WAGES_STYLE, '');
-                          trs += wyhRow('EE', y.ee_epf || Array(12).fill(0), y.ee_epf_total, CONTRIB_STYLE, DIVIDER);
-                          trs += wyhRow('ER', y.er_epf || Array(12).fill(0), y.er_epf_total, CONTRIB_STYLE, '');
-                          trs += wyhRow('EPS', y.er_eps || Array(12).fill(0), y.er_eps_total, CONTRIB_STYLE, '');
-                          trs += wyhRow('Total', y.month_total || Array(12).fill(0), y.month_total_total, TOTAL_STYLE, DIVIDER);
-
-                          const flags = [];
-                          if (y.higher_epf_ee) flags.push('(Higher EPF - EE)');
-                          if (y.higher_epf_er) flags.push('(Higher EPF - ER)');
-                          if (y.age_crosses_58) flags.push('(Age 58+ applied)');
-                          if (flags.length > 0) {
-                              trs += `
-                                <tr>
-                                  <td colspan="14" style="font-style:italic; font-size:10px; color:var(--text3); border:none !important; padding:3px 8px 12px 8px;">${flags.join(' ')}</td>
-                                </tr>
-                              `;
-                          }
-                      });
-
-                      html += `
-                        <div style="overflow-x:auto;">
-                          <table class="data-table" style="width:100%; font-size:12px; border-collapse:collapse;">
-                            <thead>
-                              <tr>
-                                <th></th>
-                                <th style="text-align:right">Mar</th><th style="text-align:right">Apr</th><th style="text-align:right">May</th><th style="text-align:right">Jun</th>
-                                <th style="text-align:right">Jul</th><th style="text-align:right">Aug</th><th style="text-align:right">Sep</th><th style="text-align:right">Oct</th>
-                                <th style="text-align:right">Nov</th><th style="text-align:right">Dec</th><th style="text-align:right">Jan</th><th style="text-align:right">Feb</th>
-                                <th style="text-align:right">Total</th>
-                              </tr>
-                            </thead>
-                            <tbody>${trs}</tbody>
-                          </table>
-                        </div>
-                      `;
-                  }
-                  
-                  // Add Print/Download PDF Button
-                  html = `
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;" class="no-print">
-                      <div style="font-size:16px; font-weight:600;">Wage History Report</div>
-                      <button class="btn btn-primary" onclick="window.downloadEmployeeWageHistoryPDF('${App.esc(p.member_id)}', '${App.esc(p.name)}', '${App.esc(p.uan || '')}')">🖨️ Print / Save as PDF</button>
-                    </div>
-                  ` + html;
-                  
-                  view.innerHTML = html;
+                  view.innerHTML = window.renderEmployeeWageHistoryHtml(data, { showEstablishmentHeader: true, showPdfButton: true });
               } catch(err) {
                   view.innerHTML = `<div style="color:var(--red); padding:16px;">Error loading history: ${err.message}</div>`;
               }
