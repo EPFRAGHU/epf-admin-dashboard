@@ -814,9 +814,9 @@ const App = (() => {
     modal.className = `modal${wide ? ' wide' : ''}`;
 
     const estHtml = (!hideEstablishment && (currentEstablishment.name || currentEstablishment.code))
-      ? `<div style="font-size: 13px; color: var(--text2); margin-top: 4px; display:flex; align-items:center; gap:6px;">
-           <span style="font-weight: 600; color: var(--primary);">${esc(currentEstablishment.name)}</span>
-           ${currentEstablishment.code ? `<span class="badge" style="font-size:10px">${esc(currentEstablishment.code)}</span>` : ''}
+      ? `<div style="font-size: 16px; color: var(--text2); margin-top: 6px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+           <span style="font-weight: 700; color: var(--primary);">${esc(currentEstablishment.name)}</span>
+           ${currentEstablishment.code ? `<span class="badge" style="font-size:13px">${esc(currentEstablishment.code)}</span>` : ''}
          </div>`
       : '';
 
@@ -1045,12 +1045,12 @@ const App = (() => {
         currentEstablishment = est;
         if (est && (est.name || est.code)) {
           estInfo = `
-            <div style="text-align: right; line-height: 1.2; border-right: 1px solid var(--border); padding-right: 14px; margin-right: 14px;">
+            <div style="text-align: right; line-height: 1.25; border-right: 1px solid var(--border); padding-right: 14px; margin-right: 14px;">
               <div style="display:flex; align-items:center; gap:6px; justify-content:flex-end;">
-                <span style="font-weight: 700; font-size: 13px; color: var(--text1); max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(est.name)}</span>
+                <span style="font-weight: 700; font-size: 16px; color: var(--text1); max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(est.name)}</span>
                 <button class="btn btn-ghost btn-sm" style="font-size:10px; padding:1px 6px;" onclick="App.showProjectManager()" title="Switch Active Establishment">⇄ Switch</button>
               </div>
-              <div style="font-size: 11px; color: var(--text2); font-family:monospace;">${esc(est.code)}</div>
+              <div style="font-size: 13px; color: var(--text2); font-family:monospace; margin-top:1px;">${esc(est.code)}</div>
             </div>
           `;
         }
@@ -1261,8 +1261,8 @@ const App = (() => {
               return `
                 <div class="card" style="display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border:${isCurrent ? '2px solid var(--primary)' : '1px solid var(--card-border)'}; background:var(--card);">
                   <div>
-                    <div style="font-weight:700; color:var(--text1);">${esc(e.name)}</div>
-                    <div style="font-size:11px; color:var(--text2); font-family:monospace; margin-top:2px;">${esc(e.code)} · 👥 ${e.employee_count || 0} employees</div>
+                    <div style="font-weight:700; font-size:16px; color:var(--text1);">${esc(e.name)}</div>
+                    <div style="font-size:13px; color:var(--text2); font-family:monospace; margin-top:3px;">${esc(e.code)} · 👥 ${e.employee_count || 0} employees</div>
                   </div>
                   ${isCurrent
                     ? `<span class="badge low" style="font-weight:700;">Active</span>`

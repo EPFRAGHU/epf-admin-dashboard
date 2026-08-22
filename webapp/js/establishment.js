@@ -45,8 +45,8 @@ App.registerPage('establishment', async (container) => {
         tableRows += `
           <tr class="est-row-wagegrid" style="${isCurrentActive ? 'background: rgba(99,102,241,0.04);' : ''}">
             <td style="text-align:center;">${index + 1}</td>
-            <td style="font-weight: 700; font-family:monospace; color:var(--primary);">${App.esc(eItem.code)}</td>
-            <td style="font-weight: 600; color: var(--text1);">${App.esc(eItem.name)}</td>
+            <td style="font-weight: 700; font-family:monospace; font-size:13px; color:var(--primary);">${App.esc(eItem.code)}</td>
+            <td style="font-weight: 600; font-size:16px; color: var(--text1);">${App.esc(eItem.name)}</td>
             <td style="font-size: 12px; color: var(--text2); max-width: 250px;">${App.esc(eItem.address || '—')}</td>
             <td style="font-size: 12px;">${App.esc(eItem.coverage_date || '—')}</td>
             <td style="text-align:center;">

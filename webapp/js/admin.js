@@ -1843,15 +1843,15 @@ const Admin = (() => {
             return `
               <div class="card" style="display:flex; flex-direction:column; justify-content:space-between; padding:18px; border:1px solid var(--card-border); border-radius:var(--radius); background:var(--card); box-shadow:var(--shadow);">
                 <div>
-                  <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px; gap:6px; flex-wrap:wrap;">
-                    <span class="badge low" style="font-weight:700; font-family:monospace; font-size:11px;">${App.esc(e.code)}</span>
+                  <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:8px;">
+                    <span class="badge low" style="font-weight:700; font-family:monospace; font-size:13px; align-self:flex-start;">${App.esc(e.code)}</span>
                     <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
                       ${subBadge}
                       ${billingBadge}
                       <span class="badge" style="font-size:11px; background:var(--bg2); border:1px solid var(--border); color:var(--primary); font-weight:600;">👥 ${e.employee_count}</span>
                     </div>
                   </div>
-                  <h4 style="margin:0 0 6px 0; font-size:15px; font-weight:700; color:var(--text1); line-height:1.3;">${App.esc(e.name)}</h4>
+                  <h4 style="margin:0 0 6px 0; font-size:17px; font-weight:700; color:var(--text1); line-height:1.3;">${App.esc(e.name)}</h4>
                   <p style="margin:0 0 8px 0; font-size:12px; color:var(--text2); line-height:1.4;">${App.esc(e.address || 'Address not specified')}</p>
 
                   <div style="font-size:11px; color:var(--text3); margin-bottom:4px;">Coverage Date: <strong>${App.esc(e.coverage_date || '—')}</strong></div>
@@ -2025,8 +2025,8 @@ const Admin = (() => {
       <div style="margin-bottom:14px; background:var(--bg2); padding:14px 18px; border-radius:var(--radius-sm); border:1px solid var(--border);">
         <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
           <div>
-            <div style="font-weight:700; color:var(--text1); font-size:15px;">
-              Establishment: <span style="color:var(--primary);">${App.esc(est.name)}</span> (${App.esc(est.code)})
+            <div style="font-weight:700; color:var(--text1); font-size:17px;">
+              Establishment: <span style="color:var(--primary);">${App.esc(est.name)}</span> <span style="font-size:13px; font-weight:600; color:var(--text2); font-family:monospace;">(${App.esc(est.code)})</span>
             </div>
             <div style="font-size:12px; color:var(--text2); margin-top:2px;">
               Account Holder: <strong>${App.esc(con.name || 'Unassigned')}</strong> (${App.esc(con.email || '—')})${con && con.role ? ` ${roleBadgeHtml(con.role)}` : ''}
@@ -2817,7 +2817,7 @@ const Admin = (() => {
     const bodyHtml = `
       <div style="margin-bottom:16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; background:var(--bg2); padding:12px 16px; border-radius:var(--radius-sm); border:1px solid var(--border);">
         <div>
-          <div style="font-weight:700; color:var(--text1); font-size:14px;">Establishment: <span style="color:var(--primary);">${App.esc(est.name)}</span> (${App.esc(est.code)})</div>
+          <div style="font-weight:700; color:var(--text1); font-size:16px;">Establishment: <span style="color:var(--primary);">${App.esc(est.name)}</span> <span style="font-size:13px; font-weight:600; color:var(--text2); font-family:monospace;">(${App.esc(est.code)})</span></div>
           <div style="font-size:12px; color:var(--text2); margin-top:2px;">Track and update 12-month EPFO payment / TRRN remittance compliance</div>
         </div>
         <div style="display:flex; align-items:center; gap:8px;">

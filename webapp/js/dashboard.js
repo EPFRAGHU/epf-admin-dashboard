@@ -51,8 +51,8 @@ App.registerPage('dashboard', async (container) => {
     <div class="card" style="margin-bottom:24px">
       <div class="card-head">
         <div>
-          <div class="card-title">${App.esc(data.establishment.name)}</div>
-          <div class="card-subtitle">Code: ${App.esc(data.establishment.code)} · ${App.esc(data.establishment.address)}</div>
+          <div class="card-title" style="font-size:18px;">${App.esc(data.establishment.name)}</div>
+          <div class="card-subtitle" style="font-size:13px;">Code: <span style="font-size:13px; font-weight:600; font-family:monospace;">${App.esc(data.establishment.code)}</span> · ${App.esc(data.establishment.address)}</div>
         </div>
         <button class="btn btn-ghost btn-sm" onclick="App.navigate('establishment')">Edit ✏️</button>
       </div>
@@ -355,7 +355,7 @@ window.showMonthEmployees = async (yearKey, monthIdx, monthLabel) => {
             <div id="dashboard-month-emp-pagination"></div>
         `;
         
-        const estHeader = data.establishment ? `<div style="font-size:14px; font-weight: 500; color: var(--text2); margin-bottom: 12px; margin-top: -4px;">${App.esc(data.establishment.name)} <span class="badge low" style="margin-left:8px;">${App.esc(data.establishment.code)}</span></div>` : '';
+        const estHeader = data.establishment ? `<div style="font-size:16px; font-weight: 600; color: var(--text2); margin-bottom: 12px; margin-top: -4px; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">${App.esc(data.establishment.name)} <span class="badge low" style="font-size:13px;">${App.esc(data.establishment.code)}</span></div>` : '';
         
         App.openModal(`Employees in ${monthLabel}`, estHeader + html, `<button class="btn btn-ghost" onclick="App.closeModal()">Close</button>`, true);
         

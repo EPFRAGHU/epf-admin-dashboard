@@ -91,12 +91,12 @@ const MyEstablishments = (() => {
 
           <div>
             <div style="margin-bottom:10px; display:flex; align-items:center; gap:8px;">
-              <span class="badge" style="font-family:monospace; font-weight:700; font-size:11px; background:var(--bg2); border:1px solid var(--border); color:var(--primary);">
+              <span class="badge" style="font-family:monospace; font-weight:700; font-size:13px; background:var(--bg2); border:1px solid var(--border); color:var(--primary);">
                 ${App.esc(est.code || 'CODE NOT SET')}
               </span>
             </div>
 
-            <h3 style="margin:0 0 6px 0; font-size:17px; font-weight:700; color:var(--text1); line-height:1.3; cursor:pointer;" onclick="MyEstablishments.selectEstablishment(${est.id})">
+            <h3 style="margin:0 0 6px 0; font-size:18px; font-weight:700; color:var(--text1); line-height:1.3; cursor:pointer;" onclick="MyEstablishments.selectEstablishment(${est.id})">
               ${App.esc(est.name)}
             </h3>
 

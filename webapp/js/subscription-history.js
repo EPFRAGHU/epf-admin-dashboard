@@ -52,9 +52,9 @@ const SubscriptionHistory = {
           <div>
             <button class="btn btn-ghost btn-sm" onclick="App.navigate('my-establishments')">← Back to My Establishments</button>
             <div class="section-title" style="margin-top:10px;">📜 Subscription History</div>
-            <div class="page-desc">
+            <div class="page-desc" style="font-size:16px; font-weight:600; color:var(--text1); display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
               ${App.esc(est.name)}
-              <span class="badge low" style="font-family:monospace; margin-left:6px;">${App.esc(est.code)}</span>
+              <span class="badge low" style="font-family:monospace; font-size:13px;">${App.esc(est.code)}</span>
             </div>
           </div>
           <div style="text-align:right;">
@@ -201,8 +201,8 @@ const SubscriptionHistory = {
       `
         <div style="display:flex; flex-direction:column; gap:10px; font-size:13px;">
           <div style="padding:10px 12px; background:var(--bg2); border-radius:var(--radius-sm); border:1px solid var(--border);">
-            <div style="font-weight:700; color:var(--text1);">${App.esc(est.name)}</div>
-            <div style="font-size:11px; color:var(--text3); font-family:monospace;">${App.esc(est.code)}</div>
+            <div style="font-weight:700; font-size:16px; color:var(--text1);">${App.esc(est.name)}</div>
+            <div style="font-size:13px; color:var(--text3); font-family:monospace; margin-top:2px;">${App.esc(est.code)}</div>
           </div>
           <div style="display:flex; justify-content:space-between; border-top:1px dashed var(--border); padding-top:8px;">
             <span style="color:var(--text2); font-weight:700;">Amount Topped Up</span>
