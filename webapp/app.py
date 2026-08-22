@@ -5467,14 +5467,30 @@ async def bulk_import_wages(
         del BULK_IMPORT_CACHE[req.token]
 
 
-def _match_ecr_record(project: Project, uan: str):
-    """UAN-only lookup against the EXISTING Employee Master -- deliberately never creates a
-    new master record. Returns (member_id, master_obj) or (None, None) if no existing
-    employee has this UAN."""
+def _build_uan_index(project: Project) -> Dict[str, tuple]:
+    """Builds a UAN -> (member_id, master_obj) lookup ONCE per request. project.master is
+    already keyed by member_id, not UAN, and an ECR file only carries UAN -- without this
+    index, matching each row would mean a fresh O(master_count) scan per row, i.e.
+    O(rows * master_count) for the whole file. At establishment scale (thousands of
+    employees, thousands of ECR rows) that's the difference between a couple seconds and
+    tens of seconds. Never touches project.master itself, so building this index can't
+    create or modify any master record."""
+    index = {}
     for m_id, m in project.master.items():
-        if str(m.uan or "").strip() == uan:
-            return m_id, m
-    return None, None
+        uan = str(m.uan or "").strip()
+        if uan:
+            index[uan] = (m_id, m)
+    return index
+
+
+def _build_entries_index(project: Project, year_key: str) -> Dict[str, object]:
+    """Same reasoning as _build_uan_index, for the other O(existing_entries) scan this
+    import does per row (checking/reading each matched employee's existing wage entry for
+    the target year)."""
+    yr = project.years.get(year_key)
+    if not yr:
+        return {}
+    return {e.member_id: e for e in yr.entries}
 
 
 @app.post("/api/wages/ecr-import/analyze")
@@ -5507,15 +5523,18 @@ async def ecr_import_analyze(
     token = str(uuid.uuid4())
     BULK_IMPORT_CACHE[token] = tmp.name
 
+    uan_index = _build_uan_index(project)
+    entries_index = _build_entries_index(project, year_key)
+
     matched = []
     unmatched = []
     for r in records:
-        member_id, master = _match_ecr_record(project, r["uan"])
+        member_id, master = uan_index.get(r["uan"], (None, None))
         if not master:
             unmatched.append({"uan": r["uan"], "name": r["name"], "line_no": r["line_no"]})
             continue
 
-        existing_entry = project.get_entry(year_key, member_id)
+        existing_entry = entries_index.get(member_id)
         existing_gross = existing_entry.gross_wages[month_idx] if existing_entry else 0
         existing_epf = existing_entry.wages[month_idx] if existing_entry else 0
         has_existing_data = bool((existing_gross or 0) > 0 or (existing_epf or 0) > 0)
@@ -5577,15 +5596,18 @@ async def ecr_import_confirm(
     try:
         records, _ = parse_ecr_text_file(filepath)
 
+        uan_index = _build_uan_index(project)
+        entries_index = _build_entries_index(project, req.year_key)
+
         imported = 0
         skipped_unmatched = 0
         for r in records:
-            member_id, master = _match_ecr_record(project, r["uan"])
+            member_id, master = uan_index.get(r["uan"], (None, None))
             if not master:
                 skipped_unmatched += 1
                 continue
 
-            existing_entry = project.get_entry(req.year_key, member_id)
+            existing_entry = entries_index.get(member_id)
             if existing_entry:
                 new_wages = list(existing_entry.wages)
                 new_gross = list(existing_entry.gross_wages)
