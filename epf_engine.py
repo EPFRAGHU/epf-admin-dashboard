@@ -130,6 +130,72 @@ def get_excel_sheet_names(filepath: str):
     wb = openpyxl.load_workbook(filepath, read_only=True)
     return wb.sheetnames
 
+
+ECR_FIELD_COUNT = 11  # UAN, Name, Gross, EPF Wages, EPS Wages, EDLI Wages, EPF-EE, EPS-ER, EPF-ER, NCP Days, Refund of Advances
+
+
+def parse_ecr_text_file(filepath: str):
+    """
+    Parses a standard EPFO ECR text file: one employee per line, 11 fields separated by
+    "#~#" --
+        UAN#~#Name#~#GrossWages#~#EPFWages#~#EPSWages#~#EDLIWages#~#EPF-EE#~#EPS-ER#~#EPF-ER#~#NCPDays#~#RefundOfAdvances
+
+    Only UAN, Name, Gross Wages, EPF Wages, and NCP Days are extracted for use -- fields 7-9
+    (the file's own contribution figures) are deliberately never used for anything past
+    display, since contributions are always recomputed from wages via Employee.month_rows(),
+    the same engine every other wage-entry path in this app goes through. This keeps an
+    imported month mathematically identical to one typed in by hand.
+
+    Blank lines and lines with fewer than 10 fields (missing the trailing "Refund of
+    Advances" field is tolerated) are skipped with a warning rather than raising.
+
+    Returns (records, warnings):
+        records  -- list of dicts: {"uan", "name", "gross_wages", "epf_wages", "eps_wages",
+                                     "ncp_days", "line_no"}
+        warnings -- human-readable strings for any skipped/malformed lines
+    """
+    records = []
+    warnings = []
+    with open(filepath, "r", encoding="utf-8-sig", errors="replace") as f:
+        for line_no, raw_line in enumerate(f, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            fields = line.split("#~#")
+            if len(fields) < ECR_FIELD_COUNT - 1:
+                warnings.append(f"Line {line_no}: expected at least {ECR_FIELD_COUNT - 1} #~#-separated fields, found {len(fields)} -- skipped.")
+                continue
+
+            uan = fields[0].strip()
+            name = fields[1].strip()
+
+            if not uan:
+                warnings.append(f"Line {line_no}: missing UAN -- skipped.")
+                continue
+
+            try:
+                gross_wages = float((fields[2] or "0").strip() or 0)
+                epf_wages = float((fields[3] or "0").strip() or 0)
+                eps_wages = float((fields[4] or "0").strip() or 0)
+                ncp_days = int(float((fields[9] or "0").strip() or 0)) if len(fields) > 9 else 0
+            except ValueError:
+                warnings.append(f"Line {line_no}: could not parse a numeric field for UAN {uan} -- skipped.")
+                continue
+
+            records.append({
+                "uan": uan,
+                "name": name,
+                "gross_wages": gross_wages,
+                "epf_wages": epf_wages,
+                "eps_wages": eps_wages,
+                "ncp_days": ncp_days,
+                "line_no": line_no,
+            })
+
+    return records, warnings
+
+
 def import_wages_from_excel(filepath: str, sheet_name=None, import_type="yearly", month_idx=None):
     """
     Reads a flat Excel sheet with columns such as:

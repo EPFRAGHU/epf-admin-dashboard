@@ -958,6 +958,7 @@ App.registerPage('wage-entry', async (container) => {
         <select class="form-select" id="wage-entry-year-select" onchange="switchWageEntryYear()">
           ${years.map(y => `<option value="${y.key}" ${y.key === currentYearKey ? 'selected' : ''}>${y.label}</option>`).join('')}
         </select>
+        <button class="btn btn-glass" onclick="showEcrImportModal()">📥 Import ECR File</button>
         <button class="btn btn-primary" onclick="saveMonthlyWages()">💾 Save Monthly Wages</button>
       </div>
     </div>
@@ -1134,6 +1135,7 @@ window.showEmployeeWageHistoryPopup = async (memberId, empName) => {
 };
 
 let bulkTableState = {};
+let bulkTableStateMonthIdx = null; // which month bulkTableState's cached values belong to
 window.bulkTableVisibleIds = [];
 window.bulkTableManualIds = [];
 let currentBulkPage = 1;
@@ -1347,8 +1349,12 @@ window.initBulkTableState = () => {
       }
     }
 
-    // Preserve un-saved data from previous visits to this month in the same session
-    if (bulkTableState[master.member_id]) {
+    // Preserve un-saved data from previous visits to THIS SAME month in the same session --
+    // bulkTableState isn't month-scoped by itself, so without the bulkTableStateMonthIdx
+    // check below, switching to a genuinely different month would incorrectly treat the
+    // PREVIOUS month's cached values as "unsaved data" for the newly-selected month and
+    // silently overwrite its real fetched wages with the wrong month's numbers.
+    if (bulkTableStateMonthIdx === monthIdx && bulkTableState[master.member_id]) {
       const currentSessionState = bulkTableState[master.member_id];
       if (currentSessionState.g > 0 || currentSessionState.w > 0) {
         hasCurrent = true;
@@ -1388,6 +1394,7 @@ window.initBulkTableState = () => {
     }
   });
 
+  bulkTableStateMonthIdx = monthIdx;
   currentBulkPage = 1;
   renderMonthlyTable();
 };
@@ -1568,6 +1575,163 @@ window.saveMonthlyWages = async () => {
   try {
     await App.post(`/api/years/${currentYearKey}/wages/bulk_month`, { month_idx: monthIdx, employees });
     App.toast('Monthly wages saved successfully.');
+    App.navigate('wage-entry');
+  } catch (e) {
+    App.toast(e.message, 'error');
+  }
+};
+
+/* ── Import ECR File — bulk-populate one month's wages from a standard EPFO ECR text
+   file (#~# delimited), for establishments onboarding with prior wage data already in
+   ECR format. Two-step flow (analyze -> preview -> confirm) so nothing is written until
+   the user has reviewed matched/unmatched UANs and any overwrite warnings -- unlike the
+   older single-shot "Import Excel" flow above, which writes immediately with no preview.
+   Matches employees by UAN against the EXISTING Employee Master only; never creates a
+   new master record from this import. ── */
+window.showEcrImportModal = () => {
+  const monthSelect = document.getElementById('bulk-month-select');
+  const monthIdx = monthSelect ? parseInt(monthSelect.value, 10) : 0;
+  const monthLabel = monthSelect ? monthSelect.options[monthSelect.selectedIndex].text : '';
+  const yearLabel = (document.getElementById('wage-entry-year-select') || {}).selectedOptions
+    ? document.getElementById('wage-entry-year-select').selectedOptions[0].text
+    : currentYearKey;
+
+  const body = `
+    <div id="ecr-import-body">
+      <p style="font-size:13px; color:var(--text2); line-height:1.5; margin-bottom:12px;">
+        Upload a standard EPFO ECR text file (11 fields, <code>#~#</code> delimited) to bulk-populate wages for
+        <strong>${App.esc(monthLabel)}</strong>, FY <strong>${App.esc(yearLabel)}</strong>.
+        Only employees already in your Employee Master are matched, by UAN — this import never creates new employee records.
+      </p>
+      <div class="form-group">
+        <label class="form-label">ECR Text File (.txt)</label>
+        <input type="file" id="ecr-import-file" accept=".txt" class="form-input">
+      </div>
+      <div id="ecr-import-preview" style="margin-top:16px;"></div>
+    </div>
+  `;
+  const footer = `
+    <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
+    <button class="btn btn-primary" id="ecr-import-analyze-btn" onclick="analyzeEcrImport(${monthIdx})">Analyze File</button>
+  `;
+  App.openModal('Import ECR File', body, footer, true);
+};
+
+window.analyzeEcrImport = async (monthIdx) => {
+  const fileInput = document.getElementById('ecr-import-file');
+  if (!fileInput.files.length) return App.toast('Select a .txt file first', 'error');
+
+  const btn = document.getElementById('ecr-import-analyze-btn');
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Analyzing…';
+
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+  formData.append('year_key', currentYearKey);
+  formData.append('month_idx', monthIdx);
+
+  try {
+    const data = await App.post('/api/wages/ecr-import/analyze', formData);
+    renderEcrImportPreview(data);
+  } catch (e) {
+    App.toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+};
+
+function renderEcrImportPreview(data) {
+  const preview = document.getElementById('ecr-import-preview');
+  if (!preview) return;
+
+  const sample = data.matched.slice(0, 8);
+  const sampleRows = sample.map(m => `
+    <tr style="${m.has_existing_data ? 'background:rgba(245,158,11,0.08);' : ''}">
+      <td>${App.esc(m.uan)}</td>
+      <td>${App.esc(m.master_name)}</td>
+      <td class="num">₹${App.fmt(m.gross_wages)}</td>
+      <td class="num">₹${App.fmt(m.epf_wages)}</td>
+      <td class="num">${m.ncp_days}</td>
+      <td style="text-align:center;">${m.has_existing_data ? '<span class="badge high" style="font-size:10px;">Overwrites existing</span>' : ''}</td>
+    </tr>
+  `).join('');
+
+  const unmatchedRows = data.unmatched.map(u => `
+    <div style="display:flex; justify-content:space-between; gap:8px; padding:4px 8px; font-size:12px; border-bottom:1px solid var(--card-border);">
+      <span><strong>${App.esc(u.uan)}</strong> — ${App.esc(u.name || '(no name in file)')}</span>
+      <span style="color:var(--text3);">line ${u.line_no}</span>
+    </div>
+  `).join('');
+
+  preview.innerHTML = `
+    <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:14px;">
+      <div class="card" style="flex:1; min-width:120px; padding:10px 14px; text-align:center;">
+        <div style="font-size:20px; font-weight:800; color:var(--text1);">${data.parsed_count}</div>
+        <div style="font-size:11px; color:var(--text3); text-transform:uppercase;">Rows Parsed</div>
+      </div>
+      <div class="card" style="flex:1; min-width:120px; padding:10px 14px; text-align:center;">
+        <div style="font-size:20px; font-weight:800; color:var(--green);">${data.matched_count}</div>
+        <div style="font-size:11px; color:var(--text3); text-transform:uppercase;">Matched</div>
+      </div>
+      <div class="card" style="flex:1; min-width:120px; padding:10px 14px; text-align:center;">
+        <div style="font-size:20px; font-weight:800; color:${data.unmatched_count ? 'var(--red)' : 'var(--text1)'};">${data.unmatched_count}</div>
+        <div style="font-size:11px; color:var(--text3); text-transform:uppercase;">UAN Not Found</div>
+      </div>
+      <div class="card" style="flex:1; min-width:120px; padding:10px 14px; text-align:center;">
+        <div style="font-size:20px; font-weight:800; color:${data.overwrite_count ? 'var(--amber)' : 'var(--text1)'};">${data.overwrite_count}</div>
+        <div style="font-size:11px; color:var(--text3); text-transform:uppercase;">Will Overwrite</div>
+      </div>
+    </div>
+
+    ${data.unmatched_count > 0 ? `
+      <div style="background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.25); border-radius:var(--radius-sm); padding:10px 12px; margin-bottom:14px;">
+        <div style="font-weight:600; font-size:13px; color:var(--red); margin-bottom:4px;">⚠️ ${data.unmatched_count} UAN(s) not found in Employee Master — these rows will be skipped:</div>
+        <div style="max-height:140px; overflow-y:auto;">${unmatchedRows}</div>
+        <div style="font-size:11px; color:var(--text2); margin-top:6px;">Add these employees to the Employee Master first, then re-import, if you want their wages included.</div>
+      </div>
+    ` : ''}
+
+    ${data.overwrite_count > 0 ? `
+      <div style="background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.25); border-radius:var(--radius-sm); padding:10px 12px; margin-bottom:14px; font-size:12px; color:var(--text1);">
+        ⚠️ ${data.overwrite_count} matched employee(s) already have wage data for this month — importing will overwrite it (highlighted below).
+      </div>
+    ` : ''}
+
+    ${data.matched_count > 0 ? `
+      <div style="font-weight:600; font-size:13px; margin-bottom:6px;">Sample of wages that will be written (first ${sample.length} of ${data.matched_count}):</div>
+      <div class="table-wrap" style="max-height:220px; overflow-y:auto; border:1px solid var(--card-border); border-radius:var(--radius-sm); margin-bottom:14px;">
+        <table class="est-table" style="margin:0; font-size:12px;">
+          <thead style="position:sticky; top:0; background:var(--bg2);">
+            <tr><td>UAN</td><td>Name</td><td class="num">Gross</td><td class="num">EPF</td><td class="num">NCP</td><td></td></tr>
+          </thead>
+          <tbody>${sampleRows}</tbody>
+        </table>
+      </div>
+    ` : '<p style="color:var(--text3); font-size:13px;">No matched employees to import.</p>'}
+
+    ${data.parse_warnings.length ? `
+      <details style="font-size:11px; color:var(--text3); margin-bottom:12px;">
+        <summary style="cursor:pointer;">${data.parse_warnings.length} file parsing warning(s)</summary>
+        ${data.parse_warnings.map(w => `<div>${App.esc(w)}</div>`).join('')}
+      </details>
+    ` : ''}
+
+    <div style="display:flex; justify-content:flex-end; gap:8px; border-top:1px solid var(--card-border); padding-top:12px;">
+      <button class="btn btn-primary" ${data.matched_count === 0 ? 'disabled' : ''} onclick="confirmEcrImport('${data.token}', '${App.esc(data.year_key)}', ${data.month_idx})">
+        ✅ Confirm Import (${data.matched_count} employee${data.matched_count === 1 ? '' : 's'})
+      </button>
+    </div>
+  `;
+}
+
+window.confirmEcrImport = async (token, yearKey, monthIdx) => {
+  try {
+    App.toast('Importing…', 'info');
+    const res = await App.post('/api/wages/ecr-import/confirm', { token, year_key: yearKey, month_idx: monthIdx });
+    App.toast(`Imported wages for ${res.imported} employee${res.imported === 1 ? '' : 's'}.`);
+    App.closeModal();
     App.navigate('wage-entry');
   } catch (e) {
     App.toast(e.message, 'error');

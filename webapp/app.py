@@ -163,7 +163,7 @@ from epf_engine import (
     Project, ExcelGenerator, MONTHS, MONTH_FULL,
     SCHEME_PRE_1997, SCHEME_POST_1997,
     REASONS_FOR_LEAVING, SUPERANNUATION_AGE, calc_age_years,
-    import_wages_from_excel, generate_form9, import_master_from_excel,
+    import_wages_from_excel, generate_form9, import_master_from_excel, parse_ecr_text_file,
     natural_sort_key, get_wage_ceilings_for_year,
     account2_rate_percent, account22_rate_percent,
     ACCOUNT_21_RATE, ACCOUNT_22_MIN,
@@ -5465,6 +5465,155 @@ async def bulk_import_wages(
     finally:
         os.unlink(filepath)
         del BULK_IMPORT_CACHE[req.token]
+
+
+def _match_ecr_record(project: Project, uan: str):
+    """UAN-only lookup against the EXISTING Employee Master -- deliberately never creates a
+    new master record. Returns (member_id, master_obj) or (None, None) if no existing
+    employee has this UAN."""
+    for m_id, m in project.master.items():
+        if str(m.uan or "").strip() == uan:
+            return m_id, m
+    return None, None
+
+
+@app.post("/api/wages/ecr-import/analyze")
+async def ecr_import_analyze(
+    file: UploadFile = File(...),
+    year_key: str = Form(...),
+    month_idx: int = Form(...),
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+):
+    """Step 1 of the ECR-file import: parse + match only, write nothing. Returns a preview
+    (matched employees with their parsed wages, unmatched UANs, and which matched employees
+    already have data for this month that would be overwritten) so the user can review
+    before confirming via /api/wages/ecr-import/confirm."""
+    est_obj, project = active
+    if year_key not in project.years:
+        raise HTTPException(404, "Financial year not found")
+    if not (0 <= month_idx <= 11):
+        raise HTTPException(400, "Invalid month index")
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".txt", delete=False)
+    tmp.write(await file.read())
+    tmp.close()
+
+    try:
+        records, parse_warnings = parse_ecr_text_file(tmp.name)
+    except Exception as e:
+        os.unlink(tmp.name)
+        raise HTTPException(400, f"Could not read file: {e}")
+
+    token = str(uuid.uuid4())
+    BULK_IMPORT_CACHE[token] = tmp.name
+
+    matched = []
+    unmatched = []
+    for r in records:
+        member_id, master = _match_ecr_record(project, r["uan"])
+        if not master:
+            unmatched.append({"uan": r["uan"], "name": r["name"], "line_no": r["line_no"]})
+            continue
+
+        existing_entry = project.get_entry(year_key, member_id)
+        existing_gross = existing_entry.gross_wages[month_idx] if existing_entry else 0
+        existing_epf = existing_entry.wages[month_idx] if existing_entry else 0
+        has_existing_data = bool((existing_gross or 0) > 0 or (existing_epf or 0) > 0)
+
+        matched.append({
+            "uan": r["uan"],
+            "file_name": r["name"],
+            "master_name": master.name,
+            "member_id": member_id,
+            "gross_wages": r["gross_wages"],
+            "epf_wages": r["epf_wages"],
+            "eps_wages": r["eps_wages"],
+            "ncp_days": r["ncp_days"],
+            "has_existing_data": has_existing_data,
+            "existing_gross": existing_gross,
+            "existing_epf": existing_epf,
+        })
+
+    return {
+        "token": token,
+        "year_key": year_key,
+        "month_idx": month_idx,
+        "parsed_count": len(records),
+        "matched_count": len(matched),
+        "unmatched_count": len(unmatched),
+        "overwrite_count": sum(1 for m in matched if m["has_existing_data"]),
+        "matched": matched,
+        "unmatched": unmatched,
+        "parse_warnings": parse_warnings[:50],
+    }
+
+
+class EcrImportConfirmReq(BaseModel):
+    token: str
+    year_key: str
+    month_idx: int
+
+
+@app.post("/api/wages/ecr-import/confirm")
+async def ecr_import_confirm(
+    req: EcrImportConfirmReq,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    """Step 2: re-parses the SAME cached file (guarantees confirm can never drift from what
+    was previewed) and writes wages via project.upsert_entry() ONLY for UANs that match an
+    existing Employee Master record -- never project.upsert_master(), so this import can
+    never create an incomplete employee record. Only the target month_idx is touched; every
+    other month already on file for each employee is preserved untouched."""
+    est_obj, project = active
+    if req.token not in BULK_IMPORT_CACHE:
+        raise HTTPException(400, "File expired or not found. Please upload again.")
+    if req.year_key not in project.years:
+        raise HTTPException(404, "Financial year not found")
+    if not (0 <= req.month_idx <= 11):
+        raise HTTPException(400, "Invalid month index")
+
+    filepath = BULK_IMPORT_CACHE[req.token]
+    try:
+        records, _ = parse_ecr_text_file(filepath)
+
+        imported = 0
+        skipped_unmatched = 0
+        for r in records:
+            member_id, master = _match_ecr_record(project, r["uan"])
+            if not master:
+                skipped_unmatched += 1
+                continue
+
+            existing_entry = project.get_entry(req.year_key, member_id)
+            if existing_entry:
+                new_wages = list(existing_entry.wages)
+                new_gross = list(existing_entry.gross_wages)
+                new_ncp = list(getattr(existing_entry, 'ncp_days', [0] * 12))
+            else:
+                new_wages = [0.0] * 12
+                new_gross = [0.0] * 12
+                new_ncp = [0] * 12
+
+            # Only the imported wage figures are written -- the file's own EE/EPS/ER
+            # contribution fields were never even carried this far; every contribution
+            # figure downstream is always recomputed from these wages via
+            # Employee.month_rows(), the same engine every other wage-entry path uses.
+            new_wages[req.month_idx] = r["epf_wages"]
+            new_gross[req.month_idx] = r["gross_wages"]
+            new_ncp[req.month_idx] = r["ncp_days"]
+            project.upsert_entry(req.year_key, member_id, new_wages, new_gross, new_ncp)
+            imported += 1
+
+        save_establishment_project(db, est_obj, project)
+        return {"ok": True, "imported": imported, "skipped_unmatched": skipped_unmatched}
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    finally:
+        if os.path.exists(filepath):
+            os.unlink(filepath)
+        if req.token in BULK_IMPORT_CACHE:
+            del BULK_IMPORT_CACHE[req.token]
 
 
 @app.post("/api/import/{key}")
