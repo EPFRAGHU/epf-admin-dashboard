@@ -442,6 +442,27 @@ app.mount("/js", StaticFiles(directory=str(WEB / "js")), name="js")
 app.mount("/docs", StaticFiles(directory=str(WEB / "static_docs")), name="docs")
 
 
+@app.middleware("http")
+async def _no_stale_app_shell_cache(request: Request, call_next):
+    """The custom domain (epf-dashboard.xyz) is proxied through Cloudflare. Neither the
+    index.html route nor these StaticFiles mounts send an explicit Cache-Control header,
+    so without one Cloudflare falls back to its own default edge caching for static file
+    types (js/css) -- it can keep serving an old deployed copy from some edge nodes for a
+    while after a Render deploy, independent of how fast Render itself updates. Reported
+    as "changes take too long to show up in the browser after deploying".
+
+    `no-cache` (not `no-store`) still lets Cloudflare/the browser cache the response, but
+    forces a conditional revalidation (If-None-Match/ETag) with the origin on every
+    request -- a fresh deploy is picked up immediately (200 with new content) while an
+    unchanged file still gets the cheap 304 path, so this costs nothing when nothing
+    changed."""
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/js/") or path.startswith("/css/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 # ── Startup Data Migration & Seed ──────────────────────────────────────────
 def _run_startup_migrations():
     if not SessionLocal:
