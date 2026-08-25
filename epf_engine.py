@@ -631,6 +631,8 @@ class Employee:
     ncp_days: List[int] = field(default_factory=lambda: [0] * 12)
     higher_epf_ee: bool = False
     higher_epf_er: bool = False
+    pohw: bool = False                    # Pension on Higher Wages -- see month_rows()
+    pohw_additional_1_16: bool = False    # optional add-on within PoHW, off by default -- see month_rows()
     age_crosses_58: bool = False
     dob: str = ''
     sex: str = ''
@@ -659,16 +661,42 @@ class Employee:
             
             # Post-1997 calculation restrictions:
             if worker_eps_rate == 0:
-                worker_wage_base = w if self.higher_epf_ee else min(w, ceiling)
-                er_total_wage_base = w if self.higher_epf_er else min(w, ceiling)
-                eps_wage = 0 if self.age_crosses_58 else min(w, ceiling)
-                
+                if self.pohw:
+                    # Pension on Higher Wages: unlike ordinary Higher EPF (EE)/(ER)
+                    # below, EPS itself is computed on the actual (uncapped) wage, not
+                    # the ceiling -- both the employee and employer sides are always on
+                    # the full wage while this is ticked, independent of whatever the
+                    # Higher EPF (EE)/(ER) checkboxes say.
+                    worker_wage_base = w
+                    er_total_wage_base = w
+                    eps_wage = 0 if self.age_crosses_58 else w
+                else:
+                    worker_wage_base = w if self.higher_epf_ee else min(w, ceiling)
+                    er_total_wage_base = w if self.higher_epf_er else min(w, ceiling)
+                    eps_wage = 0 if self.age_crosses_58 else min(w, ceiling)
+
                 w_epf = round(worker_wage_base * worker_epf_rate / 100)
                 w_eps = round(w * worker_eps_rate / 100)  # Will be 0 anyway
-                
+
                 e_eps = round(eps_wage * employer_eps_rate / 100)
                 total_er_contrib = round(er_total_wage_base * worker_epf_rate / 100)
-                e_epf = max(0, total_er_contrib - e_eps) 
+                # e_epf is derived from the STANDARD EPS share only, before any 1.16%
+                # add-on below is folded in -- the 1.16% is an additional employer
+                # outgo on top of the usual 12% total, not a redistribution of it.
+                e_epf = max(0, total_er_contrib - e_eps)
+
+                if self.pohw and self.pohw_additional_1_16 and not self.age_crosses_58 and w > ceiling:
+                    # Additional 1.16% employer contribution on the wage portion above
+                    # the ceiling, from the 2014 EPS amendment. The Supreme Court struck
+                    # this down as ultra vires in Nov 2022 (EPFO v. Sunil Kumar B) and
+                    # current EPFO higher-pension practice does not collect it -- kept
+                    # here as an explicit, off-by-default opt-in only for establishments
+                    # that specifically need to apply/reference it. Folded into e_eps
+                    # (Account 10/Pension Fund), the same pension-related grouping used
+                    # when this figure is quoted -- Account 10 on generated forms will
+                    # show more than the standard 8.33% for these employees while this
+                    # is ticked.
+                    e_eps += round((w - ceiling) * 1.16 / 100)
 
             else:
                 w_epf = round(w * worker_epf_rate / 100)
@@ -777,6 +805,8 @@ class MasterEmployee:
     ifsc: str = ""
     higher_epf_ee: bool = False
     higher_epf_er: bool = False
+    pohw: bool = False
+    pohw_additional_1_16: bool = False
     branch_id: int = 0
     division_id: Optional[int] = None
     unit_id: Optional[int] = None
@@ -799,6 +829,8 @@ class MasterEmployee:
             ifsc=d.get("ifsc", ""),
             higher_epf_ee=d.get("higher_epf_ee", False),
             higher_epf_er=d.get("higher_epf_er", False),
+            pohw=d.get("pohw", False),
+            pohw_additional_1_16=d.get("pohw_additional_1_16", False),
             branch_id=d.get("branch_id", 0) or 0,
             division_id=d.get("division_id"),
             unit_id=d.get("unit_id"))
@@ -925,6 +957,7 @@ class Project:
                        doe="", reason_leaving="", serial_no=None, relationship="", marital_status="",
                        mobile="", email="", aadhaar="", bank_account="", ifsc="",
                        higher_epf_ee=False, higher_epf_er=False,
+                       pohw=False, pohw_additional_1_16=False,
                        branch_id=None, division_id=None, unit_id=None):
         member_id = normalize_member_id(member_id)
 
@@ -960,6 +993,8 @@ class Project:
             if ifsc: m.ifsc = ifsc
             m.higher_epf_ee = higher_epf_ee
             m.higher_epf_er = higher_epf_er
+            m.pohw = pohw
+            m.pohw_additional_1_16 = pohw_additional_1_16
             m.branch_id = branch_id
             m.division_id = division_id
             m.unit_id = unit_id
@@ -973,6 +1008,7 @@ class Project:
                                                        mobile=mobile, email=email, aadhaar=aadhaar,
                                                        bank_account=bank_account, ifsc=ifsc,
                                                        higher_epf_ee=higher_epf_ee, higher_epf_er=higher_epf_er,
+                                                       pohw=pohw, pohw_additional_1_16=pohw_additional_1_16,
                                                        branch_id=branch_id, division_id=division_id, unit_id=unit_id)
 
     # ---- org structure: Branch -> Division -> Unit ----
@@ -1137,7 +1173,8 @@ class Project:
         return None
 
 
-    def upsert_entry(self, year_key, member_id, wages, gross_wages=None, ncp_days=None, age_crosses_58=False, higher_epf_ee=None, higher_epf_er=None):
+    def upsert_entry(self, year_key, member_id, wages, gross_wages=None, ncp_days=None, age_crosses_58=False,
+                      higher_epf_ee=None, higher_epf_er=None, pohw=None, pohw_additional_1_16=None):
         yr = self.years[year_key]
         member_id = normalize_member_id(member_id)
         wages = [int(round(float(w))) if w is not None else 0 for w in wages]
@@ -1145,13 +1182,17 @@ class Project:
         else: gross_wages = [int(round(float(g))) if g is not None else 0 for g in gross_wages]
         if ncp_days is None: ncp_days = [0] * 12
         else: ncp_days = [int(n) if n is not None else 0 for n in ncp_days]
-        
+
         m = self.get_master(member_id)
         if m:
             if higher_epf_ee is not None:
                 m.higher_epf_ee = higher_epf_ee
             if higher_epf_er is not None:
                 m.higher_epf_er = higher_epf_er
+            if pohw is not None:
+                m.pohw = pohw
+            if pohw_additional_1_16 is not None:
+                m.pohw_additional_1_16 = pohw_additional_1_16
         for e in yr.entries:
             if e.member_id == member_id:
                 e.wages = wages
@@ -1198,6 +1239,8 @@ class Project:
                                     ncp_days=list(getattr(e, 'ncp_days', [0]*12)),
                                     higher_epf_ee=m.higher_epf_ee if m else False,
                                     higher_epf_er=m.higher_epf_er if m else False,
+                                    pohw=m.pohw if m else False,
+                                    pohw_additional_1_16=m.pohw_additional_1_16 if m else False,
                                     age_crosses_58=getattr(e, 'age_crosses_58', False),
                                     dob=dob, sex=sex, doj=doj, doe=doe, reason_leaving=reason_leaving,
                                     branch_id=branch_id, division_id=division_id, unit_id=unit_id))

@@ -220,6 +220,18 @@ App.registerPage('employees', async (container) => {
             Higher EPF (ER)
           </label>
         </div>
+        <div class="form-group">
+          <label class="form-label" style="display:flex;align-items:center;gap:6px;white-space:nowrap;" title="EPS computed on actual (uncapped) wage instead of the ₹15,000 ceiling -- standalone, doesn't need Higher EPF (EE)/(ER) also ticked">
+            <input type="checkbox" id="ae-pohw">
+            Pension on Higher Wages
+          </label>
+        </div>
+        <div class="form-group">
+          <label class="form-label" style="display:flex;align-items:center;gap:6px;white-space:nowrap;" title="Additional 1.16% employer contribution on wages above the ceiling -- struck down by the Supreme Court (Nov 2022), not collected under current EPFO practice. Off by default.">
+            <input type="checkbox" id="ae-pohw-116">
+            + 1.16% Add-on (legacy)
+          </label>
+        </div>
         <div class="form-group" style="grid-column: span 3;">
           <label class="form-label">Branch / Division / Unit</label>
           <div id="ae-scope-picker"></div>
@@ -288,7 +300,7 @@ window.clearAddEmpForm = () => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
-  ['ae-higher-epf-ee', 'ae-higher-epf-er'].forEach(id => {
+  ['ae-higher-epf-ee', 'ae-higher-epf-er', 'ae-pohw', 'ae-pohw-116'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.checked = false;
   });
@@ -319,6 +331,8 @@ window.saveNewEmpFromPage = async () => {
     ifsc: document.getElementById('ae-ifsc').value.trim().toUpperCase(),
     higher_epf_ee: document.getElementById('ae-higher-epf-ee').checked,
     higher_epf_er: document.getElementById('ae-higher-epf-er').checked,
+    pohw: document.getElementById('ae-pohw').checked,
+    pohw_additional_1_16: document.getElementById('ae-pohw-116').checked,
   };
   const pickerEl = document.getElementById('ae-scope-picker');
   if (pickerEl) {
@@ -388,7 +402,8 @@ function empRow(e) {
     <td>${App.esc(e.dob)}${e.superannuation ? '<br><span class="badge high" style="margin-top:2px; display:inline-block">58+</span>' : ''}</td>
     <td>
       ${e.higher_epf_ee ? '<span class="badge low" style="margin-bottom:2px">H.EPF(EE)</span><br>' : ''}
-      ${e.higher_epf_er ? '<span class="badge low">H.EPF(ER)</span>' : ''}
+      ${e.higher_epf_er ? '<span class="badge low" style="margin-bottom:2px">H.EPF(ER)</span><br>' : ''}
+      ${e.pohw ? `<span class="badge high" style="margin-bottom:2px" title="Pension on Higher Wages${e.pohw_additional_1_16 ? ' + 1.16% add-on' : ''}">PoHW${e.pohw_additional_1_16 ? '+1.16%' : ''}</span>` : ''}
     </td>
     <td>${App.esc(e.sex)}</td>
     <td>${App.esc(e.doj)}</td>
@@ -520,6 +535,20 @@ async function showEmpModal(emp = null, opts = {}) {
         </label>
         <p style="font-size:10px;color:var(--text3);margin-top:2px;">Employer PF on actual wages</p>
       </div>
+      <div class="form-group">
+        <label class="form-label" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="m-pohw" ${e.pohw ? 'checked' : ''}>
+          Pension on Higher Wages (PoHW)
+        </label>
+        <p style="font-size:10px;color:var(--text3);margin-top:2px;">EPS on actual (uncapped) wage -- standalone, doesn't need Higher EPF (EE)/(ER) ticked</p>
+      </div>
+      <div class="form-group">
+        <label class="form-label" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="m-pohw-116" ${e.pohw_additional_1_16 ? 'checked' : ''}>
+          + 1.16% Add-on (legacy)
+        </label>
+        <p style="font-size:10px;color:var(--text3);margin-top:2px;">Struck down by Supreme Court (Nov 2022), not collected under current EPFO practice. Off by default.</p>
+      </div>
     </div>`;
   const footer = `
     <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
@@ -557,6 +586,8 @@ async function saveEmp(origAcc) {
     ifsc: document.getElementById('m-ifsc').value.trim().toUpperCase(),
     higher_epf_ee: document.getElementById('m-higher-epf-ee').checked,
     higher_epf_er: document.getElementById('m-higher-epf-er').checked,
+    pohw: document.getElementById('m-pohw').checked,
+    pohw_additional_1_16: document.getElementById('m-pohw-116').checked,
   };
   const pickerEl = document.getElementById('m-scope-picker');
   if (pickerEl) {

@@ -911,6 +911,8 @@ class EmployeeIn(BaseModel):
     ifsc: str = ""
     higher_epf_ee: bool = False
     higher_epf_er: bool = False
+    pohw: bool = False
+    pohw_additional_1_16: bool = False
     branch_id: Optional[int] = None
     division_id: Optional[int] = None
     unit_id: Optional[int] = None
@@ -941,6 +943,8 @@ class WageIn(BaseModel):
     age_crosses_58: bool = False
     higher_epf_ee: bool = False
     higher_epf_er: bool = False
+    pohw: bool = False
+    pohw_additional_1_16: bool = False
 
 class BulkMonthWageUpdate(BaseModel):
     member_id: str
@@ -950,6 +954,8 @@ class BulkMonthWageUpdate(BaseModel):
     age_crosses_58: bool = False
     higher_epf_ee: bool = False
     higher_epf_er: bool = False
+    pohw: bool = False
+    pohw_additional_1_16: bool = False
 
 class BulkMonthWagesIn(BaseModel):
     month_idx: int
@@ -4229,6 +4235,8 @@ async def list_employees(active: Tuple[Establishment, Project] = Depends(get_act
             "superannuation": age is not None and age >= SUPERANNUATION_AGE,
             "higher_epf_ee": m.higher_epf_ee,
             "higher_epf_er": m.higher_epf_er,
+            "pohw": m.pohw,
+            "pohw_additional_1_16": m.pohw_additional_1_16,
             "branch_id": m.branch_id,
             "division_id": m.division_id,
             "unit_id": m.unit_id,
@@ -4253,6 +4261,7 @@ async def add_employee(
                               d.dob, d.sex, d.doj, d.doe, d.reason_leaving, d.serial_no,
                               d.relationship, d.marital_status, d.mobile, d.email, d.aadhaar,
                               d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er,
+                              d.pohw, d.pohw_additional_1_16,
                               d.branch_id, d.division_id, d.unit_id)
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -4284,6 +4293,7 @@ async def edit_employee(
                               d.dob, d.sex, d.doj, d.doe, d.reason_leaving, d.serial_no,
                               d.relationship, d.marital_status, d.mobile, d.email, d.aadhaar,
                               d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er,
+                              d.pohw, d.pohw_additional_1_16,
                               d.branch_id, d.division_id, d.unit_id)
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -4598,6 +4608,8 @@ async def get_wages(
             "ncp_days": getattr(emp, 'ncp_days', [0]*12),
             "higher_epf_ee": emp.higher_epf_ee,
             "higher_epf_er": emp.higher_epf_er,
+            "pohw": emp.pohw,
+            "pohw_additional_1_16": emp.pohw_additional_1_16,
             "age_crosses_58": emp.age_crosses_58,
             "months": [{"m": MONTHS[i], "w": int(round(r[0])),
                         "we": int(round(r[1])), "ws": int(round(r[2])), "wt": int(round(r[3])),
@@ -4645,7 +4657,9 @@ async def put_wages(
     wages_int = [int(round(float(w))) if w is not None else 0 for w in d.wages]
     capped_wages = [min(w, g) for w, g in zip(wages_int, gross_wages)]
     ncp_days = d.ncp_days if d.ncp_days and len(d.ncp_days) == 12 else [0] * 12
-    project.upsert_entry(key, d.member_id, capped_wages, gross_wages=gross_wages, ncp_days=ncp_days, age_crosses_58=d.age_crosses_58, higher_epf_ee=d.higher_epf_ee, higher_epf_er=d.higher_epf_er)
+    project.upsert_entry(key, d.member_id, capped_wages, gross_wages=gross_wages, ncp_days=ncp_days, age_crosses_58=d.age_crosses_58,
+                          higher_epf_ee=d.higher_epf_ee, higher_epf_er=d.higher_epf_er,
+                          pohw=d.pohw, pohw_additional_1_16=d.pohw_additional_1_16)
     save_establishment_project(db, est_obj, project)
     sync_subscription_fees_for_year(db, est_obj, project, key)
     
@@ -4704,7 +4718,9 @@ async def bulk_month_wages(
             ncp_days=ncp_days_arr, 
             age_crosses_58=emp_update.age_crosses_58,
             higher_epf_ee=emp_update.higher_epf_ee,
-            higher_epf_er=emp_update.higher_epf_er
+            higher_epf_er=emp_update.higher_epf_er,
+            pohw=emp_update.pohw,
+            pohw_additional_1_16=emp_update.pohw_additional_1_16
         )
         
     save_establishment_project(db, est_obj, project)
@@ -4819,10 +4835,12 @@ def _build_employee_wage_history_data(project: Project, member_id: str) -> Optio
             er_eps = [int(round(r[5])) for r in mrows]   # e_eps -- employer's EPS/pension share
             higher_epf_ee = bool(emp.higher_epf_ee)
             higher_epf_er = bool(emp.higher_epf_er)
+            pohw = bool(emp.pohw)
+            pohw_additional_1_16 = bool(emp.pohw_additional_1_16)
             age_crosses_58 = bool(emp.age_crosses_58)
         else:
             ee_epf = er_epf = er_eps = [0] * 12
-            higher_epf_ee = higher_epf_er = age_crosses_58 = False
+            higher_epf_ee = higher_epf_er = pohw = pohw_additional_1_16 = age_crosses_58 = False
 
         month_total = [ee_epf[i] + er_epf[i] + er_eps[i] for i in range(12)]
 
@@ -4840,6 +4858,8 @@ def _build_employee_wage_history_data(project: Project, member_id: str) -> Optio
             "month_total_total": sum(month_total),
             "higher_epf_ee": higher_epf_ee,
             "higher_epf_er": higher_epf_er,
+            "pohw": pohw,
+            "pohw_additional_1_16": pohw_additional_1_16,
             "age_crosses_58": age_crosses_58
         })
 
@@ -5160,6 +5180,8 @@ def _build_ecr_employees_for_scope(project: Project, year_record, branch_id=None
             emp_obj.ncp_days = getattr(entry, 'ncp_days', [0] * 12)
             emp_obj.higher_epf_ee = master_emp.higher_epf_ee
             emp_obj.higher_epf_er = master_emp.higher_epf_er
+            emp_obj.pohw = master_emp.pohw
+            emp_obj.pohw_additional_1_16 = master_emp.pohw_additional_1_16
             emp_obj.age_crosses_58 = getattr(entry, 'age_crosses_58', False)
         else:
             emp_obj.wages = [0.0] * 12
@@ -5331,6 +5353,8 @@ async def generate_ecr_zip_by_scope(
                 ncp_days=getattr(entry, 'ncp_days', [0]*12) if entry else [0]*12,
                 higher_epf_ee=master_emp.higher_epf_ee,
                 higher_epf_er=master_emp.higher_epf_er,
+                pohw=master_emp.pohw,
+                pohw_additional_1_16=master_emp.pohw_additional_1_16,
                 age_crosses_58=getattr(entry, 'age_crosses_58', False) if entry else False
             )
             scope_emps[key][1].append(emp_obj)
