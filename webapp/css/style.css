@@ -611,6 +611,28 @@ html[data-theme="dark"] input[type="date"] { color-scheme: dark; }
   box-shadow: 0 0 0 2px var(--accent-glow);
 }
 
+/* Group each employee's info-row + data-row (renderMonthlyTable() in wages.js) into
+   one visually distinct block: no border between the pair, so they read as one unit,
+   a bolder border between different employees' blocks, and a colored left/right accent
+   that lights up across BOTH rows together when the block is clicked. */
+.wage-table .bulk-row-info td { border-bottom: none; padding-bottom: 6px; }
+.wage-table .bulk-row-info,
+.wage-table .bulk-row {
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
+}
+.wage-table .bulk-row td { border-bottom: 2px solid var(--card-border); }
+.wage-table tr.emp-block-active {
+  border-left-color: var(--accent) !important;
+  border-right-color: var(--accent) !important;
+}
+/* Background goes on the cells, not the row: a <tr> background only shows through
+   wherever its <td>s don't paint their own, so painting it on the row alone is
+   unreliable across browsers/table layouts -- painting each cell directly is not. */
+.wage-table tr.emp-block-active > td {
+  background: var(--accent-glow) !important;
+}
+
 /* Hide spin buttons for number inputs */
 input[type=number]::-webkit-inner-spin-button, 
 input[type=number]::-webkit-outer-spin-button { 

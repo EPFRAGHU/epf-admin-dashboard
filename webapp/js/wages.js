@@ -1637,6 +1637,23 @@ window.renderMonthlyTable = () => {
     grossInp.addEventListener('blur', handleBlur);
     ncpInp.addEventListener('blur', (e) => { if (e.target.value === '') e.target.value = '0'; recalc(); });
 
+    // Clicking anywhere in either row of this employee's block highlights BOTH rows
+    // together (the CSS .emp-block-active rule handles the actual coloring) -- makes
+    // the pair read as one clickable unit instead of two separately-hoverable rows.
+    // Clicking a checkbox/input/button/link still just does that control's own job,
+    // without also toggling the block highlight.
+    const toggleBlockActive = (e) => {
+      if (e.target.closest('input, button, a, select, textarea')) return;
+      const wasActive = tr.classList.contains('emp-block-active');
+      tbody.querySelectorAll('.emp-block-active').forEach(el => el.classList.remove('emp-block-active'));
+      if (!wasActive) {
+        infoRow.classList.add('emp-block-active');
+        tr.classList.add('emp-block-active');
+      }
+    };
+    infoRow.addEventListener('click', toggleBlockActive);
+    tr.addEventListener('click', toggleBlockActive);
+
     recalc();
   });
 };
