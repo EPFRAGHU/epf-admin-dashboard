@@ -1020,7 +1020,7 @@ App.registerPage('wage-entry', async (container) => {
               <th style="width:32px"><input type="checkbox" id="bulk-select-all" onchange="toggleSelectAllWageRows(this)" title="Select all on this page"></th>
               <th class="txt" style="width:60px">Sl No.</th>
               <th class="txt" style="width:150px">UAN</th>
-              <th class="txt" style="min-width:280px">Name & Options</th>
+              <th class="txt" style="min-width:120px">Name</th>
               <th style="width:90px; text-align:center">Days<br><small>in Mth</small></th>
               <th style="width:90px">NCP<br>Days</th>
               <th style="width:90px; text-align:center">Work<br>Days</th>
@@ -1276,6 +1276,35 @@ function isEmployedInWageMonth(master, monthIdx) {
   return getEmploymentWindowViolation(master, monthIdx) === null;
 }
 
+// True only when the employee's DOJ/DOE falls in THIS EXACT wage month -- not every
+// month they're visible for, just the one row that's actually their joining/exit month.
+// Used to highlight that one row, and to label it, without flagging every month up to
+// (or from) it.
+function isJoiningInWageMonth(master, monthIdx) {
+  if (!master.doj) return false;
+  const dojTime = parseDMY(master.doj);
+  if (dojTime === null) return false;
+  const d = new Date(dojTime);
+  const { year, month } = getWageMonthYearMonth(monthIdx);
+  return d.getFullYear() === year && (d.getMonth() + 1) === month;
+}
+
+function isLeavingInWageMonth(master, monthIdx) {
+  if (!master.doe) return false;
+  const doeTime = parseDMY(master.doe);
+  if (doeTime === null) return false;
+  const d = new Date(doeTime);
+  const { year, month } = getWageMonthYearMonth(monthIdx);
+  return d.getFullYear() === year && (d.getMonth() + 1) === month;
+}
+
+// The checkbox/button "info" row for an employee is always the sibling immediately
+// before their numeric ".bulk-row" -- renderMonthlyTable() emits them as an adjacent
+// pair per employee, so this is reliable without needing a second data-id lookup.
+function getInfoRow(tr) {
+  return tr.previousElementSibling;
+}
+
 window.addEmployeeByUAN = () => {
   const uan = document.getElementById('bulk-add-uan').value.trim();
   if (!uan) return App.toast('Please enter a UAN', 'error');
@@ -1471,14 +1500,15 @@ window.syncBulkTableState = () => {
   document.querySelectorAll('.bulk-row').forEach(tr => {
     const member_id = tr.getAttribute('data-id');
     if (bulkTableState[member_id]) {
+      const infoRow = getInfoRow(tr);
       bulkTableState[member_id].g = parseInt(tr.querySelector('.b-gross').value, 10) || 0;
       bulkTableState[member_id].w = parseInt(tr.querySelector('.b-epf').value, 10) || 0;
       bulkTableState[member_id].n = parseInt(tr.querySelector('.b-ncp').value, 10) || 0;
-      bulkTableState[member_id].higher_ee = tr.querySelector('.b-higher-ee').checked;
-      bulkTableState[member_id].higher_er = tr.querySelector('.b-higher-er').checked;
-      bulkTableState[member_id].pohw = tr.querySelector('.b-pohw').checked;
-      bulkTableState[member_id].pohw116 = tr.querySelector('.b-pohw-116').checked;
-      bulkTableState[member_id].age58 = tr.querySelector('.b-age58').checked;
+      bulkTableState[member_id].higher_ee = infoRow.querySelector('.b-higher-ee').checked;
+      bulkTableState[member_id].higher_er = infoRow.querySelector('.b-higher-er').checked;
+      bulkTableState[member_id].pohw = infoRow.querySelector('.b-pohw').checked;
+      bulkTableState[member_id].pohw116 = infoRow.querySelector('.b-pohw-116').checked;
+      bulkTableState[member_id].age58 = infoRow.querySelector('.b-age58').checked;
       // Clear isCopied once it's rendered and synced, to avoid showing the badge forever if edited
       bulkTableState[member_id].isCopied = false;
     }
@@ -1514,26 +1544,37 @@ window.renderMonthlyTable = () => {
 
     const workDays = Math.max(0, daysInMonth - n);
 
+    // Highlight the whole row for the ONE month that's actually this employee's DOJ or
+    // DOE -- not every month they happen to be visible for. If both land in the same
+    // calendar month (joined and left within one month), leaving takes visual priority.
+    const isJoining = isJoiningInWageMonth(master, monthIdx);
+    const isLeaving = isLeavingInWageMonth(master, monthIdx);
+    const rowBg = isLeaving ? 'background:rgba(229,72,77,.08);' : (isJoining ? 'background:rgba(31,170,89,.08);' : '');
+
     html += `
-            <tr class="bulk-row" data-id="${App.esc(master.member_id)}" data-ceiling="${r.wage_ceilings ? r.wage_ceilings[monthIdx] : 15000}">
+            <tr class="bulk-row-info" data-id="${App.esc(master.member_id)}" style="${rowBg}">
+              <td colspan="13" style="padding:10px 14px 8px 14px;">
+                <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+                  <div style="font-weight:700; font-size:15px;">${App.esc(master.name)}</div>
+                  ${master.doj ? `<span class="badge" style="background:rgba(31,170,89,.15); color:var(--green); font-size:11px; font-weight:700; padding:3px 8px;">Joined ${App.esc(master.doj)}</span>` : ''}
+                  ${master.doe ? `<span class="badge high" style="font-size:11px; font-weight:700; padding:3px 8px;">Exited ${App.esc(master.doe)}</span>` : ''}
+                </div>
+                <div style="display:flex; gap:16px; font-size:13px; font-weight:600; color:var(--text1); align-items:center; flex-wrap:wrap;">
+                  <label style="cursor:pointer; display:inline-flex; align-items:center; gap:5px;" title="Higher EPF (Employee Share)"><input type="checkbox" class="b-higher-ee" style="width:16px;height:16px;" ${higher_ee ? 'checked' : ''}> Higher EPF (EE)</label>
+                  <label style="cursor:pointer; display:inline-flex; align-items:center; gap:5px;" title="Higher EPF (Employer Share)"><input type="checkbox" class="b-higher-er" style="width:16px;height:16px;" ${higher_er ? 'checked' : ''}> Higher EPF (ER)</label>
+                  <label style="cursor:pointer; display:inline-flex; align-items:center; gap:5px;" title="Age > 58 (EPS = 0)"><input type="checkbox" class="b-age58" style="width:16px;height:16px;" ${age58 ? 'checked' : ''}> Age &gt; 58</label>
+                  <label style="cursor:pointer; display:inline-flex; align-items:center; gap:5px;" title="Pension on Higher Wages -- EPS on actual (uncapped) wage, standalone"><input type="checkbox" class="b-pohw" style="width:16px;height:16px;" ${pohw ? 'checked' : ''}> PoHW</label>
+                  <label style="cursor:pointer; display:inline-flex; align-items:center; gap:5px; color:var(--text2);" title="1.16% of wages above the ceiling, moved from EPF (ER) into EPS -- total employer contribution stays at the standard 12%. Struck down by the Supreme Court (Nov 2022), not collected under current EPFO practice. Off by default."><input type="checkbox" class="b-pohw-116" style="width:16px;height:16px;" ${pohw116 ? 'checked' : ''}> +1.16%</label>
+                  <button type="button" class="btn btn-ghost btn-sm" style="font-size:13px; font-weight:700;" onclick="openExitModalForWageRow('${App.esc(master.member_id)}')" title="Set or edit Date of Exit &amp; Reason of Leaving">🚪 ${master.doe ? 'Edit Exit' : 'Mark Exit'}</button>
+                  <button type="button" class="btn btn-ghost btn-sm" style="font-size:13px; font-weight:700; color:var(--red);" onclick="deleteWageMonthEntry('${App.esc(master.member_id)}', '${App.esc(master.name)}')" title="Remove this employee's wage entry for this month">🗑️ Remove</button>
+                </div>
+              </td>
+            </tr>
+            <tr class="bulk-row" data-id="${App.esc(master.member_id)}" data-ceiling="${r.wage_ceilings ? r.wage_ceilings[monthIdx] : 15000}" style="${rowBg}">
               <td style="text-align:center"><input type="checkbox" class="b-select-row" data-id="${App.esc(master.member_id)}"></td>
               <td style="text-align:center">${start + idx + 1}</td>
               <td>${master.uan ? `<a href="#" onclick="event.preventDefault(); window.showEmployeeWageHistoryPopup('${App.esc(master.member_id)}', '${App.esc(master.name)}')" style="color:var(--accent); text-decoration:none; font-weight:600;" title="View full wage history for ${App.esc(master.name)}">${App.esc(master.uan)}</a>` : '-'}</td>
-              <td>
-                <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
-                  <div style="font-weight:500;">${App.esc(master.name)}</div>
-                  ${master.doe ? `<span class="badge high" style="font-size:9px; padding:1px 6px;">Exited ${App.esc(master.doe)}</span>` : ''}
-                </div>
-                <div style="display:flex; gap:10px; font-size:11px; color:var(--text2); align-items:center; flex-wrap:nowrap;">
-                  <label style="cursor:pointer; display:inline-flex; align-items:center; gap:3px;" title="Higher EPF (Employee Share)"><input type="checkbox" class="b-higher-ee" ${higher_ee ? 'checked' : ''}> Higher EPF (EE)</label>
-                  <label style="cursor:pointer; display:inline-flex; align-items:center; gap:3px;" title="Higher EPF (Employer Share)"><input type="checkbox" class="b-higher-er" ${higher_er ? 'checked' : ''}> Higher EPF (ER)</label>
-                  <label style="cursor:pointer; display:inline-flex; align-items:center; gap:3px;" title="Age > 58 (EPS = 0)"><input type="checkbox" class="b-age58" ${age58 ? 'checked' : ''}> Age > 58</label>
-                  <label style="cursor:pointer; display:inline-flex; align-items:center; gap:3px;" title="Pension on Higher Wages -- EPS on actual (uncapped) wage, standalone"><input type="checkbox" class="b-pohw" ${pohw ? 'checked' : ''}> PoHW</label>
-                  <label style="cursor:pointer; display:inline-flex; align-items:center; gap:3px; color:var(--text3);" title="1.16% of wages above the ceiling, moved from EPF (ER) into EPS -- total employer contribution stays at the standard 12%. Struck down by the Supreme Court (Nov 2022), not collected under current EPFO practice. Off by default."><input type="checkbox" class="b-pohw-116" ${pohw116 ? 'checked' : ''}> +1.16%</label>
-                  <button type="button" class="btn btn-ghost btn-xs" style="padding:1px 6px; font-size:10px;" onclick="openExitModalForWageRow('${App.esc(master.member_id)}')" title="Set or edit Date of Exit &amp; Reason of Leaving">🚪 ${master.doe ? 'Edit Exit' : 'Mark Exit'}</button>
-                  <button type="button" class="btn btn-ghost btn-xs" style="padding:1px 6px; font-size:10px; color:var(--red);" onclick="deleteWageMonthEntry('${App.esc(master.member_id)}', '${App.esc(master.name)}')" title="Remove this employee's wage entry for this month">🗑️ Remove</button>
-                </div>
-              </td>
+              <td style="color:var(--text3); font-size:11px;">${App.esc(master.name)}</td>
               <td style="text-align:center" class="b-dim">${daysInMonth}</td>
               <td><input type="number" step="1" class="form-input num b-ncp" style="padding:4px; width:100%" value="${n || ''}" placeholder="0"></td>
               <td style="text-align:center" class="b-work">${workDays}</td>
@@ -1559,14 +1600,15 @@ window.renderMonthlyTable = () => {
 
   // Attach listeners
   tbody.querySelectorAll('.bulk-row').forEach(tr => {
+    const infoRow = getInfoRow(tr);
     const ncpInp = tr.querySelector('.b-ncp');
     const grossInp = tr.querySelector('.b-gross');
     const epfInp = tr.querySelector('.b-epf');
-    const higherEeChk = tr.querySelector('.b-higher-ee');
-    const higherErChk = tr.querySelector('.b-higher-er');
-    const age58Chk = tr.querySelector('.b-age58');
-    const pohwChk = tr.querySelector('.b-pohw');
-    const pohw116Chk = tr.querySelector('.b-pohw-116');
+    const higherEeChk = infoRow.querySelector('.b-higher-ee');
+    const higherErChk = infoRow.querySelector('.b-higher-er');
+    const age58Chk = infoRow.querySelector('.b-age58');
+    const pohwChk = infoRow.querySelector('.b-pohw');
+    const pohw116Chk = infoRow.querySelector('.b-pohw-116');
 
     const recalc = () => window.calcBulkRow(tr);
 
@@ -1601,11 +1643,12 @@ window.calcBulkRow = (tr) => {
 
   const g = parseInt(tr.querySelector('.b-gross').value, 10) || 0;
   const w = parseInt(tr.querySelector('.b-epf').value, 10) || 0;
-  const higherEe = tr.querySelector('.b-higher-ee').checked;
-  const higherEr = tr.querySelector('.b-higher-er').checked;
-  const age58 = tr.querySelector('.b-age58').checked;
-  const pohw = tr.querySelector('.b-pohw').checked;
-  const pohw116 = tr.querySelector('.b-pohw-116').checked;
+  const infoRow = getInfoRow(tr);
+  const higherEe = infoRow.querySelector('.b-higher-ee').checked;
+  const higherEr = infoRow.querySelector('.b-higher-er').checked;
+  const age58 = infoRow.querySelector('.b-age58').checked;
+  const pohw = infoRow.querySelector('.b-pohw').checked;
+  const pohw116 = infoRow.querySelector('.b-pohw-116').checked;
   const ceiling = parseFloat(tr.getAttribute('data-ceiling')) || 15000;
 
   const r = currentWagesData.rates;
