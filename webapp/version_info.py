@@ -12,20 +12,35 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SEP = "\x1f"  # unit separator -- safe delimiter for commit subjects, which may contain ":" or "|"
 
 
-def _run_git(args):
+def _run_git(args, timeout=5):
     try:
         result = subprocess.run(
             ["git", *args],
             cwd=str(_REPO_ROOT),
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=timeout,
         )
         if result.returncode == 0:
             return result.stdout.strip()
     except Exception:
         pass
     return None
+
+
+def _deepen_if_shallow():
+    """Render (and most CI/deploy pipelines) clone with `--depth 1` for speed, which
+    leaves the working copy able to see only its single most recent commit -- every
+    git-history-dependent value below (commit_count, the version badge, the "recent
+    commits" list) silently degenerates to "v1" / one entry in that state, with no error
+    to signal it. Detect that and fetch full history once at startup so production
+    matches what a full local clone already shows. Best-effort: if there's no network,
+    no remote, or it's slow, every caller below already tolerates a None/short git
+    history gracefully, so failure here just means the badge stays understated, not
+    that the app breaks."""
+    if _run_git(["rev-parse", "--is-shallow-repository"]) != "true":
+        return
+    _run_git(["fetch", "--unshallow", "--quiet"], timeout=25)
 
 
 def _format_display(iso_str):
@@ -39,6 +54,8 @@ def _format_display(iso_str):
 
 
 def _compute_version_info():
+    _deepen_if_shallow()
+
     render_commit = os.environ.get("RENDER_GIT_COMMIT", "")
 
     short_hash = _run_git(["rev-parse", "--short", "HEAD"]) or (render_commit[:7] if render_commit else "unknown")
