@@ -778,7 +778,13 @@ const App = (() => {
         `<button class="btn btn-primary" onclick="App.closeModal()">Got it</button>`
       );
       toast('Advance credit confirmed!');
-      try { if (window.SubscriptionHistory && SubscriptionHistory.reload) SubscriptionHistory.reload(); } catch (e) {}
+      // Refresh the underlying page so the "Advance Credit Balance" card shows the new
+      // total immediately instead of the stale figure it was rendered with before this
+      // payment confirmed -- window.SubscriptionHistory doesn't actually exist
+      // (subscription-history.js registers its page function directly with
+      // App.registerPage() and never exports a module object), so the old
+      // `SubscriptionHistory.reload()` call here was always silently a no-op.
+      if (currentPage === 'subscription-history') navigate('subscription-history');
     } else {
       openModal(
         '⏳ Payment Processing',
