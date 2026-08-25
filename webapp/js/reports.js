@@ -100,6 +100,7 @@ window.renderEmployeeWageHistoryHtml = function(data, opts) {
       const flags = [];
       if (y.higher_epf_ee) flags.push('(Higher EPF - EE)');
       if (y.higher_epf_er) flags.push('(Higher EPF - ER)');
+      if (y.pohw) flags.push(`(Pension on Higher Wages${y.pohw_additional_1_16 ? ' + 1.16% shift' : ''})`);
       if (y.age_crosses_58) flags.push('(Age 58+ applied)');
       if (flags.length > 0) {
         trs += `

@@ -934,6 +934,8 @@ def generate_employee_wage_history_pdf(data: dict, filepath: str):
             flags.append('(Higher EPF - EE)')
         if y.get('higher_epf_er'):
             flags.append('(Higher EPF - ER)')
+        if y.get('pohw'):
+            flags.append('(Pension on Higher Wages' + (' + 1.16% shift)' if y.get('pohw_additional_1_16') else ')'))
         if y.get('age_crosses_58'):
             flags.append('(Age 58+ applied)')
         if flags:
