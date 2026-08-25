@@ -53,22 +53,28 @@ def _run_git_full(args, timeout=25):
         return -1, "", f"{type(e).__name__}: {e}"
 
 
+_FALLBACK_REPO_URL = os.environ.get("GIT_REPO_URL", "https://github.com/EPFRAGHU/epf-admin-dashboard.git")
+_FALLBACK_BRANCH = os.environ.get("RENDER_GIT_BRANCH") or "main"
+
+
 def _deepen_if_shallow():
     """Render (and most CI/deploy pipelines) clone with `--depth 1` for speed, which
     leaves the working copy able to see only its single most recent commit -- every
     git-history-dependent value below (commit_count, the version badge, the "recent
     commits" list) silently degenerates to "v1" / one entry in that state, with no error
     to signal it. Detect that and fetch full history once at startup so production
-    matches what a full local clone already shows. Best-effort: if there's no network,
-    no remote, or it's slow, every caller below already tolerates a None/short git
-    history gracefully, so failure here just means the badge stays understated, not
-    that the app breaks.
+    matches what a full local clone already shows.
 
-    TEMPORARY: also records what happened into _SHALLOW_DEBUG (surfaced via
-    get_version_info()) -- a first attempt at this (silently swallowing failures) landed
-    on Render still showing "v1" with no way to tell why the unshallow fetch didn't
-    work, so this round captures the actual returncode/stderr instead of guessing again.
-    Remove once the real cause is confirmed and fixed for good."""
+    First attempt here was plain `git fetch --unshallow` (implicitly using the "origin"
+    remote) -- diagnostics (_SHALLOW_DEBUG, surfaced via get_version_info(), still kept
+    around since this is worth being able to re-verify) showed Render's runtime checkout
+    has NO remote configured at all ("error: No such remote 'origin'"), so that command
+    had nothing to fetch from and silently no-op'd (exit 0, no error, no new history).
+    Fetching directly from the repo's known public URL instead sidesteps needing a
+    configured remote entirely. Best-effort either way: every caller below already
+    tolerates a None/short git history gracefully, so if this ever fails again (no
+    network, GitHub down, wrong URL after a repo rename) the badge just stays
+    understated, it doesn't break startup."""
     is_shallow_rc, is_shallow_out, is_shallow_err = _run_git_full(["rev-parse", "--is-shallow-repository"], timeout=5)
     remote_rc, remote_out, remote_err = _run_git_full(["remote", "get-url", "origin"], timeout=5)
     _SHALLOW_DEBUG["is_shallow_repository"] = {"rc": is_shallow_rc, "out": is_shallow_out, "err": is_shallow_err}
@@ -78,7 +84,9 @@ def _deepen_if_shallow():
         _SHALLOW_DEBUG["unshallow_attempted"] = False
         return
 
-    fetch_rc, fetch_out, fetch_err = _run_git_full(["fetch", "--unshallow"], timeout=25)
+    fetch_rc, fetch_out, fetch_err = _run_git_full(
+        ["fetch", "--unshallow", _FALLBACK_REPO_URL, _FALLBACK_BRANCH], timeout=25
+    )
     _SHALLOW_DEBUG["unshallow_attempted"] = True
     _SHALLOW_DEBUG["unshallow_fetch"] = {"rc": fetch_rc, "out": fetch_out, "err": fetch_err}
 
