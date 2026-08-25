@@ -4,12 +4,14 @@ version string. Computed once at process startup (Render restarts the process on
 deploy, so this is always accurate for the running build) and served via GET /api/version.
 """
 import os
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SEP = "\x1f"  # unit separator -- safe delimiter for commit subjects, which may contain ":" or "|"
+_SHALLOW_DEBUG = {}  # TEMPORARY -- see _deepen_if_shallow()
 
 
 def _run_git(args, timeout=5):
@@ -28,6 +30,29 @@ def _run_git(args, timeout=5):
     return None
 
 
+def _redact(s):
+    """/api/version has no auth -- a git remote URL or error message can embed a
+    credential (e.g. https://x-access-token:TOKEN@github.com/...), so nothing captured
+    for _SHALLOW_DEBUG below is safe to return verbatim. Strips any userinfo component
+    out of URLs before it's ever assigned anywhere."""
+    if not s:
+        return s
+    return re.sub(r"://[^/@\s]+@", "://[redacted]@", s)
+
+
+def _run_git_full(args, timeout=25):
+    """Like _run_git but returns (returncode, stdout, stderr) instead of swallowing
+    failures -- used only for the shallow-clone diagnostics below, where knowing *why*
+    a git command failed matters more than the usual best-effort fallback behavior."""
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=timeout,
+        )
+        return result.returncode, _redact(result.stdout.strip()), _redact(result.stderr.strip())
+    except Exception as e:
+        return -1, "", f"{type(e).__name__}: {e}"
+
+
 def _deepen_if_shallow():
     """Render (and most CI/deploy pipelines) clone with `--depth 1` for speed, which
     leaves the working copy able to see only its single most recent commit -- every
@@ -37,10 +62,25 @@ def _deepen_if_shallow():
     matches what a full local clone already shows. Best-effort: if there's no network,
     no remote, or it's slow, every caller below already tolerates a None/short git
     history gracefully, so failure here just means the badge stays understated, not
-    that the app breaks."""
-    if _run_git(["rev-parse", "--is-shallow-repository"]) != "true":
+    that the app breaks.
+
+    TEMPORARY: also records what happened into _SHALLOW_DEBUG (surfaced via
+    get_version_info()) -- a first attempt at this (silently swallowing failures) landed
+    on Render still showing "v1" with no way to tell why the unshallow fetch didn't
+    work, so this round captures the actual returncode/stderr instead of guessing again.
+    Remove once the real cause is confirmed and fixed for good."""
+    is_shallow_rc, is_shallow_out, is_shallow_err = _run_git_full(["rev-parse", "--is-shallow-repository"], timeout=5)
+    remote_rc, remote_out, remote_err = _run_git_full(["remote", "get-url", "origin"], timeout=5)
+    _SHALLOW_DEBUG["is_shallow_repository"] = {"rc": is_shallow_rc, "out": is_shallow_out, "err": is_shallow_err}
+    _SHALLOW_DEBUG["remote_origin_url"] = {"rc": remote_rc, "out": remote_out, "err": remote_err}
+
+    if is_shallow_out != "true":
+        _SHALLOW_DEBUG["unshallow_attempted"] = False
         return
-    _run_git(["fetch", "--unshallow", "--quiet"], timeout=25)
+
+    fetch_rc, fetch_out, fetch_err = _run_git_full(["fetch", "--unshallow"], timeout=25)
+    _SHALLOW_DEBUG["unshallow_attempted"] = True
+    _SHALLOW_DEBUG["unshallow_fetch"] = {"rc": fetch_rc, "out": fetch_out, "err": fetch_err}
 
 
 def _format_display(iso_str):
@@ -101,6 +141,7 @@ def _compute_version_info():
         "commit_date_display": _format_display(commit_date_iso),
         "commit_message": commit_message,
         "history": history,
+        "_shallow_debug": _SHALLOW_DEBUG,  # TEMPORARY -- see _deepen_if_shallow()
     }
 
 
