@@ -996,6 +996,7 @@ App.registerPage('wage-entry', async (container) => {
           <select class="form-select" id="bulk-month-select" onchange="initBulkTableState()" style="width:200px">
             ${monthOptions}
           </select>
+          <button class="btn btn-glass btn-sm" style="margin-top:6px; width:100%;" onclick="copyPreviousMonthData()" title="Fills in this month's Gross/EPF/NCP for any employee currently showing 0, using their PREVIOUS month's figures only -- never touches any other month's data, and never overwrites a value you've already entered.">📋 Copy Previous Month Data</button>
         </div>
         <div style="flex:1 1 auto; min-width:0; padding-top:2px;">
           <div style="font-size:10px; color:var(--text3); font-weight:600; text-transform:uppercase; letter-spacing:0.4px; margin-bottom:4px;">📊 Month-wise Summary</div>
@@ -1323,13 +1324,6 @@ window.initBulkTableState = () => {
     return s && (s.g > 0 || s.w > 0);
   });
 
-  let prevYearHasAnyFebData = false;
-  if (window._previousYearWages && window._previousYearWages.employees) {
-    prevYearHasAnyFebData = window._previousYearWages.employees.some(e =>
-      (e.wages && e.wages[11] > 0) || (e.gross_wages && e.gross_wages[11] > 0)
-    );
-  }
-
   allEmps.forEach(master => {
     const existingData = currentWagesData.employees.find(e => e.member_id === master.member_id);
     let g = 0, w = 0, n = 0, higher_ee = false, higher_er = false, pohw = false, pohw116 = false, age58 = false, isCopied = false;
@@ -1351,14 +1345,10 @@ window.initBulkTableState = () => {
       if (prevMonthIdx >= 0) {
         const prevG = existingData.gross_wages[prevMonthIdx] || 0;
         const prevW = existingData.wages[prevMonthIdx] || 0;
+        // hasPrev only decides whether the employee's row is still shown for this month
+        // (they were presumably still employed) -- it no longer auto-fills g/w/n here.
+        // Use the "Copy Previous Month Data" button to bring that data in explicitly.
         if (prevG > 0 || prevW > 0) hasPrev = true;
-
-        if (g === 0 && w === 0 && hasPrev) {
-          g = prevG;
-          w = prevW;
-          n = existingData.ncp_days[prevMonthIdx] || 0;
-          isCopied = true;
-        }
       }
     }
 
@@ -1368,12 +1358,6 @@ window.initBulkTableState = () => {
         const prevG = prevEmpData.gross_wages ? (prevEmpData.gross_wages[11] || 0) : 0;
         const prevW = prevEmpData.wages ? (prevEmpData.wages[11] || 0) : 0;
         if (prevG > 0 || prevW > 0) hasPrev = true;
-        if (g === 0 && w === 0 && hasPrev) {
-          g = prevG;
-          w = prevW;
-          n = prevEmpData.ncp_days ? (prevEmpData.ncp_days[11] || 0) : 0;
-          isCopied = true;
-        }
       }
     }
 
@@ -1398,22 +1382,20 @@ window.initBulkTableState = () => {
       }
     }
 
-    // Logic for visibility:
+    // Logic for visibility: show every active employee whose DOJ..DOE window covers
+    // this month, so a new joiner appears automatically (with a 0 row) the moment
+    // their DOJ falls in this month, rather than needing a manual "Add Employee by
+    // UAN" first -- plus anyone with existing/manually-added data regardless of the
+    // active flag, so historical records stay visible for viewing or correction.
     const isManuallyAdded = window.bulkTableManualIds.includes(master.member_id);
-
-    let shouldShow = hasCurrent || hasPrev || isManuallyAdded;
-
     const isActive = master.status !== 'inactive';
-    if (monthIdx === 0 && isActive) {
-      // If no previous year February data exists AT ALL, show all active employees.
-      // Otherwise, only show them if they have previous (Feb) data or current data.
-      if (!prevYearHasAnyFebData) {
-        shouldShow = true;
-      }
-    }
+
+    let shouldShow = hasCurrent || hasPrev || isManuallyAdded || isActive;
 
     // Hard filter: never show an employee in a wage month outside their DOJ..DOE window,
-    // regardless of stray data or a manual add from before the DOJ/DOE was set.
+    // regardless of stray data, active status, or a manual add from before the DOJ/DOE
+    // was set. This is what makes a leaver disappear the month after their DOE, and
+    // keeps a not-yet-joined employee out of any month before their DOJ.
     if (!isEmployedInWageMonth(master, monthIdx)) {
       shouldShow = false;
     }
@@ -1427,6 +1409,62 @@ window.initBulkTableState = () => {
   bulkTableStateMonthIdx = monthIdx;
   currentBulkPage = 1;
   renderMonthlyTable();
+};
+
+// Explicit, user-triggered copy of ONLY the immediately previous month's Gross/EPF/NCP
+// into the CURRENTLY SELECTED month -- replaces the old behavior where switching to a
+// month with no data silently auto-filled it from whatever the previous month had.
+// Only fills employees currently showing 0/0 (never clobbers a value already entered,
+// manually or otherwise) and only ever reads one month back -- never cascades further,
+// and never writes to any month other than the one currently selected.
+window.copyPreviousMonthData = () => {
+  syncBulkTableState();
+  const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
+  const prevMonthIdx = monthIdx > 0 ? monthIdx - 1 : -1;
+
+  let copiedCount = 0;
+  (window.bulkTableVisibleIds || []).forEach(memberId => {
+    const state = bulkTableState[memberId];
+    if (!state || state.g > 0 || state.w > 0) return; // don't overwrite existing data
+
+    let prevG = 0, prevW = 0, prevN = 0, found = false;
+
+    if (prevMonthIdx >= 0) {
+      const existingData = currentWagesData.employees.find(e => e.member_id === memberId);
+      if (existingData) {
+        prevG = existingData.gross_wages[prevMonthIdx] || 0;
+        prevW = existingData.wages[prevMonthIdx] || 0;
+        prevN = existingData.ncp_days[prevMonthIdx] || 0;
+        found = prevG > 0 || prevW > 0;
+      }
+    } else if (monthIdx === 0 && window._previousYearWages && window._previousYearWages.employees) {
+      // April (monthIdx 0) has no "previous month" within this financial year --
+      // its previous month is the prior year's February (index 11).
+      const prevEmpData = window._previousYearWages.employees.find(e => e.member_id === memberId);
+      if (prevEmpData) {
+        prevG = prevEmpData.gross_wages ? (prevEmpData.gross_wages[11] || 0) : 0;
+        prevW = prevEmpData.wages ? (prevEmpData.wages[11] || 0) : 0;
+        prevN = prevEmpData.ncp_days ? (prevEmpData.ncp_days[11] || 0) : 0;
+        found = prevG > 0 || prevW > 0;
+      }
+    }
+
+    if (found) {
+      state.g = prevG;
+      state.w = prevW;
+      state.n = prevN;
+      state.isCopied = true;
+      copiedCount++;
+    }
+  });
+
+  if (copiedCount === 0) {
+    App.toast("No employee here is both empty and has previous month's data to copy.", 'info');
+    return;
+  }
+
+  renderMonthlyTable();
+  App.toast(`Copied last month's wages for ${copiedCount} employee${copiedCount === 1 ? '' : 's'} -- review and Save when ready.`);
 };
 
 window.syncBulkTableState = () => {
@@ -1501,7 +1539,7 @@ window.renderMonthlyTable = () => {
               <td style="text-align:center" class="b-work">${workDays}</td>
               <td>
                 <input type="number" step="1" class="form-input num b-gross" style="padding:4px; width:100%" value="${g ? Math.round(g) : ''}" placeholder="0">
-                ${isCopied ? '<div style="font-size:10px; color:var(--primary); text-align:right; margin-top:2px">Auto-copied</div>' : ''}
+                ${isCopied ? '<div style="font-size:10px; color:var(--primary); text-align:right; margin-top:2px">Copied from previous month</div>' : ''}
               </td>
               <td><input type="number" step="1" class="form-input num b-epf" style="padding:4px; width:100%" value="${w ? Math.round(w) : ''}" placeholder="0"></td>
               <td class="num b-eps-wage" style="color:var(--text2)">0</td>
