@@ -24,6 +24,17 @@ const App = (() => {
     return currentUser;
   }
 
+  // Updates BOTH the in-memory cache and localStorage -- getCurrentUser() above only
+  // ever re-reads localStorage when its in-memory cache is empty (i.e. right after
+  // login), so anything that changes the logged-in user's own record (e.g. My Profile
+  // editing their name) needs this, not just a localStorage.setItem(), or the topbar
+  // and everything else reading getCurrentUser() stays stale for the rest of the
+  // session.
+  function updateCachedUser(u) {
+    currentUser = u;
+    localStorage.setItem('epf_user', JSON.stringify(u));
+  }
+
   function isSuperadmin() {
     const u = getCurrentUser();
     return u && u.role === 'superadmin';
@@ -888,6 +899,7 @@ const App = (() => {
       challans: 'Form 12A Challans',
       reports: 'Statutory Reports & Export',
       'subscription-history': '📜 Subscription History',
+      'my-profile': '👤 My Profile',
     };
 
     const titleEl = document.getElementById('topbar-title');
@@ -955,6 +967,9 @@ const App = (() => {
       </a>
       <a class="nav-item ${currentPage === 'reports' ? 'active' : ''}" data-page="reports">
         <span class="nav-icon">📋</span><span>Reports</span>
+      </a>
+      <a class="nav-item ${currentPage === 'my-profile' ? 'active' : ''}" data-page="my-profile">
+        <span class="nav-icon">👤</span><span>My Profile</span>
       </a>
       <a class="nav-item" href="/docs/EPF_Dashboard_User_Manual.pdf" target="_blank" rel="noopener">
         <span class="nav-icon">📖</span><span>Help / User Guide</span>
@@ -1423,7 +1438,7 @@ const App = (() => {
     api, get, post, put, del,
     toast, openModal, closeModal, confirm,
     toggleSidebar, toggleTheme, save, fmt, fmtD, esc, fmtId, renderPagination,
-    showProjectManager, selectAndSwitchEst, logout, showLogin, doLogin, refreshTopbar,
+    showProjectManager, selectAndSwitchEst, logout, showLogin, doLogin, refreshTopbar, updateCachedUser,
     showVersionHistory, downloadFile,
     showFeePaymentModal, startFeePayment, checkFeePaymentNow, completeFeePaymentDownload,
     showUPIFeePanel, submitFeeUTR,

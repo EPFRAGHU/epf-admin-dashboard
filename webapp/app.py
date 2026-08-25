@@ -783,6 +783,14 @@ class UserUpdateIn(BaseModel):
     max_establishments: Optional[int] = None  # only applied when the target user's role is 'employer'
     is_active: Optional[bool] = None
 
+class MyProfileUpdateIn(BaseModel):
+    # Self-service subset of UserUpdateIn -- deliberately excludes password,
+    # custom_rate_per_employee, max_establishments and is_active, none of which a user
+    # should be able to change on their own account.
+    name: Optional[str] = None
+    mobile: Optional[str] = None
+    email: Optional[str] = None
+
 class EstablishmentIn(BaseModel):
     code: str
     name: str
@@ -1033,6 +1041,55 @@ async def login(d: LoginIn, db: Session = Depends(get_db)):
 @app.get("/api/auth/me")
 async def get_me(current_user: User = Depends(get_current_user)):
     return {
+        "user": {
+            "id": current_user.id,
+            "serial_no": current_user.serial_no,
+            "name": current_user.name,
+            "email": current_user.email,
+            "role": current_user.role,
+            "mobile": current_user.mobile,
+            "max_establishments": current_user.max_establishments,
+            "created_at": current_user.created_at.strftime("%d-%m-%Y") if current_user.created_at else None
+        }
+    }
+
+
+@app.put("/api/me")
+async def update_my_profile(
+    d: MyProfileUpdateIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Self-service profile editing -- any logged-in user (consultant, employer,
+    superadmin) updating their OWN name/mobile/email, once, so it sticks everywhere
+    from then on -- notably these are the exact three fields sent to Cashfree as
+    customer_details on every payment link/order this account generates (see
+    cashfree_client.create_payment_link_or_order()), so a placeholder name entered at
+    signup no longer has to show up on every future transaction. Deliberately a much
+    smaller surface than admin_update_user() below -- no password, no rate override, no
+    is_active/max_establishments -- a user can only ever touch their own identity
+    fields here, never anything account-standing-related."""
+    if d.email is not None:
+        email = d.email.strip().lower()
+        if not email:
+            raise HTTPException(400, "Email cannot be empty")
+        existing = db.query(User).filter(func.lower(User.email) == email, User.id != current_user.id).first()
+        if existing:
+            raise HTTPException(400, f"Email '{email}' is already in use by another account")
+        current_user.email = email
+
+    if d.name is not None:
+        name = d.name.strip()
+        if not name:
+            raise HTTPException(400, "Name cannot be empty")
+        current_user.name = name
+
+    if d.mobile is not None:
+        current_user.mobile = d.mobile.strip()
+
+    db.commit()
+    return {
+        "ok": True,
         "user": {
             "id": current_user.id,
             "serial_no": current_user.serial_no,
