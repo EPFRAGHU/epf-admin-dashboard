@@ -119,6 +119,19 @@
     <script src="/js/wages.js"></script>
     <script src="/js/challans.js"></script>
     <script src="/js/reports.js"></script>
-    <script>document.addEventListener('DOMContentLoaded', () => App.init());</script>
+    <script>
+      document.addEventListener('DOMContentLoaded', () => App.init());
+      // Mobile browsers (and desktop back/forward navigation) often restore a
+      // backgrounded tab from the bfcache instead of reloading it -- that restores the
+      // exact DOM as it was frozen, including a real, previously-authenticated dashboard,
+      // without re-running any of the code above. If the token has since expired or been
+      // invalidated (e.g. logged out elsewhere, or simply too much time passed while the
+      // tab sat in the background -- easy to hit when reopening the app on a different
+      // network), that stale dashboard would sit on screen, fully visible, until some
+      // later API call happened to 401 and only then flip to the login screen. Re-running
+      // init() on a bfcache restore re-validates the session immediately instead, so a
+      // stale session gets caught before the user ever sees real data.
+      window.addEventListener('pageshow', (event) => { if (event.persisted) App.init(); });
+    </script>
 </body>
 </html>
