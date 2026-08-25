@@ -60,6 +60,26 @@ def test_create_payment_link_or_order_falls_back_on_feature_not_enabled(mock_pos
 
 
 @patch("webapp.cashfree_client.requests.post")
+def test_create_order_does_not_send_order_tags(mock_post):
+    """Regression guard: order_tags.checkout_context tripped a real production
+    "order_tags_invalid" error (100-char limit, no HTML/URL/line-break/emoji) for
+    ordinary purpose strings that embed an establishment name -- create_order() must
+    not send order_tags at all, for any purpose string, long or short."""
+    mock_post.return_value = _mock_response(200, {
+        "order_id": "sub_1_1", "order_status": "ACTIVE", "payment_session_id": "session_fake",
+    })
+
+    long_purpose = "Software subscription fee — 3 month(s) (Mar 2026-27, Apr 2026-27, May 2026-27) — " \
+                    "A Very Long Establishment Name Private Limited (ORXYZ0000001000)"
+    cf.create_order(
+        order_id="sub_1_1", amount=100.0, purpose=long_purpose, customer_phone="9999999999",
+    )
+
+    sent_body = mock_post.call_args.kwargs["json"]
+    assert "order_tags" not in sent_body
+
+
+@patch("webapp.cashfree_client.requests.post")
 def test_create_payment_link_or_order_succeeds_without_fallback(mock_post):
     mock_post.return_value = _mock_response(200, {"link_id": "sub_1_1", "link_url": "https://payments.cashfree.com/links/abc", "link_status": "ACTIVE"})
 

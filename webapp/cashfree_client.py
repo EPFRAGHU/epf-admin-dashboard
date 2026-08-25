@@ -123,10 +123,16 @@ def create_order(
             "customer_name": customer_name or "Customer",
             "customer_email": customer_email or "",
         },
-        "order_tags": {"checkout_context": purpose[:180]} if purpose else {},
     }
     if return_url:
         body["order_meta"] = {"return_url": return_url}
+    # `purpose` is deliberately NOT sent as order_tags.checkout_context: that field has a
+    # strict 100-char limit and rejects any HTML/URL/line-break/emoji (confirmed live --
+    # this app's purpose strings, which embed establishment names, tripped
+    # "order_tags_invalid" in production). It's a purely cosmetic checkout-page
+    # description, not required for the order to work, so it's simplest and most robust
+    # to just not send it rather than sanitize business names against an unpredictable
+    # validation rule.
 
     resp = requests.post(f"{BASE_URL}/orders", json=body, headers=_headers(), timeout=20)
     resp.raise_for_status()
