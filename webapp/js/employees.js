@@ -227,9 +227,9 @@ App.registerPage('employees', async (container) => {
           </label>
         </div>
         <div class="form-group">
-          <label class="form-label" style="display:flex;align-items:center;gap:6px;white-space:nowrap;" title="Additional 1.16% employer contribution on wages above the ceiling -- struck down by the Supreme Court (Nov 2022), not collected under current EPFO practice. Off by default.">
+          <label class="form-label" style="display:flex;align-items:center;gap:6px;white-space:nowrap;" title="1.16% of wages above the ceiling, moved from EPF (ER) into EPS -- total employer contribution stays at the standard 12%. Struck down by the Supreme Court (Nov 2022), not collected under current EPFO practice. Off by default.">
             <input type="checkbox" id="ae-pohw-116">
-            + 1.16% Add-on (legacy)
+            + 1.16% Shift EPF→EPS (legacy)
           </label>
         </div>
         <div class="form-group" style="grid-column: span 3;">
@@ -545,9 +545,9 @@ async function showEmpModal(emp = null, opts = {}) {
       <div class="form-group">
         <label class="form-label" style="display:flex;align-items:center;gap:8px">
           <input type="checkbox" id="m-pohw-116" ${e.pohw_additional_1_16 ? 'checked' : ''}>
-          + 1.16% Add-on (legacy)
+          + 1.16% Shift EPF→EPS (legacy)
         </label>
-        <p style="font-size:10px;color:var(--text3);margin-top:2px;">Struck down by Supreme Court (Nov 2022), not collected under current EPFO practice. Off by default.</p>
+        <p style="font-size:10px;color:var(--text3);margin-top:2px;">1.16% of wages above the ceiling, moved from EPF (ER) into EPS -- total employer contribution stays at 12%. Struck down by Supreme Court (Nov 2022), not collected under current EPFO practice. Off by default.</p>
       </div>
     </div>`;
   const footer = `

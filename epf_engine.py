@@ -680,23 +680,24 @@ class Employee:
 
                 e_eps = round(eps_wage * employer_eps_rate / 100)
                 total_er_contrib = round(er_total_wage_base * worker_epf_rate / 100)
-                # e_epf is derived from the STANDARD EPS share only, before any 1.16%
-                # add-on below is folded in -- the 1.16% is an additional employer
-                # outgo on top of the usual 12% total, not a redistribution of it.
                 e_epf = max(0, total_er_contrib - e_eps)
 
                 if self.pohw and self.pohw_additional_1_16 and not self.age_crosses_58 and w > ceiling:
-                    # Additional 1.16% employer contribution on the wage portion above
-                    # the ceiling, from the 2014 EPS amendment. The Supreme Court struck
+                    # Additional 1.16% "contribution" on the wage portion above the
+                    # ceiling, from the 2014 EPS amendment. The Supreme Court struck
                     # this down as ultra vires in Nov 2022 (EPFO v. Sunil Kumar B) and
                     # current EPFO higher-pension practice does not collect it -- kept
                     # here as an explicit, off-by-default opt-in only for establishments
-                    # that specifically need to apply/reference it. Folded into e_eps
-                    # (Account 10/Pension Fund), the same pension-related grouping used
-                    # when this figure is quoted -- Account 10 on generated forms will
-                    # show more than the standard 8.33% for these employees while this
-                    # is ticked.
-                    e_eps += round((w - ceiling) * 1.16 / 100)
+                    # that specifically need to apply/reference it. Implemented as a
+                    # REDISTRIBUTION, not additional employer outgo: moved out of e_epf
+                    # (Account 1) into e_eps (Account 10/Pension Fund), so total
+                    # employer contribution stays capped at the standard 12% of wage
+                    # (e_epf + e_eps is unchanged by this, only the split between them
+                    # moves) -- matches how the employer's total 12% obligation is
+                    # already treated everywhere else in this function.
+                    additional_1_16 = round((w - ceiling) * 1.16 / 100)
+                    e_eps += additional_1_16
+                    e_epf = max(0, e_epf - additional_1_16)
 
             else:
                 w_epf = round(w * worker_epf_rate / 100)

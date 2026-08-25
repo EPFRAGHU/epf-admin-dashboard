@@ -378,8 +378,8 @@ window.showWageModal = async (emp = null) => {
         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; white-space:nowrap;" title="EPS computed on actual (uncapped) wage instead of the ₹15,000 ceiling -- standalone, doesn't need Higher EPF (EE)/(ER) also ticked">
           <input type="checkbox" id="w-pohw"> Pension on Higher Wages (PoHW)
         </label>
-        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; white-space:nowrap; color:var(--text3);" title="Additional 1.16% employer contribution on wages above the ceiling, from the 2014 EPS amendment -- struck down by the Supreme Court (Nov 2022) and not collected under current EPFO practice. Off by default; only tick this if you specifically need to apply/reference it.">
-          <input type="checkbox" id="w-pohw-116"> + 1.16% Add-on (legacy, off by default)
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; white-space:nowrap; color:var(--text3);" title="1.16% of wages above the ceiling, moved from EPF (ER) into EPS -- total employer contribution stays at the standard 12%, only the split changes. From the 2014 EPS amendment -- struck down by the Supreme Court (Nov 2022) and not collected under current EPFO practice. Off by default; only tick this if you specifically need to apply/reference it.">
+          <input type="checkbox" id="w-pohw-116"> + 1.16% Shift EPF→EPS (legacy, off by default)
         </label>
       </div>
     </div>
@@ -469,13 +469,15 @@ window.showWageModal = async (emp = null) => {
         wEpf = calculateRow(workerWageBase, r.w_epf);
         eEps = calculateRow(epsWage, r.e_eps);
         const totalErContrib = calculateRow(erTotalWageBase, r.w_epf);
-        // eEpf comes from the STANDARD EPS share only -- the 1.16% add-on below is
-        // additional employer outgo on top of the usual 12% total, not a
-        // redistribution of it, mirroring Employee.month_rows() in epf_engine.py.
         eEpf = Math.max(0, totalErContrib - eEps);
 
         if (isPohw && isPohw116 && !isAge58 && w > ceiling) {
-          eEps += calculateRow(w - ceiling, 1.16);
+          // Redistribution, not additional employer outgo -- moved out of eEpf into
+          // eEps, so total employer contribution stays capped at the standard 12% of
+          // wage. Mirrors Employee.month_rows() in epf_engine.py.
+          const additional116 = calculateRow(w - ceiling, 1.16);
+          eEps += additional116;
+          eEpf = Math.max(0, eEpf - additional116);
         }
       } else {
         wEpf = calculateRow(w, r.w_epf);
@@ -1489,7 +1491,7 @@ window.renderMonthlyTable = () => {
                   <label style="cursor:pointer; display:inline-flex; align-items:center; gap:3px;" title="Higher EPF (Employer Share)"><input type="checkbox" class="b-higher-er" ${higher_er ? 'checked' : ''}> Higher EPF (ER)</label>
                   <label style="cursor:pointer; display:inline-flex; align-items:center; gap:3px;" title="Age > 58 (EPS = 0)"><input type="checkbox" class="b-age58" ${age58 ? 'checked' : ''}> Age > 58</label>
                   <label style="cursor:pointer; display:inline-flex; align-items:center; gap:3px;" title="Pension on Higher Wages -- EPS on actual (uncapped) wage, standalone"><input type="checkbox" class="b-pohw" ${pohw ? 'checked' : ''}> PoHW</label>
-                  <label style="cursor:pointer; display:inline-flex; align-items:center; gap:3px; color:var(--text3);" title="Additional 1.16% employer contribution on wages above the ceiling -- struck down by the Supreme Court (Nov 2022), not collected under current EPFO practice. Off by default."><input type="checkbox" class="b-pohw-116" ${pohw116 ? 'checked' : ''}> +1.16%</label>
+                  <label style="cursor:pointer; display:inline-flex; align-items:center; gap:3px; color:var(--text3);" title="1.16% of wages above the ceiling, moved from EPF (ER) into EPS -- total employer contribution stays at the standard 12%. Struck down by the Supreme Court (Nov 2022), not collected under current EPFO practice. Off by default."><input type="checkbox" class="b-pohw-116" ${pohw116 ? 'checked' : ''}> +1.16%</label>
                   <button type="button" class="btn btn-ghost btn-xs" style="padding:1px 6px; font-size:10px;" onclick="openExitModalForWageRow('${App.esc(master.member_id)}')" title="Set or edit Date of Exit &amp; Reason of Leaving">🚪 ${master.doe ? 'Edit Exit' : 'Mark Exit'}</button>
                   <button type="button" class="btn btn-ghost btn-xs" style="padding:1px 6px; font-size:10px; color:var(--red);" onclick="deleteWageMonthEntry('${App.esc(master.member_id)}', '${App.esc(master.name)}')" title="Remove this employee's wage entry for this month">🗑️ Remove</button>
                 </div>
@@ -1583,12 +1585,14 @@ window.calcBulkRow = (tr) => {
     wEpf = calcRow(workerWageBase, r.w_epf);
     eEps = calcRow(epsWage, r.e_eps);
     const totalErContrib = calcRow(erTotalWageBase, r.w_epf);
-    // eEpf from the STANDARD EPS share only -- the 1.16% add-on below is additional
-    // employer outgo on top of the usual 12% total, not a redistribution of it.
     eEpf = Math.max(0, totalErContrib - eEps);
 
     if (pohw && pohw116 && !age58 && w > ceiling) {
-      eEps += calcRow(w - ceiling, 1.16);
+      // Redistribution, not additional employer outgo -- moved out of eEpf into eEps,
+      // so total employer contribution stays capped at the standard 12% of wage.
+      const additional116 = calcRow(w - ceiling, 1.16);
+      eEps += additional116;
+      eEpf = Math.max(0, eEpf - additional116);
     }
   } else {
     wEpf = calcRow(w, r.w_epf);

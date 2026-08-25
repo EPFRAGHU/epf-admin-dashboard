@@ -47,11 +47,11 @@ def test_pohw_calculates_eps_on_actual_wage_not_capped(consultant_a):
 
 def test_pohw_additional_1_16_percent_add_on(consultant_a):
     """
-    With the optional 1.16% add-on also ticked: additional 1.16% on the wage portion
-    above the Rs.15,000 ceiling gets folded into the EPS/Account-10 figure, on top of
-    the standard 8.33%. (75000-15000)*1.16% = 696, so ER EPS becomes 6247.50+696=6943.50
-    -> rounds to 6944. ER EPF stays unaffected (still derived from the standard 8.33%
-    EPS only, not the inflated figure) at 2752.
+    With the optional 1.16% add-on also ticked: 1.16% of the wage portion above the
+    Rs.15,000 ceiling -- (75000-15000)*1.16%=696 -- is moved OUT of ER EPF and INTO ER
+    EPS (redistribution, not additional employer outgo), so total employer contribution
+    stays capped at the standard 12% of wage (9000): ER EPF 2752-696=2056, ER EPS
+    6248+696=6944, 2056+6944=9000.
     """
     _setup_year_and_employee(consultant_a, "POHW0000002", "PH0002", pohw=True, pohw_additional_1_16=True)
 
@@ -67,8 +67,9 @@ def test_pohw_additional_1_16_percent_add_on(consultant_a):
 
     april = emp["months"][0]
     assert april["we"] == 9000
-    assert april["ee"] == 2752      # unaffected by the 1.16% add-on
-    assert april["es"] == 6944      # 6248 (standard) + 696 (additional) = 6944
+    assert april["ee"] == 2056      # 2752 (standard) - 696 (shifted to EPS) = 2056
+    assert april["es"] == 6944      # 6248 (standard) + 696 (shifted from EPF) = 6944
+    assert april["et"] == 9000      # total employer contribution unchanged: 2056+6944=9000
 
 
 def test_pohw_is_standalone_and_does_not_need_higher_epf_flags_ticked(consultant_a):
