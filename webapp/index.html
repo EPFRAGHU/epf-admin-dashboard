@@ -22,7 +22,13 @@
 <body>
     <div class="app">
         <!-- Sidebar -->
-        <aside class="sidebar" id="sidebar">
+        <!-- Hidden by inline style from the very first paint -- .sidebar/.topbar are
+             `display:flex` by default in style.css, so without this they'd flash on
+             screen (full nav + topbar chrome) on every load/refresh before App.init()
+             gets a chance to hide them for an unauthenticated visitor. App.init() sets
+             style.display = 'flex' on both once /api/auth/me actually confirms a valid
+             session; showLogin() sets it back to 'none' for every unauthenticated path. -->
+        <aside class="sidebar" id="sidebar" style="display:none;">
             <div class="sidebar-brand">
                 <span class="brand-icon">🏛️</span>
                 <div>
@@ -83,7 +89,7 @@
 
         <!-- Main -->
         <main class="main">
-            <header class="topbar">
+            <header class="topbar" style="display:none;">
                 <button class="hamburger" onclick="App.toggleSidebar()">☰</button>
                 <h2 class="topbar-title" id="topbar-title">Dashboard</h2>
                 <button class="theme-toggle-btn" id="theme-toggle-btn" onclick="App.toggleTheme()" title="Toggle dark mode">
