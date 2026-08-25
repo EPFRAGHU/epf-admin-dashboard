@@ -14,7 +14,11 @@
   --surface:     #FFFFFF;
   --text:        #1E1E2D;
   --text2:       #5B5B76;
-  --text3:       #9494AC;
+  /* Was #9494AC (~3:1 contrast on white -- fails WCAG AA's 4.5:1 for normal text, the
+     "not clearly visible in daytime" complaint). Table headers, stat labels, and most
+     muted/secondary text use this -- darkened to land at ~4.9:1 while staying visibly
+     lighter than --text2 so the text/text2/text3 hierarchy is still intact. */
+  --text3:       #6E6E85;
   --accent:      #6C5CE7;
   --accent2:     #5847D4;
   --accent-glow: rgba(108, 92, 231, .16);
@@ -274,16 +278,19 @@ h1, h2, h3 { font-family: var(--font-heading); }
 table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 14px;
 }
 thead th {
   background: var(--bg);
   color: var(--text3);
-  font-weight: 600;
-  font-size: 11px;
+  font-weight: 700;
+  font-size: 12px;
   text-transform: uppercase;
   letter-spacing: .5px;
-  padding: 12px 14px;
+  /* Padding trimmed horizontally (14px -> 11px) to offset the bigger font below so
+     columns take up roughly the same total row width as before instead of pushing more
+     of the table off-screen into the .table-wrap scroll area. */
+  padding: 12px 11px;
   text-align: left;
   white-space: nowrap;
   position: sticky;
@@ -292,7 +299,7 @@ thead th {
   border-bottom: 1px solid var(--card-border);
 }
 tbody td {
-  padding: 11px 14px;
+  padding: 11px 11px;
   border-bottom: 1px solid var(--card-border);
   white-space: nowrap;
 }
