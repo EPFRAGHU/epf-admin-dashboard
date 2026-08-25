@@ -103,6 +103,11 @@ class SubscriptionFee(Base):
     notes = Column(Text, nullable=True)
     cashfree_order_id = Column(String(120), nullable=True, index=True)  # Cashfree Payment Link's link_id ("sub_..."), while a link is outstanding
     cashfree_payment_link_url = Column(Text, nullable=True)
+    # Set only when create_payment_link_or_order() fell back from the Payment Links API
+    # to the Orders API (see cashfree_client.py) -- cashfree_payment_link_url stays null
+    # in that case, since Orders API gives a client-side session id, not a shareable URL.
+    # The /pay/{order_id} redirect route uses whichever of the two is actually set.
+    cashfree_payment_session_id = Column(Text, nullable=True)
     payment_status = Column(String(30), nullable=False, default="unpaid")  # 'unpaid' | 'pending_verification' | 'paid'
     submitted_utr = Column(String(255), nullable=True)   # UTR entered by the consultant/employer
     submitted_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -125,6 +130,7 @@ class AdvanceCreditLedger(Base):
     amount = Column(Float, nullable=False)
     cashfree_order_id = Column(String(120), nullable=True, index=True)  # link_id ("adv_..."), only for Cashfree-initiated topups
     cashfree_payment_link_url = Column(Text, nullable=True)
+    cashfree_payment_session_id = Column(Text, nullable=True)  # see SubscriptionFee's field of the same name
     payment_reference = Column(String(255), nullable=True)  # manual UPI ref, or Cashfree payment id once confirmed
     notes = Column(Text, nullable=True)
     applied_to_fee_id = Column(Integer, ForeignKey("subscription_fees.id", ondelete="SET NULL"), nullable=True)  # only on 'applied' entries

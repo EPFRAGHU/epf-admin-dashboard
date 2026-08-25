@@ -559,6 +559,11 @@ def _run_startup_migrations():
                 # Server-side logout/session-revocation cutoff (see User.token_valid_after)
                 _try_ddl(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_valid_after TIMESTAMPTZ;")
                 _try_ddl(conn, "ALTER TABLE users ADD COLUMN token_valid_after TIMESTAMP;")
+                # Cashfree Orders-API fallback session id (see cashfree_client.create_payment_link_or_order)
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN IF NOT EXISTS cashfree_payment_session_id TEXT;")
+                _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN cashfree_payment_session_id TEXT;")
+                _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN IF NOT EXISTS cashfree_payment_session_id TEXT;")
+                _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN cashfree_payment_session_id TEXT;")
         except Exception as e:
             print(f"  [WARN] DDL check error: {e}")
 
@@ -2236,7 +2241,22 @@ def _app_base_url(request: Request) -> str:
     return str(request.base_url).rstrip("/")
 
 
-def _create_fee_payment_link(db: Session, est: Establishment, fee_row: SubscriptionFee, return_url: str = None) -> dict:
+def _cashfree_shareable_url(app_base_url: str, cf_resp: dict) -> str:
+    """Every frontend call site that creates a Cashfree payment expects a `link_url` it
+    can open in a new tab or hand someone to copy/share -- that's exactly what the
+    Payment Links API gives back. The Orders-API fallback (cf_resp["method"] == "order")
+    has no such URL -- payment_session_id only works via the JS SDK's checkout() call,
+    client-side. Rather than teach every one of those call sites to branch on which
+    method was used, paper over the difference here: for the fallback case, point at
+    this app's own /pay/{order_id} redirect route instead, which launches the SDK
+    checkout on our own (whitelisted) domain. Either way the caller gets back a normal,
+    directly-usable URL."""
+    if cf_resp["method"] == "link":
+        return cf_resp["link_url"]
+    return f"{app_base_url}/pay/{cf_resp['order_id']}"
+
+
+def _create_fee_payment_link(db: Session, est: Establishment, fee_row: SubscriptionFee, app_base_url: str, return_url: str = None) -> dict:
     """Shared by both the superadmin and consultant-facing create-link endpoints."""
     if fee_row.is_paid:
         raise HTTPException(400, "This month is already marked paid.")
@@ -2250,7 +2270,7 @@ def _create_fee_payment_link(db: Session, est: Establishment, fee_row: Subscript
 
     order_id = cashfree_client.new_order_id("sub", fee_row.id)
     try:
-        link_resp = cashfree_client.create_payment_link(
+        cf_resp = cashfree_client.create_payment_link_or_order(
             link_id=order_id,
             amount=fee_row.amount_due,
             purpose=f"Software subscription fee — {fee_row.month} {fee_row.financial_year} — {est.name} ({est.code})",
@@ -2265,10 +2285,11 @@ def _create_fee_payment_link(db: Session, est: Establishment, fee_row: Subscript
         raise HTTPException(502, f"Cashfree link creation failed: {e.response.text if e.response is not None else str(e)}")
 
     fee_row.cashfree_order_id = order_id
-    fee_row.cashfree_payment_link_url = link_resp.get("link_url")
+    fee_row.cashfree_payment_link_url = cf_resp["link_url"]
+    fee_row.cashfree_payment_session_id = cf_resp["payment_session_id"]
     db.commit()
 
-    return {"ok": True, "link_url": link_resp.get("link_url"), "order_id": order_id}
+    return {"ok": True, "link_url": _cashfree_shareable_url(app_base_url, cf_resp), "order_id": order_id}
 
 
 @app.post("/api/admin/establishments/{est_id}/subscription-fees/create-link")
@@ -2293,8 +2314,9 @@ async def admin_create_subscription_fee_link(
     if not fee_row:
         raise HTTPException(404, "Subscription fee row not found for this month — load the Subscription Fees grid first.")
 
-    return_url = f"{_app_base_url(request)}/?cf_payment_return=1&type=sub&year={fee_row.financial_year}&month={fee_row.month}&est_id={est.id}"
-    return _create_fee_payment_link(db, est, fee_row, return_url=return_url)
+    app_base_url = _app_base_url(request)
+    return_url = f"{app_base_url}/?cf_payment_return=1&type=sub&year={fee_row.financial_year}&month={fee_row.month}&est_id={est.id}"
+    return _create_fee_payment_link(db, est, fee_row, app_base_url, return_url=return_url)
 
 
 @app.post("/api/admin/establishments/{est_id}/subscription-fees/refresh-status")
@@ -2317,12 +2339,12 @@ async def admin_refresh_subscription_fee_status(
         return {"ok": True, "is_paid": fee_row.is_paid}
 
     try:
-        status_resp = cashfree_client.get_payment_link_status(fee_row.cashfree_order_id)
+        status = cashfree_client.get_payment_status(fee_row.cashfree_order_id)
     except requests.HTTPError as e:
         raise HTTPException(502, f"Cashfree status check failed: {e.response.text if e.response is not None else str(e)}")
 
-    if status_resp.get("link_status") == "PAID":
-        _confirm_subscription_fee_paid(db, fee_row, payment_ref=str(status_resp.get("cf_link_id") or fee_row.cashfree_order_id))
+    if status["paid"]:
+        _confirm_subscription_fee_paid(db, fee_row, payment_ref=status["payment_ref"])
 
     return {"ok": True, "is_paid": fee_row.is_paid}
 
@@ -2743,9 +2765,10 @@ async def admin_create_advance_payment_link(
         raise HTTPException(400, "Consultant has no mobile number on file — required by Cashfree to generate a payment link.")
 
     order_id = cashfree_client.new_order_id("adv", est.id)
-    return_url = f"{_app_base_url(request)}/?cf_payment_return=1&type=adv&est_id={est.id}&order_id={order_id}"
+    app_base_url = _app_base_url(request)
+    return_url = f"{app_base_url}/?cf_payment_return=1&type=adv&est_id={est.id}&order_id={order_id}"
     try:
-        link_resp = cashfree_client.create_payment_link(
+        cf_resp = cashfree_client.create_payment_link_or_order(
             link_id=order_id,
             amount=d.amount,
             purpose=f"Advance subscription credit — {est.name} ({est.code})",
@@ -2761,13 +2784,14 @@ async def admin_create_advance_payment_link(
 
     ledger_row = AdvanceCreditLedger(
         establishment_id=est.id, entry_type="topup", amount=d.amount,
-        cashfree_order_id=order_id, cashfree_payment_link_url=link_resp.get("link_url"),
+        cashfree_order_id=order_id, cashfree_payment_link_url=cf_resp["link_url"],
+        cashfree_payment_session_id=cf_resp["payment_session_id"],
         notes=d.notes or None, status="pending"
     )
     db.add(ledger_row)
     db.commit()
 
-    return {"ok": True, "link_url": link_resp.get("link_url"), "order_id": order_id}
+    return {"ok": True, "link_url": _cashfree_shareable_url(app_base_url, cf_resp), "order_id": order_id}
 
 
 @app.post("/api/admin/establishments/{est_id}/advance-credit/{ledger_id}/refresh-status")
@@ -2788,12 +2812,12 @@ async def admin_refresh_advance_credit_status(
         return {"ok": True, "status": ledger_row.status, "advance_credit_balance": None}
 
     try:
-        status_resp = cashfree_client.get_payment_link_status(ledger_row.cashfree_order_id)
+        status = cashfree_client.get_payment_status(ledger_row.cashfree_order_id)
     except requests.HTTPError as e:
         raise HTTPException(502, f"Cashfree status check failed: {e.response.text if e.response is not None else str(e)}")
 
-    if status_resp.get("link_status") == "PAID":
-        _confirm_advance_credit_ledger_row(db, ledger_row, payment_ref=str(status_resp.get("cf_link_id") or ledger_row.cashfree_order_id))
+    if status["paid"]:
+        _confirm_advance_credit_ledger_row(db, ledger_row, payment_ref=status["payment_ref"])
 
     est = db.query(Establishment).filter(Establishment.id == est_id).first()
     return {"ok": True, "status": ledger_row.status, "advance_credit_balance": est.advance_credit_balance if est else None}
@@ -2845,6 +2869,33 @@ async def admin_get_advance_credit(
     }
 
 
+def _route_cashfree_confirmation(db: Session, order_id: str, payment_ref: str, source_label: str) -> None:
+    """Shared by both webhook branches below (Payment Links and the Orders-API
+    fallback) -- routes a confirmed-paid order_id to whichever table it belongs to,
+    by the 'sub_'/'adv_' prefix new_order_id() always gives it, regardless of which
+    Cashfree API actually created it."""
+    if order_id.startswith("sub_"):
+        # A "pay all overdue" batch order writes the SAME cashfree_order_id across every
+        # covered SubscriptionFee row, so .all() (not .first()) is required to confirm
+        # every month the order paid for, not just one.
+        fee_rows = db.query(SubscriptionFee).filter(SubscriptionFee.cashfree_order_id == order_id).all()
+        if not fee_rows:
+            print(f"[CashfreeWebhook] No SubscriptionFee found for order_id={order_id}")
+            return
+        for fee_row in fee_rows:
+            _confirm_subscription_fee_paid(db, fee_row, payment_ref=payment_ref, source="cashfree")
+
+    elif order_id.startswith("adv_"):
+        ledger_row = db.query(AdvanceCreditLedger).filter(AdvanceCreditLedger.cashfree_order_id == order_id).first()
+        if not ledger_row:
+            print(f"[CashfreeWebhook] No AdvanceCreditLedger row found for order_id={order_id}")
+            return
+        _confirm_advance_credit_ledger_row(db, ledger_row, payment_ref=payment_ref)
+
+    else:
+        print(f"[CashfreeWebhook] Unrecognized order_id prefix, ignoring ({source_label}): {order_id}")
+
+
 # ── Cashfree Webhook ────────────────────────────────────────────────────────
 # Unauthenticated by design (Cashfree calls this directly) -- trust is established
 # purely via HMAC signature verification below, never via JWT/session.
@@ -2864,41 +2915,81 @@ async def cashfree_webhook(request: Request, db: Session = Depends(get_db)):
 
     data = payload.get("data") or {}
     link_id = data.get("link_id") or ""
-    link_status = data.get("link_status") or ""
 
-    if not link_id:
-        print("[CashfreeWebhook] Payload missing data.link_id -- ignoring.")
+    if link_id:
+        # Payment Links webhook shape -- unchanged from before the Orders-API fallback
+        # was added, and already confirmed working against a real live payment.
+        link_status = data.get("link_status") or ""
+        if link_status != "PAID":
+            # Ignore ACTIVE/EXPIRED/PARTIALLY_PAID/etc -- we only act on a fully-paid link.
+            return {"ok": True}
+        order_info = data.get("order") or {}
+        payment_ref = str(order_info.get("transaction_id") or order_info.get("order_id") or data.get("cf_link_id") or link_id)
+        _route_cashfree_confirmation(db, link_id, payment_ref, source_label="payment_link")
         return {"ok": True}
 
-    if link_status != "PAID":
-        # Ignore ACTIVE/EXPIRED/PARTIALLY_PAID/etc -- we only act on a fully-paid link.
+    # Orders-API webhook shape (create_payment_link_or_order()'s fallback path) --
+    # structurally different from Payment Links: no data.link_id, instead
+    # data.order.order_id + data.payment.payment_status. Distinguishing by payload
+    # shape (rather than the top-level "type" field) so this stays correct even if
+    # Cashfree's exact Payment Links event "type" string is ever different from what's
+    # assumed here -- the link_id branch above never depended on it either.
+    order_id = (data.get("order") or {}).get("order_id") or ""
+    if not order_id:
+        print("[CashfreeWebhook] Payload has neither data.link_id nor data.order.order_id -- ignoring.")
         return {"ok": True}
 
-    order_info = data.get("order") or {}
-    payment_ref = str(order_info.get("transaction_id") or order_info.get("order_id") or data.get("cf_link_id") or link_id)
+    payment_info = data.get("payment") or {}
+    if payment_info.get("payment_status") != "SUCCESS":
+        return {"ok": True}
 
-    if link_id.startswith("sub_"):
-        # A "pay all overdue" batch order writes the SAME cashfree_order_id across every
-        # covered SubscriptionFee row, so .all() (not .first()) is required to confirm
-        # every month the order paid for, not just one.
-        fee_rows = db.query(SubscriptionFee).filter(SubscriptionFee.cashfree_order_id == link_id).all()
-        if not fee_rows:
-            print(f"[CashfreeWebhook] No SubscriptionFee found for order_id={link_id}")
-            return {"ok": True}
-        for fee_row in fee_rows:
-            _confirm_subscription_fee_paid(db, fee_row, payment_ref=payment_ref, source="cashfree")
-
-    elif link_id.startswith("adv_"):
-        ledger_row = db.query(AdvanceCreditLedger).filter(AdvanceCreditLedger.cashfree_order_id == link_id).first()
-        if not ledger_row:
-            print(f"[CashfreeWebhook] No AdvanceCreditLedger row found for order_id={link_id}")
-            return {"ok": True}
-        _confirm_advance_credit_ledger_row(db, ledger_row, payment_ref=payment_ref)
-
-    else:
-        print(f"[CashfreeWebhook] Unrecognized order_id prefix, ignoring: {link_id}")
-
+    payment_ref = str(payment_info.get("cf_payment_id") or order_id)
+    _route_cashfree_confirmation(db, order_id, payment_ref, source_label="order")
     return {"ok": True}
+
+
+# ── Unified "open my payment" link ──────────────────────────────────────────
+# Unauthenticated by design (this IS the link a consultant/employer/admin shares or
+# opens to pay -- same trust model as the payment itself: possession of the URL, not a
+# session). create_payment_link_or_order()'s Orders-API fallback has no directly
+# shareable URL of its own (payment_session_id only works via the JS SDK, client-side),
+# so every "create a payment link" endpoint points here instead of Cashfree's raw
+# link_url whenever the fallback was used -- this route is what actually launches
+# checkout in that case, or just forwards straight to Cashfree's own hosted page when a
+# real Payment Link exists. Either way, callers of create_payment_link_or_order() never
+# need to branch on which method was used; only this route and _cashfree_shareable_url()
+# (above) know the difference.
+@app.get("/pay/{order_id}", response_class=HTMLResponse)
+async def cashfree_pay_redirect(order_id: str, db: Session = Depends(get_db)):
+    fee_row = db.query(SubscriptionFee).filter(SubscriptionFee.cashfree_order_id == order_id).first()
+    ledger_row = None if fee_row else db.query(AdvanceCreditLedger).filter(AdvanceCreditLedger.cashfree_order_id == order_id).first()
+    row = fee_row or ledger_row
+    if not row:
+        return HTMLResponse("<h2>Payment link not found</h2><p>This link may have expired or is invalid.</p>", status_code=404)
+
+    if row.cashfree_payment_link_url:
+        return RedirectResponse(url=row.cashfree_payment_link_url)
+
+    if not row.cashfree_payment_session_id:
+        return HTMLResponse("<h2>Payment link not found</h2><p>This link may have expired or is invalid.</p>", status_code=404)
+
+    sdk_mode = "production" if cashfree_client.CASHFREE_ENV == "PRODUCTION" else "sandbox"
+    return HTMLResponse(f"""
+        <!DOCTYPE html>
+        <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Redirecting to payment…</title>
+        <script src="https://sdk.cashfree.com/js/v3/cashfree.js"></script>
+        </head><body style="font-family:sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; margin:0;">
+        <p>Redirecting you to the payment page…</p>
+        <script>
+          const cashfree = Cashfree({{ mode: "{sdk_mode}" }});
+          cashfree.checkout({{
+            paymentSessionId: {json.dumps(row.cashfree_payment_session_id)},
+            redirectTarget: "_self",
+          }});
+        </script>
+        </body></html>
+    """)
 
 
 # ── EPF Monthly Payments (TRRN Remittance) Endpoints ──────────────────────
@@ -3742,8 +3833,9 @@ async def establishment_create_fee_link(
     if not fee_row:
         raise HTTPException(404, "Subscription fee row not found for this month.")
 
-    return_url = f"{_app_base_url(request)}/?cf_payment_return=1&type=sub&year={fee_row.financial_year}&month={fee_row.month}&est_id={est_obj.id}"
-    return _create_fee_payment_link(db, est_obj, fee_row, return_url=return_url)
+    app_base_url = _app_base_url(request)
+    return_url = f"{app_base_url}/?cf_payment_return=1&type=sub&year={fee_row.financial_year}&month={fee_row.month}&est_id={est_obj.id}"
+    return _create_fee_payment_link(db, est_obj, fee_row, app_base_url, return_url=return_url)
 
 
 @app.post("/api/establishment/subscription-fees/refresh-status")
@@ -3765,12 +3857,12 @@ async def establishment_refresh_fee_status(
         return {"ok": True, "is_paid": fee_row.is_paid}
 
     try:
-        status_resp = cashfree_client.get_payment_link_status(fee_row.cashfree_order_id)
+        status = cashfree_client.get_payment_status(fee_row.cashfree_order_id)
     except requests.HTTPError as e:
         raise HTTPException(502, f"Cashfree status check failed: {e.response.text if e.response is not None else str(e)}")
 
-    if status_resp.get("link_status") == "PAID":
-        _confirm_subscription_fee_paid(db, fee_row, payment_ref=str(status_resp.get("cf_link_id") or fee_row.cashfree_order_id))
+    if status["paid"]:
+        _confirm_subscription_fee_paid(db, fee_row, payment_ref=status["payment_ref"])
 
     return {"ok": True, "is_paid": fee_row.is_paid}
 
@@ -3819,9 +3911,10 @@ async def establishment_pay_all_overdue_create_link(
 
     order_id = cashfree_client.new_order_id("sub", f"batch{est_obj.id}")
     months_str = ", ".join(f"{f.month} {f.financial_year}" for f in fee_rows)
-    return_url = f"{_app_base_url(request)}/?cf_payment_return=1&type=sub_batch&est_id={est_obj.id}"
+    app_base_url = _app_base_url(request)
+    return_url = f"{app_base_url}/?cf_payment_return=1&type=sub_batch&est_id={est_obj.id}"
     try:
-        link_resp = cashfree_client.create_payment_link(
+        cf_resp = cashfree_client.create_payment_link_or_order(
             link_id=order_id,
             amount=total_due,
             purpose=f"Software subscription fee — {len(fee_rows)} month(s) ({months_str}) — {est_obj.name} ({est_obj.code})",
@@ -3837,10 +3930,11 @@ async def establishment_pay_all_overdue_create_link(
 
     for f in fee_rows:
         f.cashfree_order_id = order_id
-        f.cashfree_payment_link_url = link_resp.get("link_url")
+        f.cashfree_payment_link_url = cf_resp["link_url"]
+        f.cashfree_payment_session_id = cf_resp["payment_session_id"]
     db.commit()
 
-    return {"ok": True, "link_url": link_resp.get("link_url"), "order_id": order_id, "total_due": total_due}
+    return {"ok": True, "link_url": _cashfree_shareable_url(app_base_url, cf_resp), "order_id": order_id, "total_due": total_due}
 
 
 @app.post("/api/establishment/subscription-fees/pay-all/refresh-status")
@@ -3868,15 +3962,14 @@ async def establishment_pay_all_overdue_refresh_status(
         return {"ok": True, "is_paid": False}
 
     try:
-        status_resp = cashfree_client.get_payment_link_status(order_id)
+        status = cashfree_client.get_payment_status(order_id)
     except requests.HTTPError as e:
         raise HTTPException(502, f"Cashfree status check failed: {e.response.text if e.response is not None else str(e)}")
 
-    if status_resp.get("link_status") == "PAID":
-        payment_ref = str(status_resp.get("cf_link_id") or order_id)
+    if status["paid"]:
         for f in fee_rows:
             if f.cashfree_order_id == order_id:
-                _confirm_subscription_fee_paid(db, f, payment_ref=payment_ref, source="cashfree")
+                _confirm_subscription_fee_paid(db, f, payment_ref=status["payment_ref"], source="cashfree")
 
     return {"ok": True, "is_paid": all(f.is_paid for f in fee_rows)}
 
@@ -3940,9 +4033,10 @@ async def consultant_create_advance_payment_link(
         raise HTTPException(400, "Add a mobile number to your account to generate a Cashfree payment link.")
 
     order_id = cashfree_client.new_order_id("adv", est_obj.id)
-    return_url = f"{_app_base_url(request)}/?cf_payment_return=1&type=adv&est_id={est_obj.id}&order_id={order_id}"
+    app_base_url = _app_base_url(request)
+    return_url = f"{app_base_url}/?cf_payment_return=1&type=adv&est_id={est_obj.id}&order_id={order_id}"
     try:
-        link_resp = cashfree_client.create_payment_link(
+        cf_resp = cashfree_client.create_payment_link_or_order(
             link_id=order_id,
             amount=d.amount,
             purpose=f"Advance subscription credit — {est_obj.name} ({est_obj.code})",
@@ -3958,12 +4052,13 @@ async def consultant_create_advance_payment_link(
 
     db.add(AdvanceCreditLedger(
         establishment_id=est_obj.id, entry_type="topup", amount=d.amount,
-        cashfree_order_id=order_id, cashfree_payment_link_url=link_resp.get("link_url"),
+        cashfree_order_id=order_id, cashfree_payment_link_url=cf_resp["link_url"],
+        cashfree_payment_session_id=cf_resp["payment_session_id"],
         notes=d.notes or None, status="pending"
     ))
     db.commit()
 
-    return {"ok": True, "link_url": link_resp.get("link_url"), "order_id": order_id}
+    return {"ok": True, "link_url": _cashfree_shareable_url(app_base_url, cf_resp), "order_id": order_id}
 
 
 class AdvanceCreditRefreshIn(BaseModel):
@@ -3990,12 +4085,12 @@ async def establishment_refresh_advance_credit_status(
         return {"ok": True, "status": ledger_row.status, "amount": ledger_row.amount, "advance_credit_balance": est_obj.advance_credit_balance}
 
     try:
-        status_resp = cashfree_client.get_payment_link_status(ledger_row.cashfree_order_id)
+        status = cashfree_client.get_payment_status(ledger_row.cashfree_order_id)
     except requests.HTTPError as e:
         raise HTTPException(502, f"Cashfree status check failed: {e.response.text if e.response is not None else str(e)}")
 
-    if status_resp.get("link_status") == "PAID":
-        _confirm_advance_credit_ledger_row(db, ledger_row, payment_ref=str(status_resp.get("cf_link_id") or ledger_row.cashfree_order_id))
+    if status["paid"]:
+        _confirm_advance_credit_ledger_row(db, ledger_row, payment_ref=status["payment_ref"])
 
     return {"ok": True, "status": ledger_row.status, "amount": ledger_row.amount, "advance_credit_balance": est_obj.advance_credit_balance}
 
