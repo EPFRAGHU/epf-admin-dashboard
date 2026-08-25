@@ -1012,6 +1012,11 @@ App.registerPage('wage-entry', async (container) => {
       </div>
     </div>
 
+    <div style="display:flex; gap:16px; align-items:center; margin-bottom:8px; font-size:12px; color:var(--text2);">
+      <span style="display:inline-flex; align-items:center; gap:6px;"><span style="width:12px; height:12px; border-radius:3px; background:rgba(31,170,89,.25); display:inline-block;"></span> Joining this month</span>
+      <span style="display:inline-flex; align-items:center; gap:6px;"><span style="width:12px; height:12px; border-radius:3px; background:rgba(229,72,77,.25); display:inline-block;"></span> Exiting this month</span>
+    </div>
+
     <div class="card">
       <div class="table-wrap">
         <table class="wage-table">
