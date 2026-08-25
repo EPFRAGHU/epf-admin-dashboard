@@ -6,6 +6,7 @@ deploy, so this is always accurate for the running build) and served via GET /ap
 import os
 import re
 import subprocess
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -101,8 +102,9 @@ def _format_display(iso_str):
         return iso_str
 
 
-def _compute_version_info():
-    _deepen_if_shallow()
+def _compute_version_info(deepen=True):
+    if deepen:
+        _deepen_if_shallow()
 
     render_commit = os.environ.get("RENDER_GIT_COMMIT", "")
 
@@ -153,8 +155,28 @@ def _compute_version_info():
     }
 
 
-_VERSION_INFO = _compute_version_info()
+_VERSION_INFO_LOCK = threading.Lock()
+# Computed instantly at import time WITHOUT the shallow-clone git fetch -- that fetch
+# (up to 25s worst-case) used to run inline here, meaning it ran before app.py had even
+# created the FastAPI app object (webapp/app.py imports this module at line ~45, well
+# before `app = FastAPI(...)`), adding up to 25 extra seconds of pure downtime on top of
+# Render's already-non-zero-downtime deploys, on EVERY process start (deploys, crash
+# restarts, all of it) -- not just the one-time deploy this was meant to fix. The badge
+# just shows "v1" for the first few seconds after a cold start now instead of blocking
+# startup on it; _refresh_version_info_in_background() below corrects it shortly after.
+_VERSION_INFO = _compute_version_info(deepen=False)
+
+
+def _refresh_version_info_in_background():
+    global _VERSION_INFO
+    info = _compute_version_info(deepen=True)
+    with _VERSION_INFO_LOCK:
+        _VERSION_INFO = info
+
+
+threading.Thread(target=_refresh_version_info_in_background, daemon=True).start()
 
 
 def get_version_info():
-    return _VERSION_INFO
+    with _VERSION_INFO_LOCK:
+        return _VERSION_INFO
