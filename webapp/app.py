@@ -282,6 +282,14 @@ def get_entry_lock_status(db: Session, est_obj: Establishment, project: Project)
     if not coverage_key:
         return result
 
+    # A trial establishment must never be payment-locked -- every other gate in the app
+    # (get_unpaid_months_detail_for_year, the ECR download gates, ...) already exempts
+    # trial establishments via is_establishment_in_trial. Note this ONLY relaxes the
+    # payment condition (prev_month_satisfied below); it deliberately does NOT skip the
+    # walk itself, so next_year_to_add's chronological year-order check (used by
+    # add_year, which is about ordering, not payment) still reflects the real state.
+    in_trial = is_establishment_in_trial(est_obj)
+
     year_from = int(coverage_key.split("-")[0])
     prev_month_satisfied = True  # nothing precedes the very first month
 
@@ -300,7 +308,7 @@ def get_entry_lock_status(db: Session, est_obj: Establishment, project: Project)
                     result["locked_month"] = {"year_key": year_key, "month_idx": month_idx, "month_abbr": month_abbr}
                 return result
             fee_row = fee_rows.get(month_abbr)
-            prev_month_satisfied = (fee_row is None) or fee_row.is_paid or fee_row.amount_due <= 0
+            prev_month_satisfied = in_trial or (fee_row is None) or fee_row.is_paid or fee_row.amount_due <= 0
 
         year_from += 1
 
@@ -5002,6 +5010,34 @@ async def put_wages(
     wages_int = [int(round(float(w))) if w is not None else 0 for w in d.wages]
     capped_wages = [min(w, g) for w, g in zip(wages_int, gross_wages)]
     ncp_days = d.ncp_days if d.ncp_days and len(d.ncp_days) == 12 else [0] * 12
+
+    # Finding 4 stopgap: this older, whole-year-in-one-call endpoint was deliberately
+    # left out of the month-by-month entry gate (different semantics, doesn't map onto
+    # a single-month check) -- but writing wage data into a month at/after the current
+    # lock boundary would silently satisfy get_entry_lock_status's has_data check for
+    # that month and clear locked_month back to None, unlocking bulk_month_wages for
+    # months nothing was ever paid for. Block only the specific case that can dissolve
+    # the gate: a NON-ZERO value going into a month that (a) is at/after the lock
+    # boundary and (b) doesn't already have data from anyone (i.e. is the exact
+    # condition bulk_month_wages itself would refuse). Edits to months that already
+    # have data, and any month before the lock boundary, are left untouched.
+    if current_user.role != "superadmin":
+        status = get_entry_lock_status(db, est_obj, project)
+        lock = status["locked_month"]
+        if lock:
+            lock_year_from = int(lock["year_key"].split("-")[0])
+            target_year_from = int(key.split("-")[0])
+            for month_idx in range(12):
+                if (target_year_from, month_idx) < (lock_year_from, lock["month_idx"]):
+                    continue
+                if capped_wages[month_idx] and capped_wages[month_idx] > 0 and \
+                        count_ecr_employees_for_month(project, key, month_idx) == 0:
+                    raise HTTPException(
+                        409,
+                        f"{MONTH_SHORT_NAMES[month_idx]} {key} is locked pending chronological entry and "
+                        f"payment of an earlier month. Use Monthly Wage Entry to enter months in order."
+                    )
+
     project.upsert_entry(key, d.member_id, capped_wages, gross_wages=gross_wages, ncp_days=ncp_days, age_crosses_58=d.age_crosses_58,
                           higher_epf_ee=d.higher_epf_ee, higher_epf_er=d.higher_epf_er,
                           pohw=d.pohw, pohw_additional_1_16=d.pohw_additional_1_16)
@@ -5035,24 +5071,31 @@ async def bulk_month_wages(
     if current_user.role != "superadmin" and count_ecr_employees_for_month(project, key, d.month_idx) == 0:
         status = get_entry_lock_status(db, est_obj, project)
         lock = status["locked_month"]
-        if lock and key == lock["year_key"] and d.month_idx >= lock["month_idx"]:
-            # lock["month_idx"] is the first EMPTY month blocked by an unsatisfied
-            # predecessor (see get_entry_lock_status docstring) -- name the actual
-            # blocking month (the one before it) in the error, not the locked month
-            # itself, so the message doesn't say "X must be entered before entering X".
-            prev_month_idx = lock["month_idx"] - 1
-            if prev_month_idx >= 0:
-                prev_abbr = MONTH_SHORT_NAMES[prev_month_idx]
-                prev_year_key = lock["year_key"]
-            else:
-                prev_abbr = MONTH_SHORT_NAMES[11]
-                prev_year_from = int(lock["year_key"].split("-")[0]) - 1
-                prev_year_key = f"{prev_year_from}-{str(prev_year_from + 1)[-2:]}"
-            raise HTTPException(
-                409,
-                f"{prev_abbr} {prev_year_key} must be entered and its fee paid before you can enter "
-                f"{MONTH_SHORT_NAMES[d.month_idx]} {key}."
-            )
+        if lock:
+            # Compare chronologically (year_from, month_idx), not year_key equality --
+            # a later financial year (e.g. superadmin-bulk-created for backfill) must
+            # still be gated by an earlier, still-locked year, not just the exact
+            # locked year_key (Finding 2).
+            target_year_from = int(key.split("-")[0])
+            lock_year_from = int(lock["year_key"].split("-")[0])
+            if (target_year_from, d.month_idx) >= (lock_year_from, lock["month_idx"]):
+                # lock["month_idx"] is the first EMPTY month blocked by an unsatisfied
+                # predecessor (see get_entry_lock_status docstring) -- name the actual
+                # blocking month (the one before it) in the error, not the locked month
+                # itself, so the message doesn't say "X must be entered before entering X".
+                prev_month_idx = lock["month_idx"] - 1
+                if prev_month_idx >= 0:
+                    prev_abbr = MONTH_SHORT_NAMES[prev_month_idx]
+                    prev_year_key = lock["year_key"]
+                else:
+                    prev_abbr = MONTH_SHORT_NAMES[11]
+                    prev_year_from = int(lock["year_key"].split("-")[0]) - 1
+                    prev_year_key = f"{prev_year_from}-{str(prev_year_from + 1)[-2:]}"
+                raise HTTPException(
+                    409,
+                    f"{prev_abbr} {prev_year_key} must be entered and its fee paid before you can enter "
+                    f"{MONTH_SHORT_NAMES[d.month_idx]} {key}."
+                )
 
     for emp_update in d.employees:
         if not project.get_master(emp_update.member_id):
