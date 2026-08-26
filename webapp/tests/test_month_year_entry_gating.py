@@ -187,3 +187,65 @@ def test_superadmin_can_still_bulk_create_years(superadmin_session, consultant_a
     res = superadmin_session.post("/api/years/bulk", json={"start_year": 1990, "end_year": 1995})
     assert res.status_code == 200, res.text
     assert res.json()["added"] == 6
+
+
+def test_cannot_save_second_month_wages_before_first_month_is_paid(consultant_a):
+    _create_est(consultant_a, "GATEWAGE001", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000003"})
+    res1 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    assert res1.status_code == 200, res1.text
+
+    res2 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 1, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    assert res2.status_code == 409
+    assert "Mar" in res2.text
+
+
+def test_re_saving_an_already_entered_month_is_never_blocked(consultant_a):
+    """Grandfathering: editing a month that already has data must always be allowed,
+    even though it isn't paid yet."""
+    _create_est(consultant_a, "GATEWAGE002", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000004"})
+    consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 16000, "epf_wage": 16000, "ncp_days": 0}]
+    })
+    assert res.status_code == 200, res.text
+
+
+def test_month_unlocks_once_previous_month_paid(consultant_a, test_db):
+    from webapp.database import SubscriptionFee
+    est_id = _create_est(consultant_a, "GATEWAGE003", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000005"})
+    consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    fee = test_db.query(SubscriptionFee).filter(
+        SubscriptionFee.establishment_id == est_id, SubscriptionFee.month == "Mar"
+    ).first()
+    fee.is_paid = True
+    test_db.commit()
+
+    res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 1, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    assert res.status_code == 200, res.text
+
+
+def test_superadmin_bypasses_monthly_wage_entry_gating(superadmin_session, consultant_a):
+    est_id = _create_est(consultant_a, "GATEWAGE004", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000006"})
+    superadmin_session.set_establishment(est_id)
+    res = superadmin_session.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 5, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    assert res.status_code == 200, res.text

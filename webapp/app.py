@@ -5023,6 +5023,28 @@ async def bulk_month_wages(
     if not (0 <= d.month_idx <= 11):
         raise HTTPException(400, "Invalid month index")
 
+    if current_user.role != "superadmin" and count_ecr_employees_for_month(project, key, d.month_idx) == 0:
+        status = get_entry_lock_status(db, est_obj, project)
+        lock = status["locked_month"]
+        if lock and key == lock["year_key"] and d.month_idx >= lock["month_idx"]:
+            # lock["month_idx"] is the first EMPTY month blocked by an unsatisfied
+            # predecessor (see get_entry_lock_status docstring) -- name the actual
+            # blocking month (the one before it) in the error, not the locked month
+            # itself, so the message doesn't say "X must be entered before entering X".
+            prev_month_idx = lock["month_idx"] - 1
+            if prev_month_idx >= 0:
+                prev_abbr = MONTH_SHORT_NAMES[prev_month_idx]
+                prev_year_key = lock["year_key"]
+            else:
+                prev_abbr = MONTH_SHORT_NAMES[11]
+                prev_year_from = int(lock["year_key"].split("-")[0]) - 1
+                prev_year_key = f"{prev_year_from}-{str(prev_year_from + 1)[-2:]}"
+            raise HTTPException(
+                409,
+                f"{prev_abbr} {prev_year_key} must be entered and its fee paid before you can enter "
+                f"{MONTH_SHORT_NAMES[d.month_idx]} {key}."
+            )
+
     for emp_update in d.employees:
         if not project.get_master(emp_update.member_id):
             continue
