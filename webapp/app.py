@@ -760,6 +760,11 @@ async def refund_page():
     return (WEB / "refund.html").read_text(encoding="utf-8")
 
 
+@app.get("/pricing", response_class=HTMLResponse)
+async def pricing_page():
+    return (WEB / "pricing.html").read_text(encoding="utf-8")
+
+
 # ── Schemas ────────────────────────────────────────────────────────────────
 class LoginIn(BaseModel):
     email: str
