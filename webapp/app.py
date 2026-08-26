@@ -335,9 +335,16 @@ def get_entry_lock_status(db: Session, est_obj: Establishment, project: Project)
         year_key = f"{year_from}-{str(year_from + 1)[-2:]}"
         if year_key not in project.years:
             result["next_year_to_add"] = year_key
+            db.commit()  # persist any earlier years' syncs from this same walk (deferred below)
             return result
 
-        fee_rows = sync_subscription_fees_for_year(db, est_obj, project, year_key) or {}
+        # commit=False: this walk may sync several years back-to-back (an establishment
+        # with N years of history means N calls here) -- committing after every single one
+        # is N sequential round-trips to Neon Postgres, which is cross-region and measurably
+        # slow (see sync_subscription_fees_for_year's own docstring for the same lesson
+        # learned at the single-year/12-month level). We commit once, at whichever return
+        # below actually ends the walk, instead.
+        fee_rows = sync_subscription_fees_for_year(db, est_obj, project, year_key, commit=False) or {}
         for month_idx in range(12):
             month_abbr = MONTH_SHORT_NAMES[month_idx]
             has_data = count_ecr_employees_for_month(project, year_key, month_idx) > 0
@@ -347,6 +354,7 @@ def get_entry_lock_status(db: Session, est_obj: Establishment, project: Project)
                     result["locked_month"] = {"year_key": year_key, "month_idx": month_idx, "month_abbr": month_abbr, "reason": "not_yet_due"}
                 elif not prev_month_satisfied:
                     result["locked_month"] = {"year_key": year_key, "month_idx": month_idx, "month_abbr": month_abbr, "reason": "unpaid"}
+                db.commit()
                 return result
             fee_row = fee_rows.get(month_abbr)
             prev_month_satisfied = in_trial or (fee_row is None) or fee_row.is_paid or fee_row.amount_due <= 0
@@ -391,8 +399,13 @@ def apply_advance_credit_if_available(db: Session, est_obj: Establishment, fee_r
     )
 
 
-def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project: Project, year_key: str):
+def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project: Project, year_key: str, commit: bool = True):
     """Sync or auto-generate 12-month subscription fee records for an establishment and financial year.
+
+    commit=False lets a caller that syncs several years in one request (e.g.
+    get_entry_lock_status's chronological walk) batch them into a single commit instead
+    of one round-trip per year -- see that function for why this matters. Every other
+    caller wants the default (commit immediately, as before).
 
     Fetches all 12 months' existing rows in a single query up front (instead of one
     query per month) -- this endpoint is on the hot path for page loads (Reports,
@@ -470,7 +483,8 @@ def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project
 
         existing_rows[month_abbr] = fee_row
 
-    db.commit()
+    if commit:
+        db.commit()
     return existing_rows
 
 def is_month_overdue(year_key: str, month_idx: int) -> bool:

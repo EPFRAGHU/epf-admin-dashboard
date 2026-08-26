@@ -758,3 +758,71 @@ def test_entering_a_later_month_does_not_wipe_an_earlier_months_wages_for_long_m
         assert entry.wages[1] == 18000
     finally:
         db.close()
+
+
+# ── Performance: get_entry_lock_status batches its per-year SubscriptionFee syncs into
+# a single commit instead of one round-trip per year walked (see its call to
+# sync_subscription_fees_for_year(..., commit=False)). Prove the batching didn't turn
+# into silent data loss: everything synced across a multi-year walk must still be
+# durably committed, visible from a brand-new DB session/connection, not just flushed
+# within the walk's own session. ──
+
+def test_entry_lock_status_multi_year_walk_persists_all_synced_years(consultant_a, superadmin_session, test_db):
+    from webapp.database import SubscriptionFee
+
+    class _FarFutureDate(_real_date):
+        """2027-28's months must be calendar-past for this test, or the walk would stop
+        on the "not_yet_due" calendar ceiling instead of reaching an "unpaid" month --
+        which would defeat the point of walking two years' worth of syncs."""
+        _frozen = _real_date(2028, 6, 1)
+
+        @classmethod
+        def today(cls):
+            return cls._frozen
+
+    est_id = _create_est(consultant_a, "PERFWALK001", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000051"})
+    superadmin_session.set_establishment(est_id)
+
+    with patch("webapp.app.date", _FarFutureDate):
+        # Fill every month of 2026-27 (superadmin bypasses the chronological gate) so the
+        # walk sails through this whole year and continues into the next one.
+        for month_idx in range(12):
+            res = superadmin_session.post("/api/years/2026-27/wages/bulk_month", json={
+                "month_idx": month_idx, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+            })
+            assert res.status_code == 200, res.text
+        test_db.query(SubscriptionFee).filter(
+            SubscriptionFee.establishment_id == est_id, SubscriptionFee.financial_year == "2026-27"
+        ).update({"is_paid": True})
+        test_db.commit()
+
+        # 2027-28 exists but only its first month has data, and it's unpaid -- the walk
+        # must reach into this second year to discover that before it can lock anything.
+        superadmin_session.post("/api/years", json={"year_from": "2027", "year_to": "2028"})
+        res_apr = superadmin_session.post("/api/years/2027-28/wages/bulk_month", json={
+            "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+        })
+        assert res_apr.status_code == 200, res_apr.text
+
+        db, est_obj, project = _load_est_and_project(est_id)
+        try:
+            status = get_entry_lock_status(db, est_obj, project)
+            assert status["locked_month"] == {"year_key": "2027-28", "month_idx": 1, "month_abbr": "Apr", "reason": "unpaid"}
+        finally:
+            db.close()
+
+    # A completely fresh session/connection -- not the one the walk ran in -- must see
+    # every row the walk synced across BOTH years. If commit=False rows were ever left
+    # uncommitted, this would come back empty for 2027-28.
+    verify_db = SessionLocal()
+    try:
+        assert verify_db.query(SubscriptionFee).filter(
+            SubscriptionFee.establishment_id == est_id, SubscriptionFee.financial_year == "2026-27"
+        ).count() == 12
+        assert verify_db.query(SubscriptionFee).filter(
+            SubscriptionFee.establishment_id == est_id, SubscriptionFee.financial_year == "2027-28"
+        ).count() == 12
+    finally:
+        verify_db.close()
