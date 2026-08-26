@@ -145,13 +145,20 @@ def _create_est(consultant, code, coverage_date="01-04-2026"):
 
 
 def _load_est_and_project(est_id):
-    from webapp.auth import load_establishment_project
+    """Replicates the small inline load done by get_active_establishment() in
+    webapp/auth.py (that function is a FastAPI dependency wired to Request/
+    current_user, not a plain callable a test can invoke directly)."""
+    import json
+    from webapp.database import Establishment
+    from epf_engine import Project
     db = SessionLocal()
-    try:
-        est_obj, project = load_establishment_project(db, est_id)
-        return db, est_obj, project
-    finally:
-        pass  # caller closes db
+    est_obj = db.query(Establishment).filter(Establishment.id == est_id).first()
+    project = Project()
+    if est_obj.data:
+        project.load_from_dict(json.loads(est_obj.data))
+    else:
+        project.set_establishment(est_obj.code, est_obj.name, est_obj.address or "", est_obj.coverage_date or "")
+    return db, est_obj, project
 
 
 def test_lock_status_reports_coverage_year_as_next_year_to_add_when_no_years_exist(consultant_a):
@@ -206,17 +213,12 @@ def test_lock_status_unlocks_second_month_once_first_is_paid(consultant_a, test_
         db.close()
 ```
 
-- [ ] **Step 2: Confirm `load_establishment_project` exists with this signature**
-
-Run: `Select-String -Path webapp/auth.py -Pattern "def load_establishment_project"`
-If the helper has a different name/signature, adjust the test helper `_load_est_and_project` above to match what's actually in `webapp/auth.py` (it's the same loader `get_active_establishment` uses internally) before proceeding.
-
-- [ ] **Step 3: Run tests to verify they fail**
+- [ ] **Step 2: Run tests to verify they fail**
 
 Run: `.\venv\Scripts\python.exe -m pytest webapp/tests/test_month_year_entry_gating.py -v`
 Expected: FAIL with `ImportError: cannot import name 'get_entry_lock_status'`
 
-- [ ] **Step 4: Write the implementation**
+- [ ] **Step 3: Write the implementation**
 
 In `webapp/app.py`, right after `get_coverage_year_key` (Task 1), add:
 
@@ -267,12 +269,12 @@ def get_entry_lock_status(db: Session, est_obj: Establishment, project: Project)
         year_from += 1
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [ ] **Step 4: Run tests to verify they pass**
 
 Run: `.\venv\Scripts\python.exe -m pytest webapp/tests/test_month_year_entry_gating.py -v`
 Expected: PASS (8 tests total)
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add webapp/app.py webapp/tests/test_month_year_entry_gating.py
