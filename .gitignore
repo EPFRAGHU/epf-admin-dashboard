@@ -26,3 +26,6 @@ settings.json
 
 # Render and deployment logs
 *.log
+
+# Git worktrees for isolated feature development
+.worktrees/
