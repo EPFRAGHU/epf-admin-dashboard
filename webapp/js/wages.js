@@ -962,8 +962,16 @@ App.registerPage('wage-entry', async (container) => {
 
   const mths = constantsCache.month_short_names;
   const lock = window._entryLockStatus && window._entryLockStatus.locked_month;
+  // Compare chronologically (year_from, month_idx), not year_key equality -- a month in
+  // a LATER financial year than the locked one is also at/after the lock boundary, not
+  // just months within the exact locked year (Finding 2).
+  const lockYearFrom = lock ? parseInt(lock.year_key.split('-')[0], 10) : null;
+  const currentYearFrom = parseInt(currentYearKey.split('-')[0], 10);
+  const isAtOrAfterLock = (i) => lock && (
+    currentYearFrom > lockYearFrom || (currentYearFrom === lockYearFrom && i >= lock.month_idx)
+  );
   const monthOptions = mths.map((m, i) => {
-    const isLocked = lock && lock.year_key === currentYearKey && i >= lock.month_idx;
+    const isLocked = isAtOrAfterLock(i);
     return `<option value="${i}" ${isLocked ? 'disabled' : ''}>${m}${isLocked ? ' 🔒' : ''}</option>`;
   }).join('');
 
@@ -1718,9 +1726,32 @@ window.calcBulkRow = (tr) => {
 window.saveMonthlyWages = async () => {
   const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
   const lock = window._entryLockStatus && window._entryLockStatus.locked_month;
-  if (lock && lock.year_key === currentYearKey && monthIdx >= lock.month_idx) {
-    App.toast(`${lock.month_abbr} ${lock.year_key} must be entered and paid before you can enter this month.`, 'error');
-    return;
+  if (lock) {
+    // Compare chronologically (year_from, month_idx), not year_key equality -- a save
+    // into a LATER financial year than the locked one must also be blocked client-side
+    // (Finding 2), matching the backend's chronological comparison.
+    const lockYearFrom = parseInt(lock.year_key.split('-')[0], 10);
+    const currentYearFrom = parseInt(currentYearKey.split('-')[0], 10);
+    const isAtOrAfterLock = currentYearFrom > lockYearFrom || (currentYearFrom === lockYearFrom && monthIdx >= lock.month_idx);
+    if (isAtOrAfterLock) {
+      // Name the actual PRIOR month that must be entered/paid (not the locked month
+      // itself, which is self-contradictory -- "Apr must be entered before you can
+      // enter Apr"). Mirrors the backend's bulk_month_wages 409 message construction
+      // (webapp/app.py), including the Feb-of-previous-year wraparound (Finding 3).
+      const monthShortNames = constantsCache.month_short_names;
+      const prevMonthIdx = lock.month_idx - 1;
+      let prevAbbr, prevYearKey;
+      if (prevMonthIdx >= 0) {
+        prevAbbr = monthShortNames[prevMonthIdx];
+        prevYearKey = lock.year_key;
+      } else {
+        prevAbbr = monthShortNames[11];
+        const prevYearFrom = lockYearFrom - 1;
+        prevYearKey = `${prevYearFrom}-${String(prevYearFrom + 1).slice(-2)}`;
+      }
+      App.toast(`${prevAbbr} ${prevYearKey} must be entered and its fee paid before you can enter ${monthShortNames[monthIdx]} ${currentYearKey}.`, 'error');
+      return;
+    }
   }
 
   syncBulkTableState();
