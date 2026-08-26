@@ -15,7 +15,7 @@ App.registerPage('years', async (container) => {
         <div class="page-desc">Manage contribution schemes and rates for each year.</div>
       </div>
       <div class="toolbar-right">
-        <button class="btn btn-glass" onclick="showBulkYearsModal()">⚡ Bulk Generate</button>
+        ${App.isSuperadmin() ? `<button class="btn btn-glass" onclick="showBulkYearsModal()">⚡ Bulk Generate</button>` : ''}
         <button class="btn btn-primary" onclick="showYearModal()">+ Add Year</button>
       </div>
     </div>

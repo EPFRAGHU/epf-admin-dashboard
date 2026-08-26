@@ -4809,8 +4809,11 @@ async def force_del_year(
 async def bulk_add_years(
     d: dict,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    if current_user.role != "superadmin":
+        raise HTTPException(403, "Bulk year creation is superadmin-only. Add years one at a time in chronological order from your establishment's EPF Coverage Date.")
     est_obj, project = active
     start_y = int(d.get("start_year", 1980))
     end_y = int(d.get("end_year", 2026))

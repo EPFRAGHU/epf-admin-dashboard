@@ -173,3 +173,17 @@ def test_second_year_creation_does_not_log_a_second_start_entry(consultant_a, te
         ActivityLog.establishment_id == est_id, ActivityLog.action_type == "entry_gating_started"
     ).count()
     assert count == 1
+
+
+def test_consultant_cannot_bulk_create_years(consultant_a):
+    _create_est(consultant_a, "GATEBULK001", coverage_date="01-04-2026")
+    res = consultant_a.post("/api/years/bulk", json={"start_year": 2020, "end_year": 2026})
+    assert res.status_code == 403
+
+
+def test_superadmin_can_still_bulk_create_years(superadmin_session, consultant_a):
+    est_id = _create_est(consultant_a, "GATEBULK002", coverage_date="01-04-1990")
+    superadmin_session.set_establishment(est_id)
+    res = superadmin_session.post("/api/years/bulk", json={"start_year": 1990, "end_year": 1995})
+    assert res.status_code == 200, res.text
+    assert res.json()["added"] == 6
