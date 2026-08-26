@@ -12,7 +12,7 @@ from webapp.database import SubscriptionFee
 
 
 def test_pay_one_month_reflects_everywhere(consultant_a, superadmin_session, test_db):
-    res = consultant_a.post("/api/establishments", json={"code": "BILL001", "name": "Billing Crosscheck Corp"})
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", "code": "BILL001", "name": "Billing Crosscheck Corp"})
     assert res.status_code == 200, res.text
     est = res.json()["establishment"]
     consultant_a.set_establishment(est["id"])

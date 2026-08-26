@@ -83,6 +83,11 @@ App.registerPage('establishment', async (container) => {
         formCoverage = match.coverage_date || '';
       }
     }
+    if (formCoverage === '—') formCoverage = '';
+    // Locked once set (see PUT /api/establishment) -- everyone except superadmin sees
+    // it read-only from here on, so it can never silently drift after year ranges are
+    // already anchored to it.
+    const coverageLocked = Boolean(formCoverage) && !App.isSuperadmin();
   
     container.innerHTML = `<div class="fade-in">
       <div class="page-header" style="margin-bottom:16px;">
@@ -111,8 +116,9 @@ App.registerPage('establishment', async (container) => {
             </div>
             
             <div class="form-group" style="flex: 1; min-width: 140px; margin-bottom: 0;">
-              <label class="form-label" style="font-weight:600;">Coverage Date</label>
-              <input class="form-input" id="e-coverage" value="${App.esc(formCoverage)}" placeholder="DD-MM-YYYY">
+              <label class="form-label" style="font-weight:600;">EPF Coverage Date *</label>
+              <input class="form-input" id="e-coverage" value="${App.esc(formCoverage)}" placeholder="DD-MM-YYYY" required ${coverageLocked ? 'readonly title="Locked -- contact a superadmin to change this."' : ''}>
+              <span style="font-size:11px; color:var(--text3);">${coverageLocked ? '🔒 Locked once set -- contact a superadmin to change it.' : 'Required. Cannot be changed after saving, except by a superadmin.'}</span>
             </div>
             
             <div style="margin-bottom: 0; padding-top: 24px; display: flex; gap: 8px;">
@@ -176,6 +182,10 @@ window.saveEstablishment = async () => {
   
   if (!code || !name) {
     App.toast('Code and Name are required', 'error');
+    return;
+  }
+  if (!coverage_date) {
+    App.toast('EPF Coverage Date is required', 'error');
     return;
   }
 

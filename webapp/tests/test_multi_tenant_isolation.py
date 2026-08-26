@@ -9,7 +9,7 @@ def test_tenant_isolation_establishments(consultant_a, consultant_b):
     are completely isolated and invisible to Consultant B, and vice versa.
     """
     # 1. Consultant A creates an establishment
-    res_a = consultant_a.post("/api/establishments", json={
+    res_a = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", 
         "code": "ORBBS0000001000",
         "name": "ALPHA ENTERPRISES",
         "address": "Bhubaneswar Tech Park",
@@ -19,7 +19,7 @@ def test_tenant_isolation_establishments(consultant_a, consultant_b):
     est_a_id = res_a.json()["establishment"]["id"]
 
     # 2. Consultant B creates an establishment
-    res_b = consultant_b.post("/api/establishments", json={
+    res_b = consultant_b.post("/api/establishments", json={"coverage_date": "01-04-2015", 
         "code": "ORCTC0000002000",
         "name": "BETA LOGISTICS",
         "address": "Cuttack Industrial Area",
@@ -66,7 +66,7 @@ def test_tenant_isolation_concurrent_requests(consultant_a, consultant_b):
     Verifies that state isolation is strictly preserved at every step without cross-contamination.
     """
     # Step 1: A creates
-    res_a = consultant_a.post("/api/establishments", json={
+    res_a = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", 
         "code": "ORCONCA00001",
         "name": "CONCURRENT ORG A",
         "address": "Zone A",
@@ -76,7 +76,7 @@ def test_tenant_isolation_concurrent_requests(consultant_a, consultant_b):
     est_a_id = res_a.json()["establishment"]["id"]
 
     # Step 2: B creates
-    res_b = consultant_b.post("/api/establishments", json={
+    res_b = consultant_b.post("/api/establishments", json={"coverage_date": "01-04-2015", 
         "code": "ORCONCB00002",
         "name": "CONCURRENT ORG B",
         "address": "Zone B",
@@ -134,7 +134,7 @@ def test_ownership_enforcement(consultant_a, consultant_b):
     even if the ID is known or targeted directly in URL parameters or headers.
     """
     # 1. Consultant A creates an establishment
-    res_a = consultant_a.post("/api/establishments", json={
+    res_a = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", 
         "code": "OROWN0000001000",
         "name": "OWNERSHIP TEST ORG A",
         "address": "Address A",
@@ -171,7 +171,7 @@ def test_ownership_enforcement(consultant_a, consultant_b):
     assert res_a_still_exists.status_code == 200
 
     # 6. Test reverse direction: Consultant B creates establishment, Consultant A attempts DELETE
-    res_b_create = consultant_b.post("/api/establishments", json={
+    res_b_create = consultant_b.post("/api/establishments", json={"coverage_date": "01-04-2015", 
         "code": "OROWN0000002000",
         "name": "OWNERSHIP TEST ORG B",
         "address": "Address B",
@@ -347,7 +347,7 @@ def test_superadmin_bypasses_download_gate_via_role_not_payment_status(superadmi
     get_unpaid_months_for_year/SubscriptionFee check sits inside
     `if current_user.role != "superadmin":`, so it never runs at all for a superadmin).
     """
-    res = consultant_a.post("/api/establishments", json={"code": "DELTACO001", "name": "Delta Bypass Co"})
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", "code": "DELTACO001", "name": "Delta Bypass Co"})
     assert res.status_code == 200
     est_id = res.json()["establishment"]["id"]
     consultant_a.set_establishment(est_id)
@@ -412,7 +412,7 @@ def test_superadmin_bypasses_download_gate_via_role_not_payment_status(superadmi
 # ─────────────────────────────────────────────────────────────────────────
 
 def _create_est(consultant, code, name):
-    res = consultant.post("/api/establishments", json={"code": code, "name": name})
+    res = consultant.post("/api/establishments", json={"coverage_date": "01-04-2015", "code": code, "name": name})
     assert res.status_code == 200, res.text
     return res.json()["establishment"]["id"]
 
@@ -568,6 +568,7 @@ def test_signup_does_not_leak_other_pending_requests(client):
         "role": "employer", "name": "First Applicant", "email": "first.applicant@idortest.com",
         "password": "Password@123", "agreed_to_terms": True,
         "establishment_code": "IDORSIGNUP001", "establishment_name": "First Applicant Co",
+        "coverage_date": "01-04-2015",
     })
     assert res1.status_code == 200
     body1 = res1.json()
@@ -579,6 +580,7 @@ def test_signup_does_not_leak_other_pending_requests(client):
         "role": "employer", "name": "Second Applicant", "email": "second.applicant@idortest.com",
         "password": "Password@123", "agreed_to_terms": True,
         "establishment_code": "IDORSIGNUP001", "establishment_name": "Second Applicant Co",
+        "coverage_date": "01-04-2015",
     })
     assert res2.status_code == 400
     assert "First Applicant" not in res2.text

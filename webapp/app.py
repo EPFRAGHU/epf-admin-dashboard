@@ -1229,13 +1229,16 @@ async def public_signup(d: SignupIn, db: Session = Depends(get_db)):
             raise HTTPException(400, DUPLICATE_ESTABLISHMENT_MESSAGE)
 
     # The signup form's date picker submits "YYYY-MM-DD"; the rest of the app stores
-    # coverage_date as a "DD-MM-YYYY" display string, so normalize it here.
-    coverage_date_value = (d.coverage_date or "").strip()
-    if role == "employer" and coverage_date_value:
+    # coverage_date as a "DD-MM-YYYY" display string -- _normalize_coverage_date handles
+    # either. Required for employer signups: every financial-year range/gating
+    # calculation for the establishment this creates is anchored to it, and it's
+    # locked once set (see put_est), so it can't be filled in "later" after approval.
+    coverage_date_value = None
+    if role == "employer":
         try:
-            coverage_date_value = datetime.strptime(coverage_date_value, "%Y-%m-%d").strftime("%d-%m-%Y")
-        except ValueError:
-            pass  # already in another format (or malformed) -- store as submitted rather than reject
+            coverage_date_value = _normalize_coverage_date(d.coverage_date)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
     req = SignupRequest(
         role=role,
@@ -1573,6 +1576,7 @@ async def admin_approve_signup_request(
     if db.query(User).filter(func.lower(User.email) == req.email.lower()).first():
         raise HTTPException(400, f"An account with email '{req.email}' already exists — cannot approve this request.")
 
+    coverage_date_value = None
     if req.role == "employer":
         # Re-check for a duplicate establishment code at approval time too -- another
         # pending request for the same code may have been approved first.
@@ -1583,6 +1587,18 @@ async def admin_approve_signup_request(
                 f"Establishment code '{req.establishment_code}' was already approved for another request "
                 f"(now belongs to an existing establishment). Reject this request instead, or resolve the "
                 f"conflict manually before approving."
+            )
+        # Defensive re-check: /api/signup already requires this for new submissions, but
+        # a request submitted before that rule existed could still be sitting pending.
+        # Approval has no request body to fix it up here, so reject with clear guidance
+        # rather than silently creating an establishment with no coverage-date anchor.
+        try:
+            coverage_date_value = _normalize_coverage_date(req.coverage_date)
+        except ValueError:
+            raise HTTPException(
+                400,
+                f"This request has no valid EPF Coverage Date on file ('{req.coverage_date or ''}'). "
+                f"Reject it and ask the applicant to resubmit with a valid coverage date."
             )
 
     max_serial = db.query(func.max(User.serial_no)).scalar() or 0
@@ -1604,13 +1620,13 @@ async def admin_approve_signup_request(
     new_est_id = None
     if req.role == "employer":
         p = Project()
-        p.set_establishment(req.establishment_code, req.establishment_name, req.establishment_address or "", req.coverage_date or "")
+        p.set_establishment(req.establishment_code, req.establishment_name, req.establishment_address or "", coverage_date_value)
         new_est = Establishment(
             user_id=new_user.id,
             code=req.establishment_code,
             name=req.establishment_name,
             address=req.establishment_address or "",
-            coverage_date=req.coverage_date or "",
+            coverage_date=coverage_date_value,
             data=json.dumps(p.to_dict(), ensure_ascii=False)
         )
         db.add(new_est)
@@ -3319,6 +3335,27 @@ async def list_establishments(
     return {"establishments": rows, "total": len(rows)}
 
 
+def _normalize_coverage_date(value: str) -> str:
+    """Parse an EPF coverage date (the form's DD-MM-YYYY text field, or an HTML5 date
+    input's YYYY-MM-DD) and return the canonical DD-MM-YYYY string the rest of the app
+    stores/displays. Raises ValueError if empty or unparseable in either format.
+
+    This is the single anchor every financial-year range/gating calculation for an
+    establishment is built from, so it's required at creation and locked afterward
+    (see create_establishment / put_est) rather than left as free text that could
+    silently drift.
+    """
+    value = (value or "").strip()
+    if not value:
+        raise ValueError("EPF Coverage Date is required.")
+    for fmt in ("%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, fmt).strftime("%d-%m-%Y")
+        except ValueError:
+            continue
+    raise ValueError(f"'{value}' is not a valid date -- use DD-MM-YYYY.")
+
+
 @app.post("/api/establishments")
 async def create_establishment(
     d: EstablishmentIn,
@@ -3330,6 +3367,10 @@ async def create_establishment(
     name = d.name.strip()
     if not code or not name:
         raise HTTPException(400, "Establishment Code and Name are required")
+    try:
+        coverage_date = _normalize_coverage_date(d.coverage_date)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
     # owner_user_id and trial_ends_on are superadmin-only levers -- silently ignored
     # (not an error) for anyone else, so a Consultant/Employer can never grant
@@ -3355,14 +3396,14 @@ async def create_establishment(
             raise HTTPException(400, "trial_ends_on must be in YYYY-MM-DD format")
 
     p = Project()
-    p.set_establishment(code, name, d.address.strip(), d.coverage_date.strip())
+    p.set_establishment(code, name, d.address.strip(), coverage_date)
 
     new_est = Establishment(
         user_id=owner.id,
         code=code,
         name=name,
         address=d.address.strip(),
-        coverage_date=d.coverage_date.strip(),
+        coverage_date=coverage_date,
         custom_rate_per_employee=d.custom_rate_per_employee,
         trial_ends_on=trial_ends_on_value,
         data=json.dumps(p.to_dict(), ensure_ascii=False)
@@ -3691,7 +3732,34 @@ async def put_est(
 ):
     require_permission(db, current_user, "establishment.edit")
     est_obj, project = active
-    project.set_establishment(d.code, d.name, d.address, d.coverage_date)
+
+    existing_coverage = (est_obj.coverage_date or "").strip()
+    if existing_coverage:
+        # Locked once set -- every financial-year range/gating calculation for this
+        # establishment is anchored to this date, so letting it drift after the fact
+        # would silently corrupt those calculations. Re-saving the same value back
+        # (the form always round-trips the current value) is not a change and stays
+        # allowed for anyone, so editing unrelated fields (address, rate, ...) still works.
+        try:
+            unchanged = _normalize_coverage_date(d.coverage_date) == _normalize_coverage_date(existing_coverage)
+        except ValueError:
+            unchanged = False
+        if not unchanged and current_user.role != "superadmin":
+            raise HTTPException(
+                403,
+                "EPF Coverage Date is locked once set and cannot be changed. Contact a superadmin if this needs correction."
+            )
+        coverage_date = _normalize_coverage_date(d.coverage_date) if not unchanged else existing_coverage
+    else:
+        # Legacy establishment created before this field was required -- this is its
+        # one-time chance to get a real value; locked for everyone (including
+        # superadmin, same as any other establishment) from the next edit onward.
+        try:
+            coverage_date = _normalize_coverage_date(d.coverage_date)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    project.set_establishment(d.code, d.name, d.address, coverage_date)
 
     old_rate = est_obj.custom_rate_per_employee
     if d.custom_rate_per_employee is not None:

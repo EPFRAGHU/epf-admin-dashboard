@@ -26,7 +26,7 @@ def _months(superadmin_session, est_id, year="2026-27"):
 
 
 def test_flat_fee_generates_fixed_amount_regardless_of_headcount(superadmin_session, consultant_a):
-    res = consultant_a.post("/api/establishments", json={"code": "FLAT001", "name": "Flat Fee Corp"})
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", "code": "FLAT001", "name": "Flat Fee Corp"})
     assert res.status_code == 200
     est_id = res.json()["establishment"]["id"]
     consultant_a.set_establishment(est_id)
@@ -80,7 +80,7 @@ def test_flat_fee_generates_fixed_amount_regardless_of_headcount(superadmin_sess
 
 
 def test_switch_back_to_per_employee_freezes_paid_flat_months(superadmin_session, consultant_a):
-    res = consultant_a.post("/api/establishments", json={
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", 
         "code": "FLAT002", "name": "Flat Then Tiered Corp", "custom_rate_per_employee": 10.0
     })
     est_id = res.json()["establishment"]["id"]
@@ -144,7 +144,7 @@ def test_switch_back_to_per_employee_freezes_paid_flat_months(superadmin_session
 
 
 def test_flat_fee_endpoint_requires_positive_amount_and_valid_mode(superadmin_session, consultant_a):
-    res = consultant_a.post("/api/establishments", json={"code": "FLAT003", "name": "Bad Input Corp"})
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", "code": "FLAT003", "name": "Bad Input Corp"})
     est_id = res.json()["establishment"]["id"]
 
     res = superadmin_session.put(f"/api/admin/establishments/{est_id}/billing-mode", json={"billing_mode": "bogus"})
@@ -166,7 +166,7 @@ def test_flat_fee_endpoint_requires_positive_amount_and_valid_mode(superadmin_se
 
 def test_consultant_cannot_set_billing_mode_through_any_reachable_endpoint(superadmin_session, consultant_a):
     # 1. Creation payload with billing fields is silently ignored -- default stays per_employee.
-    res = consultant_a.post("/api/establishments", json={
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", 
         "code": "FLAT004", "name": "Sneaky Corp",
         "billing_mode": "flat_fee", "flat_fee_amount": 5000.0
     })
@@ -179,7 +179,7 @@ def test_consultant_cannot_set_billing_mode_through_any_reachable_endpoint(super
 
     # 2. Establishment self-edit payload with billing fields is also silently ignored.
     res = consultant_a.put("/api/establishment", json={
-        "code": "FLAT004", "name": "Sneaky Corp",
+        "coverage_date": "01-04-2015", "code": "FLAT004", "name": "Sneaky Corp",
         "billing_mode": "flat_fee", "flat_fee_amount": 9999.0
     })
     assert res.status_code == 200
@@ -199,7 +199,7 @@ def test_consultant_cannot_set_billing_mode_through_any_reachable_endpoint(super
 
 
 def test_flat_fee_download_gating(superadmin_session, consultant_a):
-    res = consultant_a.post("/api/establishments", json={"code": "FLAT005", "name": "Flat Gating Corp"})
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", "code": "FLAT005", "name": "Flat Gating Corp"})
     est_id = res.json()["establishment"]["id"]
     consultant_a.set_establishment(est_id)
     consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
@@ -233,7 +233,7 @@ def test_flat_fee_download_gating(superadmin_session, consultant_a):
 def test_flat_fee_advance_credit_auto_applies(superadmin_session, consultant_a):
     """Advance credit added BEFORE a flat-fee month's SubscriptionFee row exists auto-applies
     the moment the row is first created (mirrors the per_employee advance-credit behavior)."""
-    res = consultant_a.post("/api/establishments", json={"code": "FLAT008", "name": "Flat Advance Corp"})
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", "code": "FLAT008", "name": "Flat Advance Corp"})
     est_id = res.json()["establishment"]["id"]
     consultant_a.set_establishment(est_id)
     consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
@@ -271,7 +271,7 @@ def test_flat_fee_advance_credit_auto_applies(superadmin_session, consultant_a):
 
 
 def test_flat_fee_trial_bypasses_gating(superadmin_session, consultant_a):
-    res = consultant_a.post("/api/establishments", json={"code": "FLAT006", "name": "Flat Trial Corp"})
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", "code": "FLAT006", "name": "Flat Trial Corp"})
     est_id = res.json()["establishment"]["id"]
     consultant_a.set_establishment(est_id)
     consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
@@ -296,7 +296,7 @@ def test_flat_fee_trial_bypasses_gating(superadmin_session, consultant_a):
 
 @requires_cashfree
 def test_flat_fee_cashfree_link_uses_flat_amount(superadmin_session, consultant_a):
-    res = consultant_a.post("/api/establishments", json={"code": "FLAT007", "name": "Flat Cashfree Corp"})
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", "code": "FLAT007", "name": "Flat Cashfree Corp"})
     est_id = res.json()["establishment"]["id"]
     consultant_a.set_establishment(est_id)
     consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})

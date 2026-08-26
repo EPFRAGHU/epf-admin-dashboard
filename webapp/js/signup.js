@@ -106,6 +106,10 @@ const Signup = (() => {
         showStatus('Establishment Code and Name are required for an Employer signup.');
         return;
       }
+      if (!estCoverage) {
+        showStatus('EPF Coverage Date is required for an Employer signup.');
+        return;
+      }
       payload.establishment_code = estCode;
       payload.establishment_name = estName;
       payload.establishment_address = estAddress;

@@ -270,8 +270,9 @@ const MyEstablishments = (() => {
           <textarea id="ne-address" class="form-input" rows="2" placeholder="Full postal address of the establishment"></textarea>
         </div>
         <div class="form-group" style="margin-bottom:16px;">
-          <label class="form-label" style="font-weight:600;">EPF Coverage Date</label>
-          <input type="text" id="ne-coverage" class="form-input" placeholder="DD-MM-YYYY (e.g. 01-04-2015)">
+          <label class="form-label" style="font-weight:600;">EPF Coverage Date *</label>
+          <input type="text" id="ne-coverage" class="form-input" placeholder="DD-MM-YYYY (e.g. 01-04-2015)" required>
+          <span style="font-size:11px; color:var(--text3);">Required. Cannot be changed after saving, except by a superadmin.</span>
         </div>
       </form>
     `;
@@ -292,6 +293,10 @@ const MyEstablishments = (() => {
       App.toast('Establishment Code and Name are required.', 'error');
       return;
     }
+    if (!coverage_date) {
+      App.toast('EPF Coverage Date is required.', 'error');
+      return;
+    }
 
     try {
       const res = await App.post('/api/establishments', { code, name, address, coverage_date });
@@ -310,6 +315,11 @@ const MyEstablishments = (() => {
     const est = establishmentsList.find(e => Number(e.id) === Number(id));
     if (!est) return;
 
+    const existingCoverage = est.coverage_date !== '—' ? (est.coverage_date || '') : '';
+    // Locked once set (see PUT /api/establishment) -- everyone except superadmin sees
+    // it read-only from here on.
+    const coverageLocked = Boolean(existingCoverage) && !App.isSuperadmin();
+
     const bodyHtml = `
       <form id="edit-est-form" onsubmit="event.preventDefault(); MyEstablishments.saveEdit(${id});">
         <div class="form-group" style="margin-bottom:12px;">
@@ -325,8 +335,9 @@ const MyEstablishments = (() => {
           <textarea id="ee-address" class="form-input" rows="2">${App.esc(est.address !== '—' ? est.address : '')}</textarea>
         </div>
         <div class="form-group" style="margin-bottom:16px;">
-          <label class="form-label" style="font-weight:600;">EPF Coverage Date</label>
-          <input type="text" id="ee-coverage" class="form-input" value="${App.esc(est.coverage_date !== '—' ? est.coverage_date : '')}" placeholder="DD-MM-YYYY">
+          <label class="form-label" style="font-weight:600;">EPF Coverage Date *</label>
+          <input type="text" id="ee-coverage" class="form-input" value="${App.esc(existingCoverage)}" placeholder="DD-MM-YYYY" required ${coverageLocked ? 'readonly title="Locked -- contact a superadmin to change this."' : ''}>
+          <span style="font-size:11px; color:var(--text3);">${coverageLocked ? '🔒 Locked once set -- contact a superadmin to change it.' : 'Required. Cannot be changed after saving, except by a superadmin.'}</span>
         </div>
       </form>
     `;
@@ -345,6 +356,10 @@ const MyEstablishments = (() => {
 
     if (!code || !name) {
       App.toast('Establishment Code and Name are required.', 'error');
+      return;
+    }
+    if (!coverage_date) {
+      App.toast('EPF Coverage Date is required.', 'error');
       return;
     }
 

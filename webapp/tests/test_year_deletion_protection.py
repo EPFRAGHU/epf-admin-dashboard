@@ -2,7 +2,7 @@ import pytest
 
 
 def _new_establishment(consultant, code, name):
-    res = consultant.post("/api/establishments", json={"code": code, "name": name})
+    res = consultant.post("/api/establishments", json={"coverage_date": "01-04-2015", "code": code, "name": name})
     assert res.status_code == 200, res.text
     est_id = res.json()["establishment"]["id"]
     consultant.set_establishment(est_id)
