@@ -205,17 +205,33 @@ def test_cannot_save_second_month_wages_before_first_month_is_paid(consultant_a)
     assert "Mar" in res2.text
 
 
-def test_re_saving_an_already_entered_month_is_never_blocked(consultant_a):
+def test_re_saving_an_already_entered_month_is_never_blocked(consultant_a, superadmin_session):
     """Grandfathering: editing a month that already has data must always be allowed,
-    even though it isn't paid yet."""
-    _create_est(consultant_a, "GATEWAGE002", coverage_date="01-04-2026")
+    even though it isn't paid yet -- and specifically when that month is PAST the
+    current lock boundary, not just the still-open frontier month. (Resaving the
+    frontier month itself -- the last contiguously-entered month -- would return 200
+    even without any grandfathering check, since the lock boundary always sits at or
+    after the frontier by the walk's own construction; that wouldn't prove anything.)
+    Mar is entered+left unpaid by consultant_a, which locks Apr (month_idx 1) onward.
+    Superadmin then bypasses the lock to seed Jun (month_idx 3) with data. A regular
+    consultant re-saving Jun -- which is past the lock boundary and still unpaid --
+    must still succeed; without the grandfathering skip this would be a 409 (3 >= 1)."""
+    est_id = _create_est(consultant_a, "GATEWAGE002", coverage_date="01-04-2026")
     consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
     consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000004"})
-    consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+    res0 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
         "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
     })
+    assert res0.status_code == 200, res0.text
+
+    superadmin_session.set_establishment(est_id)
+    res_seed = superadmin_session.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 3, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    assert res_seed.status_code == 200, res_seed.text
+
     res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 16000, "epf_wage": 16000, "ncp_days": 0}]
+        "month_idx": 3, "employees": [{"member_id": "M1", "gross_wage": 16000, "epf_wage": 16000, "ncp_days": 0}]
     })
     assert res.status_code == 200, res.text
 
@@ -241,9 +257,19 @@ def test_month_unlocks_once_previous_month_paid(consultant_a, test_db):
 
 
 def test_superadmin_bypasses_monthly_wage_entry_gating(superadmin_session, consultant_a):
+    """Establish a REAL active lock first (Mar entered+unpaid locks Apr onward for a
+    regular consultant), then have superadmin save into a month at/after that lock
+    boundary. Without the superadmin bypass this would be a 409 (5 >= 1); saving into
+    an untouched establishment with nothing locked yet (as the original version of this
+    test did) wouldn't distinguish the bypass from "there was nothing to block"."""
     est_id = _create_est(consultant_a, "GATEWAGE004", coverage_date="01-04-2026")
     consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
     consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000006"})
+    res0 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    assert res0.status_code == 200, res0.text
+
     superadmin_session.set_establishment(est_id)
     res = superadmin_session.post("/api/years/2026-27/wages/bulk_month", json={
         "month_idx": 5, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
