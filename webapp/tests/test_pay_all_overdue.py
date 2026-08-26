@@ -11,7 +11,7 @@ import pytest
 
 
 def _setup_establishment_with_three_unpaid_months(consultant_a, code):
-    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", 
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2026",
         "code": code, "name": f"{code} Pvt Ltd", "custom_rate_per_employee": 20.0
     })
     assert res.status_code == 200

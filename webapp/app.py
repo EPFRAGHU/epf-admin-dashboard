@@ -4679,16 +4679,55 @@ async def list_years(
 async def add_year(
     d: YearIn,
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     est_obj, project = active
     key = f"{d.year_from}-{d.year_to[-2:]}"
     if key in project.years:
         raise HTTPException(400, f"Year {key} already exists")
+
+    is_first_year_ever = len(project.years) == 0
+
+    if current_user.role != "superadmin":
+        status = get_entry_lock_status(db, est_obj, project)
+        # status["coverage_year_key"] (not next_year_to_add) is the fail-open guard: it's
+        # only unset for a legacy establishment with no coverage_date on file (see
+        # get_entry_lock_status docstring), where ordering can't be determined at all.
+        # next_year_to_add is ALSO None while an already-created year still has months
+        # with no wage data entered -- that must still gate (no new year is allowed until
+        # the current one is fully filled in), so it cannot be used as the fail-open check.
+        if status["coverage_year_key"] and key != status["next_year_to_add"]:
+            if status["next_year_to_add"]:
+                raise HTTPException(
+                    400,
+                    f"You can only add financial years in order, starting from your establishment's "
+                    f"EPF Coverage Date. The next year you can add is {status['next_year_to_add']}."
+                )
+            latest_year_key = max(project.years.keys()) if project.years else status["coverage_year_key"]
+            raise HTTPException(
+                400,
+                f"Financial year {latest_year_key} must have wage data entered for every month "
+                f"before you can add a new financial year."
+            )
+
     project.add_year(d.year_from, d.year_to, d.scheme,
                      d.epf_rate, d.fpf_rate,
                      d.emp_epf_rate, d.er_epf_rate, d.er_eps_rate)
     save_establishment_project(db, est_obj, project)
+
+    if is_first_year_ever:
+        # Permanent audit record of when chronological entry-gating started for this
+        # establishment -- see docs/superpowers/specs/2026-08-26-month-year-entry-gating-design.md
+        # section 3.1. Purely informational: nothing reads this back to change enforcement,
+        # which is derived live from chronological order + payment status every time.
+        log_activity(
+            db, current_user.id, est_obj.id, "entry_gating_started",
+            f"{project.name} ({project.code}) began chronological month-by-month wage entry "
+            f"starting from financial year {key} (EPF Coverage Date: {project.coverage_date}).",
+            {"first_year_key": key, "coverage_date": project.coverage_date}
+        )
+
     return {"ok": True, "key": key}
 
 

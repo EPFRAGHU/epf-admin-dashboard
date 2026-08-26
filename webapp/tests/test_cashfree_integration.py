@@ -61,7 +61,7 @@ def fire_webhook(client, link_id, amount, secret_key=None):
 @requires_cashfree
 def test_per_month_cashfree_payment_link_and_webhook(superadmin_session, consultant_a, client):
     """Real link creation + simulated signed webhook confirms a specific month's fee."""
-    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", 
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2026", 
         "code": "EPSILON001", "name": "Epsilon Traders", "custom_rate_per_employee": 20.0
     })
     est_id = res.json()["establishment"]["id"]
@@ -113,7 +113,7 @@ def test_consultant_self_serve_month_payment_unlocks_download(superadmin_session
     gets blocked, sees the members/amount owed for that month, pays via their own
     self-serve Cashfree link (not one the superadmin generated), and the download unlocks
     immediately once the payment is confirmed -- without the superadmin doing anything."""
-    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", 
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2026", 
         "code": "THETA001", "name": "Theta Manufacturing", "custom_rate_per_employee": 20.0
     })
     est_id = res.json()["establishment"]["id"]
@@ -176,7 +176,7 @@ def test_advance_credit_cashfree_topup_and_webhook(superadmin_session, consultan
     """Real link creation + simulated signed webhook credits the advance balance exactly once,
     then verifies the credited balance auto-applies to a subsequently-billed month, producing
     a matching 'applied' ledger entry."""
-    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", 
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2026", 
         "code": "ZETA001", "name": "Zeta Enterprises", "custom_rate_per_employee": 20.0
     })
     est_id = res.json()["establishment"]["id"]
@@ -236,7 +236,7 @@ def test_consultant_self_serve_advance_credit_and_history(superadmin_session, co
     the return_url includes the order_id, the consultant's own refresh-status endpoint
     confirms it, and the top-up shows up in their Subscription History response --
     distinct from, but alongside, per-month fee payments."""
-    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", 
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2026", 
         "code": "KAPPA001", "name": "Kappa Traders", "custom_rate_per_employee": 20.0
     })
     est_id = res.json()["establishment"]["id"]

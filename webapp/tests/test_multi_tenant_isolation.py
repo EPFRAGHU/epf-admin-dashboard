@@ -347,7 +347,7 @@ def test_superadmin_bypasses_download_gate_via_role_not_payment_status(superadmi
     get_unpaid_months_for_year/SubscriptionFee check sits inside
     `if current_user.role != "superadmin":`, so it never runs at all for a superadmin).
     """
-    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", "code": "DELTACO001", "name": "Delta Bypass Co"})
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2026", "code": "DELTACO001", "name": "Delta Bypass Co"})
     assert res.status_code == 200
     est_id = res.json()["establishment"]["id"]
     consultant_a.set_establishment(est_id)
@@ -412,7 +412,7 @@ def test_superadmin_bypasses_download_gate_via_role_not_payment_status(superadmi
 # ─────────────────────────────────────────────────────────────────────────
 
 def _create_est(consultant, code, name):
-    res = consultant.post("/api/establishments", json={"coverage_date": "01-04-2015", "code": code, "name": name})
+    res = consultant.post("/api/establishments", json={"coverage_date": "01-04-2026", "code": code, "name": name})
     assert res.status_code == 200, res.text
     return res.json()["establishment"]["id"]
 

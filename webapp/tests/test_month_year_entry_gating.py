@@ -117,3 +117,59 @@ def test_lock_status_unlocks_second_month_once_first_is_paid(consultant_a, test_
         assert status["locked_month"] is None
     finally:
         db.close()
+
+
+def test_create_first_year_must_match_coverage_year(consultant_a):
+    _create_est(consultant_a, "GATEYR001", coverage_date="01-04-2026")
+    res = consultant_a.post("/api/years", json={"year_from": "2027", "year_to": "2028"})
+    assert res.status_code == 400
+    assert "2026-27" in res.text
+
+
+def test_create_first_year_matching_coverage_year_succeeds(consultant_a):
+    _create_est(consultant_a, "GATEYR002", coverage_date="01-04-2026")
+    res = consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    assert res.status_code == 200, res.text
+
+
+def test_cannot_create_second_year_before_first_is_fully_paid(consultant_a):
+    _create_est(consultant_a, "GATEYR003", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    res = consultant_a.post("/api/years", json={"year_from": "2027", "year_to": "2028"})
+    assert res.status_code == 400
+    assert "2026-27" in res.text
+
+
+def test_superadmin_bypasses_chronological_year_order(superadmin_session, consultant_a):
+    est_id = _create_est(consultant_a, "GATEYR004", coverage_date="01-04-2026")
+    superadmin_session.set_establishment(est_id)
+    res = superadmin_session.post("/api/years", json={"year_from": "2030", "year_to": "2031"})
+    assert res.status_code == 200, res.text
+
+
+def test_first_year_creation_logs_activity_entry(consultant_a, test_db):
+    from webapp.database import ActivityLog
+    est_id = _create_est(consultant_a, "GATEYR005", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    entry = test_db.query(ActivityLog).filter(
+        ActivityLog.establishment_id == est_id, ActivityLog.action_type == "entry_gating_started"
+    ).first()
+    assert entry is not None
+    assert "2026-27" in entry.description
+
+
+def test_second_year_creation_does_not_log_a_second_start_entry(consultant_a, test_db):
+    from webapp.database import ActivityLog, SubscriptionFee
+    est_id = _create_est(consultant_a, "GATEYR006", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    # Pay every month of 2026-27 so the second year is allowed to be created.
+    for m in ["Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]:
+        test_db.add(SubscriptionFee(establishment_id=est_id, financial_year="2026-27", month=m,
+                                     employee_count=0, amount_due=0, is_paid=True, billing_mode="per_employee"))
+    test_db.commit()
+    consultant_a.post("/api/years", json={"year_from": "2027", "year_to": "2028"})
+
+    count = test_db.query(ActivityLog).filter(
+        ActivityLog.establishment_id == est_id, ActivityLog.action_type == "entry_gating_started"
+    ).count()
+    assert count == 1

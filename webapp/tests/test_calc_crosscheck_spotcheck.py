@@ -19,7 +19,7 @@ def _pay_all_fees(test_db, est_id):
 
 
 def test_dashboard_challans_form12a_agree(consultant_a, test_db):
-    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", "code": "CHK001", "name": "Crosscheck Corp"})
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2026", "code": "CHK001", "name": "Crosscheck Corp"})
     assert res.status_code == 200, res.text
     est = res.json()["establishment"]
     consultant_a.set_establishment(est["id"])

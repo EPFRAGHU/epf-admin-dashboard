@@ -62,7 +62,7 @@ def test_subscription_fee_rate_hierarchy(superadmin_session, consultant_a):
 def test_fee_calculation_and_data_entry_unblocked(superadmin_session, consultant_a):
     """Verify fee calculation matches active ECR employee count and data entry is never blocked."""
     # Create establishment Beta
-    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", "code": "BETA001", "name": "Beta Industries", "custom_rate_per_employee": 10.0})
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2026", "code": "BETA001", "name": "Beta Industries", "custom_rate_per_employee": 10.0})
     assert res.status_code == 200
     beta_id = res.json()["establishment"]["id"]
     consultant_a.set_establishment(beta_id)
@@ -126,7 +126,7 @@ def test_fee_calculation_and_data_entry_unblocked(superadmin_session, consultant
 def test_download_gating_402_and_superadmin_bypass(superadmin_session, consultant_a):
     """Verify downloads return 402 when subscription fee is unpaid/overdue, superadmin bypasses, and unlocks on payment."""
     # Setup establishment Gamma with wage entries in 2026-27
-    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", "code": "GAMMA001", "name": "Gamma Tech"})
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2026", "code": "GAMMA001", "name": "Gamma Tech"})
     assert res.status_code == 200
     gamma_id = res.json()["establishment"]["id"]
     consultant_a.set_establishment(gamma_id)
@@ -187,7 +187,7 @@ def test_subscription_history_pages(superadmin_session, consultant_a):
     """Verify the consultant-facing Subscription History page and the superadmin's
     cross-establishment Subscription Payments tab both surface the same paid record,
     with correct source attribution and display month/year."""
-    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", 
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2026",
         "code": "IOTA001", "name": "Iota Services", "custom_rate_per_employee": 20.0
     })
     est_id = res.json()["establishment"]["id"]
@@ -246,7 +246,7 @@ def test_advance_credit_covers_future_months(superadmin_session, consultant_a):
     draining the balance in order and leaving under-funded months unpaid as normal."""
     # Rate pinned explicitly at establishment level (₹20) so this test's math is
     # deterministic regardless of any consultant-level override other tests may have set.
-    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2015", "code": "DELTA001", "name": "Delta Corp", "custom_rate_per_employee": 20.0})
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2026", "code": "DELTA001", "name": "Delta Corp", "custom_rate_per_employee": 20.0})
     assert res.status_code == 200
     delta_id = res.json()["establishment"]["id"]
     consultant_a.set_establishment(delta_id)
