@@ -42,9 +42,6 @@ def test_flat_fee_generates_fixed_amount_regardless_of_headcount(superadmin_sess
         consultant_a.post("/api/years/2026-27/wages", json={
             "member_id": f"FLAT001{i:03d}", "wages": [15000.0] + [0.0] * 11
         })
-    consultant_a.post("/api/years/2026-27/wages", json={
-        "member_id": "FLAT001001", "wages": [15000.0, 15000.0] + [0.0] * 10
-    })
 
     # Switch to flat_fee ₹5000.
     res = superadmin_session.put(f"/api/admin/establishments/{est_id}/billing-mode", json={
@@ -53,6 +50,26 @@ def test_flat_fee_generates_fixed_amount_regardless_of_headcount(superadmin_sess
     assert res.status_code == 200
     assert res.json()["billing_mode"] == "flat_fee"
     assert res.json()["flat_fee_amount"] == 5000.0
+
+    # Trigger a sync so Mar's row reflects flat_fee pricing (₹5000) before marking it
+    # paid below -- otherwise "mark paid" would freeze Mar at its old per_employee
+    # amount instead of the flat rate this test is verifying.
+    _months(superadmin_session, est_id)
+
+    # Mar must be marked paid before Apr data can be entered for anyone -- this
+    # establishment is subject to the same chronological month/year entry gate as every
+    # other establishment (see webapp/tests/test_month_year_entry_gating.py), including
+    # through this older whole-year wages endpoint (Finding 4 stopgap guard).
+    res = superadmin_session.post(f"/api/admin/establishments/{est_id}/subscription-fees", json={
+        "financial_year": "2026-27",
+        "fees": [{"month": "Mar", "is_paid": True, "paid_date": "15-04-2026", "payment_reference": "TEST/FLAT001"}]
+    })
+    assert res.status_code == 200, res.text
+
+    res = consultant_a.post("/api/years/2026-27/wages", json={
+        "member_id": "FLAT001001", "wages": [15000.0, 15000.0] + [0.0] * 10
+    })
+    assert res.status_code == 200, res.text
 
     months = _months(superadmin_session, est_id)
     mar = next(m for m in months if m["month"] == "Mar")
