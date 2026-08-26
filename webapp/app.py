@@ -44,6 +44,8 @@ from . import cashfree_client
 from . import google_oauth
 from . import version_info
 
+from epf_engine import Project
+
 def log_activity(
     db: Session,
     user_id: Optional[int],
@@ -235,6 +237,26 @@ def resolve_billing_mode(db: Session, establishment: Establishment, consultant: 
     if consultant and consultant.default_billing_mode is not None:
         return consultant.default_billing_mode, consultant.default_flat_fee_per_establishment
     return "per_employee", None
+
+def get_financial_year_key_for_date(cal_year: int, cal_month: int) -> str:
+    """EPF financial years run Mar-Feb (see MONTH_SHORT_NAMES / epf_engine.MONTHS): a
+    calendar date in Mar-Dec belongs to the FY starting that same calendar year; a date
+    in Jan-Feb belongs to the FY that started the PREVIOUS calendar year."""
+    year_from = cal_year if cal_month >= 3 else cal_year - 1
+    return f"{year_from}-{str(year_from + 1)[-2:]}"
+
+
+def get_coverage_year_key(project: Project) -> Optional[str]:
+    """Parse project.coverage_date (DD-MM-YYYY -- guaranteed valid and locked once set,
+    see _normalize_coverage_date) into the financial-year key it falls in. This is the
+    anchor the chronological entry-gating walk (get_entry_lock_status) starts from."""
+    if not project.coverage_date:
+        return None
+    try:
+        d = datetime.strptime(project.coverage_date, "%d-%m-%Y")
+    except ValueError:
+        return None
+    return get_financial_year_key_for_date(d.year, d.month)
 
 def apply_advance_credit_if_available(db: Session, est_obj: Establishment, fee_row: SubscriptionFee):
     """If the establishment has enough prepaid advance credit to cover this newly-billed,
