@@ -3,11 +3,14 @@
    ================================================================ */
 
 let __constants = null;
+let __lockStatus = null;
 
 App.registerPage('years', async (container) => {
   if (!__constants) __constants = await App.get('/api/constants');
   const { years } = await App.get('/api/years');
-  
+  __lockStatus = await App.get('/api/establishment/entry-lock-status').catch(() => null);
+  const nextYear = __lockStatus && __lockStatus.next_year_to_add;
+
   container.innerHTML = `<div class="fade-in">
     <div class="page-header">
       <div>
@@ -19,7 +22,10 @@ App.registerPage('years', async (container) => {
         <button class="btn btn-primary" onclick="showYearModal()">+ Add Year</button>
       </div>
     </div>
-    
+    ${nextYear ? `<div class="card" style="padding:10px 16px; margin-bottom:16px; font-size:13px; color:var(--text2);">
+      📌 Next year you can add: <strong style="color:var(--text1);">${App.esc(nextYear)}</strong>
+    </div>` : ''}
+
     <div class="year-grid">
       ${years.map(y => `
         <div class="year-card">
@@ -105,11 +111,20 @@ function showYearModal(yr = null) {
     <button class="btn btn-primary" onclick="saveYear('${isEdit ? yr.key : ''}')">${isEdit ? 'Save Rates' : 'Create Year'}</button>`;
   
   App.openModal(isEdit ? `Edit Rates — ${yr.label}` : 'Add Financial Year', body, footer);
-  
+
   // Initialize visibility
   setTimeout(() => {
-    if (!isEdit) autoFillRates();
-    else toggleSchemeFields(yr.scheme);
+    if (!isEdit) {
+      const nextYear = __lockStatus && __lockStatus.next_year_to_add;
+      if (nextYear) {
+        document.getElementById('y-from').value = nextYear.split('-')[0];
+        autoFillToYear();
+      } else {
+        autoFillRates();
+      }
+    } else {
+      toggleSchemeFields(yr.scheme);
+    }
   }, 10);
 }
 
