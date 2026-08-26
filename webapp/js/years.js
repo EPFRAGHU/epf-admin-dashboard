@@ -178,6 +178,27 @@ window.saveYear = async (key) => {
     }
     App.closeModal();
     App.navigate('years');
+
+    if (!isEdit) {
+      const estId = App.getCurrentEstablishmentId();
+      const seenKey = `epf_seen_entry_gating_explainer_${estId}`;
+      if (!localStorage.getItem(seenKey)) {
+        localStorage.setItem(seenKey, '1');
+        App.openModal(
+          'How Monthly Wage Entry Works Now',
+          `<p style="color:var(--text2); font-size:13px; line-height:1.6;">
+            You can enter wages one month at a time, starting from your establishment's EPF Coverage Date.
+            Each month unlocks for entry once the previous month's subscription fee is paid
+            (or auto-covered from your Advance Credit balance).
+          </p>
+          <p style="color:var(--text2); font-size:13px; line-height:1.6; margin-top:10px;">
+            Need to enter an earlier month or year? Add that financial year the same way you just did --
+            you'll be asked to pay it in the same chronological order.
+          </p>`,
+          `<button class="btn btn-primary" onclick="App.closeModal()">Got it</button>`
+        );
+      }
+    }
   } catch (_) {}
 };
 
