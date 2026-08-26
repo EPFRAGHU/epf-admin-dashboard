@@ -275,3 +275,22 @@ def test_superadmin_bypasses_monthly_wage_entry_gating(superadmin_session, consu
         "month_idx": 5, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
     })
     assert res.status_code == 200, res.text
+
+
+def test_entry_lock_status_endpoint_reports_current_boundary(consultant_a):
+    _create_est(consultant_a, "GATESTATUS001", coverage_date="01-04-2026")
+    res = consultant_a.get("/api/establishment/entry-lock-status")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["coverage_year_key"] == "2026-27"
+    assert body["next_year_to_add"] == "2026-27"
+    assert body["locked_month"] is None
+
+
+def test_constants_endpoint_includes_short_month_names(client):
+    res = client.get("/api/constants")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["month_short_names"] == ["Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]
+    # The existing long-form labels must be untouched -- other pages (ECR, remittances) rely on them.
+    assert body["months"][0] == "Mar Paid in Apr"

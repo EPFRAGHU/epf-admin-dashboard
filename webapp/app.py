@@ -3865,6 +3865,15 @@ async def get_establishment_subscription_status(
     }
 
 
+@app.get("/api/establishment/entry-lock-status")
+async def get_entry_lock_status_endpoint(
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    db: Session = Depends(get_db)
+):
+    est_obj, project = active
+    return get_entry_lock_status(db, est_obj, project)
+
+
 def _billing_display(mode: str, rate_applied: Optional[float], amount_due: float) -> str:
     if mode == "flat_fee":
         return f"₹{amount_due}/month flat rate"
@@ -6173,6 +6182,7 @@ async def import_master_file(
 async def constants():
     return {
         "months": list(MONTHS),
+        "month_short_names": list(MONTH_SHORT_NAMES),
         "reasons": REASONS_FOR_LEAVING,
         "schemes": [
             {"v": SCHEME_PRE_1997, "l": "Pre-1997 (EPF + FPF)"},
