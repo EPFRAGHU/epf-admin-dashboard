@@ -184,6 +184,54 @@ def test_ownership_enforcement(consultant_a, consultant_b):
     assert res_a_del_b.status_code in (403, 404)
 
 
+def test_edit_non_active_establishment_via_establishment_id_param(consultant_a):
+    """
+    Regression test: the "My Establishments" list edit modal must target the
+    establishment the user picked from the list, not whichever one happens to be
+    "active" (X-Establishment-Id header / localStorage). PUT /api/establishment
+    must honor an explicit ?establishment_id= override even when a different
+    establishment is active for the session, otherwise editing establishment B
+    while A is active would silently overwrite A instead.
+    """
+    res_active = consultant_a.post("/api/establishments", json={
+        "code": "ORACTV0000001000",
+        "name": "ACTIVE ORG",
+        "address": "Active Address",
+        "coverage_date": "01-01-2025"
+    })
+    assert res_active.status_code == 200
+    active_id = res_active.json()["establishment"]["id"]
+
+    res_other = consultant_a.post("/api/establishments", json={
+        "code": "OROTHR0000002000",
+        "name": "OTHER ORG",
+        "address": "Other Address",
+        "coverage_date": "01-01-2025"
+    })
+    assert res_other.status_code == 200
+    other_id = res_other.json()["establishment"]["id"]
+
+    # Make ACTIVE ORG the session's active establishment (mirrors the SPA's
+    # X-Establishment-Id header for whatever the user last switched to).
+    consultant_a.set_establishment(active_id)
+
+    # Edit the OTHER establishment explicitly by id, as my-establishments.js's
+    # saveEdit(id) now does, even though ACTIVE ORG is the active establishment.
+    res_edit = consultant_a.put(f"/api/establishment?establishment_id={other_id}", json={
+        "code": "OROTHR0000002000",
+        "name": "OTHER ORG RENAMED",
+        "address": "Other Address",
+        "coverage_date": "01-01-2025"
+    })
+    assert res_edit.status_code == 200, res_edit.text
+
+    active_check = consultant_a.get(f"/api/establishment?establishment_id={active_id}").json()
+    other_check = consultant_a.get(f"/api/establishment?establishment_id={other_id}").json()
+
+    assert active_check["name"] == "ACTIVE ORG", "Active establishment must be untouched by editing a different one"
+    assert other_check["name"] == "OTHER ORG RENAMED", "Explicitly targeted establishment must receive the edit"
+
+
 def test_role_separation(consultant_a, superadmin_session):
     """
     Verify that Superadmin endpoints strictly reject Consultant sessions with 403 Forbidden,

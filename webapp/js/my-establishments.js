@@ -364,7 +364,7 @@ const MyEstablishments = (() => {
     }
 
     try {
-      await App.put('/api/establishment', { code, name, address, coverage_date });
+      await App.put(`/api/establishment?establishment_id=${id}`, { code, name, address, coverage_date });
       App.toast('Establishment details updated successfully');
       App.closeModal();
       
