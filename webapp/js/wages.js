@@ -943,6 +943,8 @@ App.registerPage('wage-entry', async (container) => {
 
   currentWagesData = await App.get(`/api/years/${currentYearKey}/wages`);
 
+  window._entryLockStatus = App.isSuperadmin() ? null : await App.get('/api/establishment/entry-lock-status').catch(() => null);
+
   // Ensure master employees are loaded
   const { employees: masterEmployees } = await App.get('/api/employees');
   window._masterEmployees = masterEmployees;
@@ -958,8 +960,12 @@ App.registerPage('wage-entry', async (container) => {
     }
   } catch (e) { }
 
-  const mths = constantsCache.months;
-  const monthOptions = mths.map((m, i) => `<option value="${i}">${m}</option>`).join('');
+  const mths = constantsCache.month_short_names;
+  const lock = window._entryLockStatus && window._entryLockStatus.locked_month;
+  const monthOptions = mths.map((m, i) => {
+    const isLocked = lock && lock.year_key === currentYearKey && i >= lock.month_idx;
+    return `<option value="${i}" ${isLocked ? 'disabled' : ''}>${m}${isLocked ? ' 🔒' : ''}</option>`;
+  }).join('');
 
   // Determine default month
   let defaultMonthIdx = 0;
@@ -1710,8 +1716,14 @@ window.calcBulkRow = (tr) => {
 };
 
 window.saveMonthlyWages = async () => {
-  syncBulkTableState();
   const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
+  const lock = window._entryLockStatus && window._entryLockStatus.locked_month;
+  if (lock && lock.year_key === currentYearKey && monthIdx >= lock.month_idx) {
+    App.toast(`${lock.month_abbr} ${lock.year_key} must be entered and paid before you can enter this month.`, 'error');
+    return;
+  }
+
+  syncBulkTableState();
 
   const employees = Object.entries(bulkTableState).map(([member_id, state]) => ({
     member_id,
