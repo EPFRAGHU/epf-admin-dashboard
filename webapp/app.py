@@ -258,6 +258,53 @@ def get_coverage_year_key(project: Project) -> Optional[str]:
         return None
     return get_financial_year_key_for_date(d.year, d.month)
 
+
+def get_entry_lock_status(db: Session, est_obj: Establishment, project: Project) -> dict:
+    """Walks this establishment's financial years in coverage-date chronological order
+    and reports the single current entry-gating boundary.
+
+    Returns {"coverage_year_key": str|None, "next_year_to_add": str|None,
+             "locked_month": {"year_key": str, "month_idx": int, "month_abbr": str} | None}
+
+    - next_year_to_add is set when the walk reaches a year that doesn't exist in
+      project.years yet -- POST /api/years may only create exactly this year next.
+    - locked_month is set when it reaches a year that DOES exist, but hits a month
+      with no wage data yet whose immediately-preceding month isn't paid (or empty).
+      POST /api/years/{key}/wages/bulk_month must reject saves at or after this
+      (year_key, month_idx) UNLESS grandfathered (see caller).
+    - Both None means nothing is currently locked (every existing year is fully
+      paid/data-filled and the next chronological year hasn't been requested yet, or
+      coverage_year_key itself is unknown -- shouldn't happen once coverage_date is
+      mandatory, but fails open rather than blocking anything).
+    """
+    coverage_key = get_coverage_year_key(project)
+    result = {"coverage_year_key": coverage_key, "next_year_to_add": None, "locked_month": None}
+    if not coverage_key:
+        return result
+
+    year_from = int(coverage_key.split("-")[0])
+    prev_month_satisfied = True  # nothing precedes the very first month
+
+    while True:
+        year_key = f"{year_from}-{str(year_from + 1)[-2:]}"
+        if year_key not in project.years:
+            result["next_year_to_add"] = year_key
+            return result
+
+        fee_rows = sync_subscription_fees_for_year(db, est_obj, project, year_key) or {}
+        for month_idx in range(12):
+            month_abbr = MONTH_SHORT_NAMES[month_idx]
+            has_data = count_ecr_employees_for_month(project, year_key, month_idx) > 0
+            if not has_data:
+                if not prev_month_satisfied:
+                    result["locked_month"] = {"year_key": year_key, "month_idx": month_idx, "month_abbr": month_abbr}
+                return result
+            fee_row = fee_rows.get(month_abbr)
+            prev_month_satisfied = (fee_row is None) or fee_row.is_paid or fee_row.amount_due <= 0
+
+        year_from += 1
+
+
 def apply_advance_credit_if_available(db: Session, est_obj: Establishment, fee_row: SubscriptionFee):
     """If the establishment has enough prepaid advance credit to cover this newly-billed,
     still-unpaid month, auto-mark it paid and deduct the credit. Never applies partially --
