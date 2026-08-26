@@ -961,17 +961,27 @@ App.registerPage('wage-entry', async (container) => {
   } catch (e) { }
 
   const mths = constantsCache.month_short_names;
-  const lock = window._entryLockStatus && window._entryLockStatus.locked_month;
+  // Gate on next_open_month, not merely locked_month -- a month strictly AFTER it is
+  // always blocked (skipping ahead), even when next_open_month itself isn't currently
+  // locked for any reason. next_open_month itself is only disabled when locked_month
+  // says so -- otherwise it's the legitimate next slot and must stay enabled. See
+  // get_entry_lock_status / bulk_month_wages in webapp/app.py for the full rationale.
+  const nextOpen = window._entryLockStatus && window._entryLockStatus.next_open_month;
+  const isLockedField = window._entryLockStatus && window._entryLockStatus.locked_month;
   // Compare chronologically (year_from, month_idx), not year_key equality -- a month in
-  // a LATER financial year than the locked one is also at/after the lock boundary, not
-  // just months within the exact locked year (Finding 2).
-  const lockYearFrom = lock ? parseInt(lock.year_key.split('-')[0], 10) : null;
+  // a LATER financial year than the next-open one is also at/after the boundary, not
+  // just months within the exact next-open year (Finding 2).
+  const nextOpenYearFrom = nextOpen ? parseInt(nextOpen.year_key.split('-')[0], 10) : null;
   const currentYearFrom = parseInt(currentYearKey.split('-')[0], 10);
-  const isAtOrAfterLock = (i) => lock && (
-    currentYearFrom > lockYearFrom || (currentYearFrom === lockYearFrom && i >= lock.month_idx)
-  );
+  const isDisabled = (i) => {
+    if (!nextOpen) return false;
+    const isAfter = currentYearFrom > nextOpenYearFrom || (currentYearFrom === nextOpenYearFrom && i > nextOpen.month_idx);
+    if (isAfter) return true;
+    const isExactlyNextOpen = currentYearFrom === nextOpenYearFrom && i === nextOpen.month_idx;
+    return isExactlyNextOpen && !!isLockedField;
+  };
   const monthOptions = mths.map((m, i) => {
-    const isLocked = isAtOrAfterLock(i);
+    const isLocked = isDisabled(i);
     return `<option value="${i}" ${isLocked ? 'disabled' : ''}>${m}${isLocked ? ' 🔒' : ''}</option>`;
   }).join('');
 
@@ -1725,20 +1735,45 @@ window.calcBulkRow = (tr) => {
 
 window.saveMonthlyWages = async () => {
   const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
+  const nextOpen = window._entryLockStatus && window._entryLockStatus.next_open_month;
   const lock = window._entryLockStatus && window._entryLockStatus.locked_month;
-  if (lock) {
+  if (nextOpen) {
     // Compare chronologically (year_from, month_idx), not year_key equality -- a save
-    // into a LATER financial year than the locked one must also be blocked client-side
-    // (Finding 2), matching the backend's chronological comparison.
-    const lockYearFrom = parseInt(lock.year_key.split('-')[0], 10);
+    // into a LATER financial year than next_open_month must also be blocked
+    // client-side (Finding 2), matching the backend's chronological comparison.
+    const nextOpenYearFrom = parseInt(nextOpen.year_key.split('-')[0], 10);
     const currentYearFrom = parseInt(currentYearKey.split('-')[0], 10);
-    const isAtOrAfterLock = currentYearFrom > lockYearFrom || (currentYearFrom === lockYearFrom && monthIdx >= lock.month_idx);
-    if (isAtOrAfterLock) {
+    const isAtOrAfterNextOpen = currentYearFrom > nextOpenYearFrom || (currentYearFrom === nextOpenYearFrom && monthIdx >= nextOpen.month_idx);
+    const isExactlyNextOpen = currentYearFrom === nextOpenYearFrom && monthIdx === nextOpen.month_idx;
+    const monthShortNames = constantsCache.month_short_names;
+
+    if (isAtOrAfterNextOpen && !isExactlyNextOpen) {
+      // Skipping straight past a month that hasn't been entered yet, even though
+      // that month itself might not currently carry a lock reason.
+      App.toast(`${nextOpen.month_abbr} ${nextOpen.year_key} must be entered before you can enter ${monthShortNames[monthIdx]} ${currentYearKey}.`, 'error');
+      return;
+    }
+
+    if (isExactlyNextOpen && lock) {
+      if (lock.reason === 'not_yet_due') {
+        // The locked month itself hasn't finished on the calendar yet -- naming a
+        // "prior month" makes no sense here, since payment isn't the issue. Mirrors
+        // the backend's "opens on" date math (webapp/app.py, bulk_month_wages).
+        const lockYearFrom = parseInt(lock.year_key.split('-')[0], 10);
+        let calMonth, calYear;
+        if (lock.month_idx <= 9) { calMonth = lock.month_idx + 3; calYear = lockYearFrom; }
+        else { calMonth = lock.month_idx - 9; calYear = lockYearFrom + 1; }
+        let opensMonth = calMonth + 1, opensYear = calYear;
+        if (opensMonth > 12) { opensMonth = 1; opensYear += 1; }
+        const opensStr = `01-${String(opensMonth).padStart(2, '0')}-${opensYear}`;
+        App.toast(`${lock.month_abbr} ${lock.year_key} cannot be entered until that month has ended -- it opens on ${opensStr}.`, 'error');
+        return;
+      }
       // Name the actual PRIOR month that must be entered/paid (not the locked month
       // itself, which is self-contradictory -- "Apr must be entered before you can
       // enter Apr"). Mirrors the backend's bulk_month_wages 409 message construction
       // (webapp/app.py), including the Feb-of-previous-year wraparound (Finding 3).
-      const monthShortNames = constantsCache.month_short_names;
+      const lockYearFrom = parseInt(lock.year_key.split('-')[0], 10);
       const prevMonthIdx = lock.month_idx - 1;
       let prevAbbr, prevYearKey;
       if (prevMonthIdx >= 0) {

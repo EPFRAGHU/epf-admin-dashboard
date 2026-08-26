@@ -259,26 +259,60 @@ def get_coverage_year_key(project: Project) -> Optional[str]:
     return get_financial_year_key_for_date(d.year, d.month)
 
 
+def get_current_wage_month() -> Tuple[str, int]:
+    """Returns (year_key, month_idx) for TODAY's calendar date, using the same
+    Mar-Feb financial-year month layout (MONTH_SHORT_NAMES) as everywhere else."""
+    today = date.today()
+    year_key = get_financial_year_key_for_date(today.year, today.month)
+    month_idx = (today.month - 3) if today.month >= 3 else (today.month + 9)
+    return year_key, month_idx
+
+
+def get_max_enterable_month() -> Tuple[str, int]:
+    """The latest (year_key, month_idx) wage entry is ever allowed for, regardless of
+    payment status: the month immediately before the current calendar month. A month
+    cannot be finalized/entered until it has actually finished -- e.g. on any day in
+    August, only wages through July are enterable; August itself opens on 1 September."""
+    cur_year_key, cur_month_idx = get_current_wage_month()
+    if cur_month_idx == 0:
+        year_from = int(cur_year_key.split("-")[0]) - 1
+        return f"{year_from}-{str(year_from + 1)[-2:]}", 11
+    return cur_year_key, cur_month_idx - 1
+
+
 def get_entry_lock_status(db: Session, est_obj: Establishment, project: Project) -> dict:
     """Walks this establishment's financial years in coverage-date chronological order
     and reports the single current entry-gating boundary.
 
     Returns {"coverage_year_key": str|None, "next_year_to_add": str|None,
-             "locked_month": {"year_key": str, "month_idx": int, "month_abbr": str} | None}
+             "next_open_month": {"year_key": str, "month_idx": int, "month_abbr": str} | None,
+             "locked_month": {"year_key": str, "month_idx": int, "month_abbr": str,
+                               "reason": "unpaid"|"not_yet_due"} | None}
 
     - next_year_to_add is set when the walk reaches a year that doesn't exist in
       project.years yet -- POST /api/years may only create exactly this year next.
-    - locked_month is set when it reaches a year that DOES exist, but hits a month
-      with no wage data yet whose immediately-preceding month isn't paid (or empty).
-      POST /api/years/{key}/wages/bulk_month must reject saves at or after this
-      (year_key, month_idx) UNLESS grandfathered (see caller).
-    - Both None means nothing is currently locked (every existing year is fully
-      paid/data-filled and the next chronological year hasn't been requested yet, or
-      coverage_year_key itself is unknown -- shouldn't happen once coverage_date is
-      mandatory, but fails open rather than blocking anything).
+    - next_open_month is the first month (within an existing year) that has no wage
+      data yet -- set whenever such a month exists, REGARDLESS of whether entry into
+      it is currently allowed. Callers use this to reject a save that skips ahead of
+      it entirely (e.g. straight into August while April is still empty, even though
+      April itself isn't individually "locked" for any reason) -- a save must land on
+      next_open_month itself, never past it.
+    - locked_month is next_open_month again, but ONLY when that specific month is
+      itself blocked: either (a) the month hasn't ended yet on the calendar
+      ("not_yet_due", checked first -- a month that hasn't happened yet can never be
+      entered no matter how caught-up on payment the establishment is), or (b) its
+      immediately-preceding month isn't paid ("unpaid"). None when next_open_month is
+      open for entry right now.
+      POST /api/years/{key}/wages/bulk_month must reject a save if the target is at
+      or after next_open_month AND (the target is strictly after next_open_month, OR
+      locked_month is set) -- see caller.
+    - All three (next_year_to_add, next_open_month, locked_month) None means every
+      existing year is fully paid/data-filled and the next chronological year hasn't
+      been requested yet, or coverage_year_key itself is unknown -- shouldn't happen
+      once coverage_date is mandatory, but fails open rather than blocking anything.
     """
     coverage_key = get_coverage_year_key(project)
-    result = {"coverage_year_key": coverage_key, "next_year_to_add": None, "locked_month": None}
+    result = {"coverage_year_key": coverage_key, "next_year_to_add": None, "next_open_month": None, "locked_month": None}
     if not coverage_key:
         return result
 
@@ -288,7 +322,11 @@ def get_entry_lock_status(db: Session, est_obj: Establishment, project: Project)
     # payment condition (prev_month_satisfied below); it deliberately does NOT skip the
     # walk itself, so next_year_to_add's chronological year-order check (used by
     # add_year, which is about ordering, not payment) still reflects the real state.
+    # It also never relaxes the calendar ceiling below -- being in a trial doesn't make
+    # an unfinished month any more finished.
     in_trial = is_establishment_in_trial(est_obj)
+    max_year_key, max_month_idx = get_max_enterable_month()
+    max_year_from = int(max_year_key.split("-")[0])
 
     year_from = int(coverage_key.split("-")[0])
     prev_month_satisfied = True  # nothing precedes the very first month
@@ -304,8 +342,11 @@ def get_entry_lock_status(db: Session, est_obj: Establishment, project: Project)
             month_abbr = MONTH_SHORT_NAMES[month_idx]
             has_data = count_ecr_employees_for_month(project, year_key, month_idx) > 0
             if not has_data:
-                if not prev_month_satisfied:
-                    result["locked_month"] = {"year_key": year_key, "month_idx": month_idx, "month_abbr": month_abbr}
+                result["next_open_month"] = {"year_key": year_key, "month_idx": month_idx, "month_abbr": month_abbr}
+                if (year_from, month_idx) > (max_year_from, max_month_idx):
+                    result["locked_month"] = {"year_key": year_key, "month_idx": month_idx, "month_abbr": month_abbr, "reason": "not_yet_due"}
+                elif not prev_month_satisfied:
+                    result["locked_month"] = {"year_key": year_key, "month_idx": month_idx, "month_abbr": month_abbr, "reason": "unpaid"}
                 return result
             fee_row = fee_rows.get(month_abbr)
             prev_month_satisfied = in_trial or (fee_row is None) or fee_row.is_paid or fee_row.amount_due <= 0
@@ -456,7 +497,12 @@ def is_month_overdue(year_key: str, month_idx: int) -> bool:
 def get_unpaid_months_detail_for_year(db: Session, establishment: Establishment, project: Project, year_key: str) -> List[dict]:
     """Like get_unpaid_months_for_year but returns structured {fee_id, month, display, amount_due,
     financial_year} rows instead of formatted strings, so callers can turn a 402 into an actionable
-    payment breakdown (exact amount per month + a payable total) instead of a bare error string."""
+    payment breakdown (exact amount per month + a payable total) instead of a bare error string.
+
+    No grace period: a month with wage data blocks downloads the moment it's unpaid, even if the
+    month itself hasn't ended yet. (Previously waited until 1 day past month-end via
+    is_month_overdue -- removed by deliberate policy change; is_month_overdue is kept only for the
+    "overdue" *display* label on admin fee views, which is a different concern from this gate.)"""
     if is_establishment_in_trial(establishment):
         return []
     fee_rows = sync_subscription_fees_for_year(db, establishment, project, year_key)
@@ -474,20 +520,19 @@ def get_unpaid_months_detail_for_year(db: Session, establishment: Establishment,
         fee_row = (fee_rows or {}).get(month_abbr)
 
         if fee_row and not fee_row.is_paid:
-            if is_month_overdue(year_key, month_idx):
-                cal_yr = calendar_year_for_month(month_abbr, year_record.year_from, year_record.year_to)
-                unpaid_overdue.append({
-                    "fee_id": fee_row.id,
-                    "month": month_abbr,
-                    "financial_year": year_key,
-                    "display": f"{MONTH_FULL.get(month_abbr.upper(), month_abbr)} {cal_yr}",
-                    "amount_due": fee_row.amount_due,
-                })
+            cal_yr = calendar_year_for_month(month_abbr, year_record.year_from, year_record.year_to)
+            unpaid_overdue.append({
+                "fee_id": fee_row.id,
+                "month": month_abbr,
+                "financial_year": year_key,
+                "display": f"{MONTH_FULL.get(month_abbr.upper(), month_abbr)} {cal_yr}",
+                "amount_due": fee_row.amount_due,
+            })
 
     return unpaid_overdue
 
 def get_unpaid_months_for_year(db: Session, establishment: Establishment, project: Project, year_key: str) -> List[str]:
-    """Returns list of formatted month names for which wages exist, fee is unpaid, and grace period has elapsed."""
+    """Returns list of formatted month names for which wages exist and the fee is unpaid."""
     return [row["display"] for row in get_unpaid_months_detail_for_year(db, establishment, project, year_key)]
 
 def _year_payment_required_detail(unpaid_rows: List[dict], financial_year: Optional[str] = None) -> dict:
@@ -5023,12 +5068,22 @@ async def put_wages(
     # have data, and any month before the lock boundary, are left untouched.
     if current_user.role != "superadmin":
         status = get_entry_lock_status(db, est_obj, project)
-        lock = status["locked_month"]
-        if lock:
-            lock_year_from = int(lock["year_key"].split("-")[0])
+        next_open = status["next_open_month"]
+        if next_open:
+            # Gate on next_open_month, not merely locked_month -- a month strictly AFTER
+            # it is always blocked (skipping ahead), even when next_open_month itself
+            # isn't currently locked for any reason. next_open_month itself is only
+            # blocked when status["locked_month"] says so (see get_entry_lock_status /
+            # bulk_month_wages for the full rationale) -- otherwise it's the legitimate
+            # next slot and this write must be allowed to land on it.
+            next_open_key = (int(next_open["year_key"].split("-")[0]), next_open["month_idx"])
+            lock = status["locked_month"]
             target_year_from = int(key.split("-")[0])
             for month_idx in range(12):
-                if (target_year_from, month_idx) < (lock_year_from, lock["month_idx"]):
+                target = (target_year_from, month_idx)
+                if target < next_open_key:
+                    continue
+                if target == next_open_key and not lock:
                     continue
                 if capped_wages[month_idx] and capped_wages[month_idx] > 0 and \
                         count_ecr_employees_for_month(project, key, month_idx) == 0:
@@ -5070,16 +5125,49 @@ async def bulk_month_wages(
 
     if current_user.role != "superadmin" and count_ecr_employees_for_month(project, key, d.month_idx) == 0:
         status = get_entry_lock_status(db, est_obj, project)
-        lock = status["locked_month"]
-        if lock:
+        next_open = status["next_open_month"]
+        if next_open:
             # Compare chronologically (year_from, month_idx), not year_key equality --
             # a later financial year (e.g. superadmin-bulk-created for backfill) must
-            # still be gated by an earlier, still-locked year, not just the exact
-            # locked year_key (Finding 2).
+            # still be gated by an earlier, still-open year, not just an exact
+            # year_key match (Finding 2).
             target_year_from = int(key.split("-")[0])
-            lock_year_from = int(lock["year_key"].split("-")[0])
-            if (target_year_from, d.month_idx) >= (lock_year_from, lock["month_idx"]):
-                # lock["month_idx"] is the first EMPTY month blocked by an unsatisfied
+            next_open_year_from = int(next_open["year_key"].split("-")[0])
+            target = (target_year_from, d.month_idx)
+            next_open_key = (next_open_year_from, next_open["month_idx"])
+
+            if target > next_open_key:
+                # Skipping straight past a month that hasn't been entered yet -- even
+                # though that month itself might not carry an active lock reason (e.g.
+                # it's genuinely open right now), entry must land on it first, not jump
+                # ahead of it. Without this, once the very next month happens to be
+                # unlocked, every later month in the same year was reachable directly.
+                raise HTTPException(
+                    409,
+                    f"{next_open['month_abbr']} {next_open['year_key']} must be entered before you can enter "
+                    f"{MONTH_SHORT_NAMES[d.month_idx]} {key}."
+                )
+
+            lock = status["locked_month"]
+            if lock and target == next_open_key:
+                if lock.get("reason") == "not_yet_due":
+                    # The month itself hasn't finished on the calendar yet -- naming a
+                    # "prior month" makes no sense here, since payment isn't the issue.
+                    # "Opens" = the 1st of the calendar month right after this one ends.
+                    year_from = int(lock["year_key"].split("-")[0])
+                    if lock["month_idx"] <= 9:
+                        cal_month, cal_year = lock["month_idx"] + 3, year_from
+                    else:
+                        cal_month, cal_year = lock["month_idx"] - 9, year_from + 1
+                    opens_month, opens_year = cal_month + 1, cal_year
+                    if opens_month > 12:
+                        opens_month, opens_year = 1, opens_year + 1
+                    raise HTTPException(
+                        409,
+                        f"{lock['month_abbr']} {lock['year_key']} cannot be entered until that month has ended "
+                        f"-- it opens on 01-{opens_month:02d}-{opens_year}."
+                    )
+                # lock["month_idx"] is the target month itself, blocked by an unsatisfied
                 # predecessor (see get_entry_lock_status docstring) -- name the actual
                 # blocking month (the one before it) in the error, not the locked month
                 # itself, so the message doesn't say "X must be entered before entering X".
@@ -5100,10 +5188,18 @@ async def bulk_month_wages(
     for emp_update in d.employees:
         if not project.get_master(emp_update.member_id):
             continue
-            
+
+        # upsert_entry() (epf_engine.py) stores/looks up entries by normalize_member_id()
+        # (truncated to the last 7 chars), not the raw id -- comparing against the raw
+        # emp_update.member_id here (as this used to) never matches for any id longer
+        # than 7 characters, so existing_emp was always None, wages_arr was rebuilt from
+        # all zeros, and the save below (which upsert_entry DOES match/overwrite
+        # correctly by normalized id) silently wiped every other month's wages for that
+        # employee. Normalize here the same way so the two agree.
+        normalized_member_id = normalize_member_id(emp_update.member_id)
         yr = project.years[key]
-        existing_emp = next((e for e in yr.entries if e.member_id == emp_update.member_id), None)
-        
+        existing_emp = next((e for e in yr.entries if e.member_id == normalized_member_id), None)
+
         if existing_emp:
             wages_arr = [int(round(float(w))) if w is not None else 0 for w in existing_emp.wages]
             gross_wages_arr = [int(round(float(g))) if g is not None else 0 for g in existing_emp.gross_wages]
@@ -5628,7 +5724,7 @@ async def generate_ecr_txt(
                 SubscriptionFee.financial_year == year_key,
                 SubscriptionFee.month == m_abbr
             ).first()
-            if fee_row and not fee_row.is_paid and is_month_overdue(year_key, month_idx) and not is_establishment_in_trial(est_obj):
+            if fee_row and not fee_row.is_paid and not is_establishment_in_trial(est_obj):
                 year_record = project.years.get(year_key)
                 cal_yr = calendar_year_for_month(m_abbr, year_record.year_from, year_record.year_to) if year_record else ""
                 display_m = f"{MONTH_FULL.get(m_abbr.upper(), m_abbr)} {cal_yr}".strip()
@@ -5723,7 +5819,7 @@ async def generate_ecr_zip_by_scope(
                 SubscriptionFee.financial_year == year_key,
                 SubscriptionFee.month == m_abbr
             ).first()
-            if fee_row and not fee_row.is_paid and is_month_overdue(year_key, month_idx) and not is_establishment_in_trial(est_obj):
+            if fee_row and not fee_row.is_paid and not is_establishment_in_trial(est_obj):
                 year_record = project.years.get(year_key)
                 cal_yr = calendar_year_for_month(m_abbr, year_record.year_from, year_record.year_to) if year_record else ""
                 display_m = f"{MONTH_FULL.get(m_abbr.upper(), m_abbr)} {cal_yr}".strip()

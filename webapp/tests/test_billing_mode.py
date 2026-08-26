@@ -103,13 +103,18 @@ def test_switch_back_to_per_employee_freezes_paid_flat_months(superadmin_session
     est_id = res.json()["establishment"]["id"]
     consultant_a.set_establishment(est_id)
     consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    # Wage setup goes through superadmin -- this test is about billing-mode freeze
+    # behavior, not the chronological entry gate, and superadmin bypasses it so both
+    # Mar and Apr can be seeded in one shot as this test's math already assumes.
+    superadmin_session.set_establishment(est_id)
     for i in range(1, 4):
         consultant_a.post("/api/employees", json={
             "member_id": f"FLAT002{i:03d}", "name": f"Employee {i}", "uan": f"71000000{i:04d}"
         })
-        consultant_a.post("/api/years/2026-27/wages", json={
+        res_seed = superadmin_session.post("/api/years/2026-27/wages", json={
             "member_id": f"FLAT002{i:03d}", "wages": [15000.0, 15000.0] + [0.0] * 10
         })
+        assert res_seed.status_code == 200, res_seed.text
 
     # Switch to flat_fee ₹5000 and pay Mar.
     res = superadmin_session.put(f"/api/admin/establishments/{est_id}/billing-mode", json={

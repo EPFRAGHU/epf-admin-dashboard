@@ -10,7 +10,7 @@ and confirm all covered months (and the blocked download) unlock together.
 import pytest
 
 
-def _setup_establishment_with_three_unpaid_months(consultant_a, code):
+def _setup_establishment_with_three_unpaid_months(consultant_a, superadmin_session, code):
     res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2026",
         "code": code, "name": f"{code} Pvt Ltd", "custom_rate_per_employee": 20.0
     })
@@ -22,16 +22,21 @@ def _setup_establishment_with_three_unpaid_months(consultant_a, code):
         "member_id": f"{code}001", "name": "Test Employee", "uan": "700000000001"
     })
     # Mar, Apr, May 2026 wages -- all already past their grace period relative to "today".
+    # Seeded via superadmin -- this suite is about the download-side payment prompt, not
+    # the chronological entry gate, and the gate would otherwise reject writing all 3
+    # months in a single call.
+    superadmin_session.set_establishment(est_id)
     wages = [15000.0, 15000.0, 15000.0] + [0.0] * 9
-    res = consultant_a.post("/api/years/2026-27/wages", json={"member_id": f"{code}001", "wages": wages})
-    assert res.status_code == 200
+    res = superadmin_session.post("/api/years/2026-27/wages", json={"member_id": f"{code}001", "wages": wages})
+    assert res.status_code == 200, res.text
+    consultant_a.set_establishment(est_id)
     return est_id
 
 
-def test_form3a_402_breakdown_structure(consultant_a):
+def test_form3a_402_breakdown_structure(consultant_a, superadmin_session):
     """A Form 3A/6A download blocked by 3 unpaid/overdue months returns a structured
     breakdown (not a bare error string) with per-month amounts and a combined total."""
-    _setup_establishment_with_three_unpaid_months(consultant_a, "PAYALL01")
+    _setup_establishment_with_three_unpaid_months(consultant_a, superadmin_session, "PAYALL01")
 
     res = consultant_a.get("/api/reports/2026-27")
     assert res.status_code == 402
@@ -48,11 +53,11 @@ def test_form3a_402_breakdown_structure(consultant_a):
         assert "fee_id" in m and "display" in m
 
 
-def test_ecr_zip_and_form9_and_employee_report_402_breakdown(consultant_a):
+def test_ecr_zip_and_form9_and_employee_report_402_breakdown(consultant_a, superadmin_session):
     """The same structured breakdown applies to the whole-year ECR zip, the multi-year
     Form 9 endpoint, and the per-employee Form 3A endpoint -- not just the combined
     Form 3A/6A/12A/5/10 endpoint."""
-    _setup_establishment_with_three_unpaid_months(consultant_a, "PAYALL02")
+    _setup_establishment_with_three_unpaid_months(consultant_a, superadmin_session, "PAYALL02")
 
     res = consultant_a.get("/api/reports/2026-27/ecr")
     assert res.status_code == 402
@@ -76,7 +81,7 @@ def test_pay_all_overdue_manual_utr_unlocks_every_month_and_download(consultant_
     """Submitting ONE UTR across all 3 unpaid months, then a superadmin approving just
     ONE of those fee rows, must cascade to mark all 3 paid -- and the Form 3A download
     must succeed immediately after, without any further action."""
-    est_id = _setup_establishment_with_three_unpaid_months(consultant_a, "PAYALL03")
+    est_id = _setup_establishment_with_three_unpaid_months(consultant_a, superadmin_session, "PAYALL03")
 
     res = consultant_a.get("/api/reports/2026-27")
     assert res.status_code == 402
@@ -135,10 +140,10 @@ def test_pay_all_overdue_manual_utr_unlocks_every_month_and_download(consultant_
     assert sub_status["unpaid_months"] == []
 
 
-def test_all_months_paid_no_prompt_shown(consultant_a):
+def test_all_months_paid_no_prompt_shown(consultant_a, superadmin_session):
     """An establishment with every wage-bearing month already paid must download immediately
     (200, no 402 at all) -- the breakdown must never appear once nothing is actually unpaid."""
-    est_id = _setup_establishment_with_three_unpaid_months(consultant_a, "PAYALL04")
+    est_id = _setup_establishment_with_three_unpaid_months(consultant_a, superadmin_session, "PAYALL04")
 
     res = consultant_a.get("/api/reports/2026-27")
     assert res.status_code == 402

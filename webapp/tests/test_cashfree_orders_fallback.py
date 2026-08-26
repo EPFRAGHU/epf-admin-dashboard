@@ -189,8 +189,14 @@ def test_pay_redirect_route_serves_checkout_sdk_page_for_order_fallback(mock_cre
     est_id = _new_establishment(consultant_a, "FALLBACK0002", "Fallback Test Co 2")
     consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
     consultant_a.post("/api/employees", json={"member_id": "FB0002", "name": "Test Employee 2", "uan": "300111100002"})
-    # PAYMENT_MONTHS index 1 == "Apr" -- must match the month requested below.
-    consultant_a.post("/api/years/2026-27/wages", json={"member_id": "FB0002", "wages": [0.0, 15000.0] + [0.0] * 10})
+    # PAYMENT_MONTHS index 1 == "Apr" -- must match the month requested below. Seeded via
+    # superadmin -- this test is about the payment-link/pay-redirect flow, not the
+    # chronological entry gate, and the gate would otherwise reject writing directly
+    # into Apr without Mar existing first.
+    superadmin_session.set_establishment(est_id)
+    res_seed = superadmin_session.post("/api/years/2026-27/wages", json={"member_id": "FB0002", "wages": [0.0, 15000.0] + [0.0] * 10})
+    assert res_seed.status_code == 200, res_seed.text
+    consultant_a.set_establishment(est_id)
     superadmin_session.put(f"/api/admin/users/{consultant_a.user_id}", json={"mobile": "9876543210"})
 
     res = superadmin_session.post(
@@ -231,8 +237,14 @@ def test_webhook_confirms_payment_from_orders_api_shaped_payload(mock_create, su
     est_id = _new_establishment(consultant_a, "FALLBACK0003", "Fallback Test Co 3")
     consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
     consultant_a.post("/api/employees", json={"member_id": "FB0003", "name": "Test Employee 3", "uan": "300111100003"})
-    # PAYMENT_MONTHS index 2 == "May" -- must match the month requested below.
-    consultant_a.post("/api/years/2026-27/wages", json={"member_id": "FB0003", "wages": [0.0, 0.0, 15000.0] + [0.0] * 9})
+    # PAYMENT_MONTHS index 2 == "May" -- must match the month requested below. Seeded via
+    # superadmin -- this test is about the Orders-API webhook shape, not the
+    # chronological entry gate, and the gate would otherwise reject writing directly
+    # into May without Mar/Apr existing first.
+    superadmin_session.set_establishment(est_id)
+    res_seed = superadmin_session.post("/api/years/2026-27/wages", json={"member_id": "FB0003", "wages": [0.0, 0.0, 15000.0] + [0.0] * 9})
+    assert res_seed.status_code == 200, res_seed.text
+    consultant_a.set_establishment(est_id)
     superadmin_session.put(f"/api/admin/users/{consultant_a.user_id}", json={"mobile": "9876543210"})
 
     res = superadmin_session.post(

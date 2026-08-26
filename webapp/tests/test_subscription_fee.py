@@ -60,7 +60,10 @@ def test_subscription_fee_rate_hierarchy(superadmin_session, consultant_a):
 
 
 def test_fee_calculation_and_data_entry_unblocked(superadmin_session, consultant_a):
-    """Verify fee calculation matches active ECR employee count and data entry is never blocked."""
+    """Verify fee calculation matches active ECR employee count, and that remittance entry
+    specifically is never blocked (wage entry itself IS now chronologically gated, see
+    test_month_year_entry_gating.py -- wage setup below goes through superadmin to isolate
+    that from what this test actually verifies)."""
     # Create establishment Beta
     res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2026", "code": "BETA001", "name": "Beta Industries", "custom_rate_per_employee": 10.0})
     assert res.status_code == 200
@@ -88,12 +91,14 @@ def test_fee_calculation_and_data_entry_unblocked(superadmin_session, consultant
     wages_2 = [12000.0, 0.0] + [0.0] * 10
     wages_3 = [0.0, 10000.0] + [0.0] * 10
 
-    res = consultant_a.post("/api/years/2026-27/wages", json={"member_id": "BETA001001", "wages": wages_1})
-    assert res.status_code == 200
-    res = consultant_a.post("/api/years/2026-27/wages", json={"member_id": "BETA001002", "wages": wages_2})
-    assert res.status_code == 200
-    res = consultant_a.post("/api/years/2026-27/wages", json={"member_id": "BETA001003", "wages": wages_3})
-    assert res.status_code == 200
+    superadmin_session.set_establishment(beta_id)
+    res = superadmin_session.post("/api/years/2026-27/wages", json={"member_id": "BETA001001", "wages": wages_1})
+    assert res.status_code == 200, res.text
+    res = superadmin_session.post("/api/years/2026-27/wages", json={"member_id": "BETA001002", "wages": wages_2})
+    assert res.status_code == 200, res.text
+    res = superadmin_session.post("/api/years/2026-27/wages", json={"member_id": "BETA001003", "wages": wages_3})
+    assert res.status_code == 200, res.text
+    consultant_a.set_establishment(beta_id)
 
     # Superadmin checks fees:
     # Month 0 (Mar): 2 employees > 0 => Fee = 2 * 10.0 = 20.0
@@ -271,7 +276,7 @@ def test_advance_credit_covers_future_months(superadmin_session, consultant_a):
             for i in range(1, 51)
         ]}
         res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json=payload)
-        assert res.status_code == 200
+        assert res.status_code == 200, res.text
 
     # Month 1 (Mar): 50 employees * ₹20 = ₹1000 due -- auto-paid from credit.
     enter_month_wages(0)

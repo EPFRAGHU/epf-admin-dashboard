@@ -121,9 +121,16 @@ def test_consultant_self_serve_month_payment_unlocks_download(superadmin_session
     consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
     consultant_a.post("/api/employees", json={"member_id": "THETA001001", "name": "Emp One", "uan": "500000000001"})
     consultant_a.post("/api/employees", json={"member_id": "THETA001002", "name": "Emp Two", "uan": "500000000002"})
-    # Jul wages (month_idx 4, "Jul Paid in Aug") for 2 employees.
-    consultant_a.post("/api/years/2026-27/wages", json={"member_id": "THETA001001", "wages": [0]*4 + [15000.0] + [0.0]*7})
-    consultant_a.post("/api/years/2026-27/wages", json={"member_id": "THETA001002", "wages": [0]*4 + [15000.0] + [0.0]*7})
+    # Jul wages (month_idx 4, "Jul Paid in Aug") for 2 employees. Seeded via superadmin
+    # -- this test is about the Cashfree self-serve payment flow, not the chronological
+    # entry gate, and the gate would otherwise reject writing directly into Jul without
+    # Mar-Jun existing first.
+    superadmin_session.set_establishment(est_id)
+    res_seed1 = superadmin_session.post("/api/years/2026-27/wages", json={"member_id": "THETA001001", "wages": [0]*4 + [15000.0] + [0.0]*7})
+    assert res_seed1.status_code == 200, res_seed1.text
+    res_seed2 = superadmin_session.post("/api/years/2026-27/wages", json={"member_id": "THETA001002", "wages": [0]*4 + [15000.0] + [0.0]*7})
+    assert res_seed2.status_code == 200, res_seed2.text
+    consultant_a.set_establishment(est_id)
 
     superadmin_session.put(f"/api/admin/users/{consultant_a.user_id}", json={"mobile": "9876543212"})
 

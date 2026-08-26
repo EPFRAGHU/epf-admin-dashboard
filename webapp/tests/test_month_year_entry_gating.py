@@ -3,7 +3,7 @@ enter wage data one month at a time, anchored to the establishment's coverage_da
 each unlocking only once the previous one is paid. See
 docs/superpowers/specs/2026-08-26-month-year-entry-gating-design.md."""
 from webapp.app import get_financial_year_key_for_date, get_coverage_year_key
-from epf_engine import Project
+from epf_engine import Project, normalize_member_id
 
 
 def test_get_financial_year_key_for_date_mar_to_dec_belongs_to_same_calendar_year():
@@ -91,7 +91,7 @@ def test_lock_status_locks_second_month_until_first_is_paid(consultant_a):
     try:
         status = get_entry_lock_status(db, est_obj, project)
         assert status["next_year_to_add"] is None
-        assert status["locked_month"] == {"year_key": "2026-27", "month_idx": 1, "month_abbr": "Apr"}
+        assert status["locked_month"] == {"year_key": "2026-27", "month_idx": 1, "month_abbr": "Apr", "reason": "unpaid"}
     finally:
         db.close()
 
@@ -404,7 +404,7 @@ def test_legacy_wage_endpoint_cannot_smuggle_data_past_the_entry_lock(consultant
     db, est_obj, project = _load_est_and_project(est_id)
     try:
         status = get_entry_lock_status(db, est_obj, project)
-        assert status["locked_month"] == {"year_key": "2026-27", "month_idx": 1, "month_abbr": "Apr"}
+        assert status["locked_month"] == {"year_key": "2026-27", "month_idx": 1, "month_abbr": "Apr", "reason": "unpaid"}
     finally:
         db.close()
 
@@ -453,3 +453,308 @@ def test_legacy_wage_endpoint_allows_writes_before_the_lock_boundary(consultant_
         "member_id": "M1", "wages": wages, "gross_wages": wages
     })
     assert res.status_code == 200, res.text
+
+
+# ── Calendar ceiling: a month can never be entered until it has actually ended ──
+# "If the current month is August 2026, wage entry is allowed up to July 2026
+# only -- in no circumstances the current or a subsequent month, since August is
+# the due month FOR July. On 01-09-2026, August itself becomes enterable."
+from datetime import date as _real_date
+from unittest.mock import patch
+from webapp.app import get_current_wage_month, get_max_enterable_month, get_entry_lock_status
+
+
+class _FrozenDate(_real_date):
+    """Subclassing (not MagicMock-ing) date preserves real date(y,m,d) construction
+    everywhere else in app.py (calendar_year_for_month, is_month_overdue, ...) while
+    only date.today() is frozen."""
+    _frozen = _real_date(2026, 8, 26)
+
+    @classmethod
+    def today(cls):
+        return cls._frozen
+
+
+def test_get_current_wage_month_matches_mar_feb_layout():
+    with patch("webapp.app.date", _FrozenDate):
+        assert get_current_wage_month() == ("2026-27", 5)  # Aug -> month_idx 5
+
+
+def test_get_max_enterable_month_is_the_previous_month():
+    with patch("webapp.app.date", _FrozenDate):
+        assert get_max_enterable_month() == ("2026-27", 4)  # Jul -> month_idx 4
+
+
+def test_get_max_enterable_month_wraps_to_prior_fy_feb_in_march():
+    class _MarchDate(_real_date):
+        @classmethod
+        def today(cls):
+            return _real_date(2026, 3, 15)
+    with patch("webapp.app.date", _MarchDate):
+        assert get_max_enterable_month() == ("2025-26", 11)  # Feb of the prior FY
+
+
+def _enter_and_pay_month(consultant_a, test_db, est_id, key, month_idx, month_abbr, member_id="M1"):
+    res = consultant_a.post(f"/api/years/{key}/wages/bulk_month", json={
+        "month_idx": month_idx, "employees": [{"member_id": member_id, "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    assert res.status_code == 200, res.text
+    from webapp.database import SubscriptionFee
+    fee = test_db.query(SubscriptionFee).filter(
+        SubscriptionFee.establishment_id == est_id,
+        SubscriptionFee.financial_year == key,
+        SubscriptionFee.month == month_abbr
+    ).first()
+    fee.is_paid = True
+    test_db.commit()
+
+
+def test_lock_status_locks_current_month_even_when_fully_paid(consultant_a, test_db):
+    est_id = _create_est(consultant_a, "CEIL001", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000040"})
+
+    with patch("webapp.app.date", _FrozenDate):
+        for m_idx, m_abbr in enumerate(["Mar", "Apr", "May", "Jun", "Jul"]):
+            _enter_and_pay_month(consultant_a, test_db, est_id, "2026-27", m_idx, m_abbr)
+
+        db, est_obj, project = _load_est_and_project(est_id)
+        try:
+            status = get_entry_lock_status(db, est_obj, project)
+            # Every month through Jul is entered and paid -- yet Aug is still locked,
+            # because Aug 2026 hasn't ended on the calendar, not because of payment.
+            assert status["locked_month"] == {"year_key": "2026-27", "month_idx": 5, "month_abbr": "Aug", "reason": "not_yet_due"}
+        finally:
+            db.close()
+
+
+def test_cannot_save_current_month_wages_even_fully_paid_through_previous(consultant_a, test_db):
+    est_id = _create_est(consultant_a, "CEIL002", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000041"})
+
+    with patch("webapp.app.date", _FrozenDate):
+        for m_idx, m_abbr in enumerate(["Mar", "Apr", "May", "Jun", "Jul"]):
+            _enter_and_pay_month(consultant_a, test_db, est_id, "2026-27", m_idx, m_abbr)
+
+        res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+            "month_idx": 5, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+        })
+        assert res.status_code == 409
+        assert "opens on 01-09-2026" in res.text
+
+
+def test_can_save_the_last_fully_ended_month(consultant_a, test_db):
+    est_id = _create_est(consultant_a, "CEIL003", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000042"})
+
+    with patch("webapp.app.date", _FrozenDate):
+        for m_idx, m_abbr in enumerate(["Mar", "Apr", "May", "Jun"]):
+            _enter_and_pay_month(consultant_a, test_db, est_id, "2026-27", m_idx, m_abbr)
+
+        # Jul (month_idx 4) is the last month that has actually ended -- must be enterable.
+        res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+            "month_idx": 4, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+        })
+        assert res.status_code == 200, res.text
+
+
+def test_cannot_skip_ahead_of_an_open_but_unentered_month(consultant_a, test_db):
+    """Even when the very next month happens to carry no lock reason (it's simply
+    open, waiting to be entered), a save must land on it -- not skip past it to a
+    later month in the same year."""
+    est_id = _create_est(consultant_a, "CEIL006", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000049"})
+
+    with patch("webapp.app.date", _FrozenDate):
+        _enter_and_pay_month(consultant_a, test_db, est_id, "2026-27", 0, "Mar")
+        # Apr (month_idx 1) is now open (Mar paid) but not yet entered. Try to skip
+        # straight to Jun (month_idx 3) instead.
+        res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+            "month_idx": 3, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+        })
+        assert res.status_code == 409
+        assert "Apr 2026-27 must be entered before you can enter" in res.text
+
+        # Confirm Apr itself is genuinely open (not blocked by a lock reason).
+        db, est_obj, project = _load_est_and_project(est_id)
+        try:
+            status = get_entry_lock_status(db, est_obj, project)
+            assert status["next_open_month"] == {"year_key": "2026-27", "month_idx": 1, "month_abbr": "Apr"}
+            assert status["locked_month"] is None
+        finally:
+            db.close()
+
+        res2 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+            "month_idx": 1, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+        })
+        assert res2.status_code == 200, res2.text
+
+
+def test_trial_establishment_still_bound_by_calendar_ceiling(superadmin_session, consultant_a, test_db):
+    """Trial exemption relaxes PAYMENT, never the calendar ceiling -- a month that
+    hasn't ended yet can't be entered no matter how generous the billing terms are."""
+    from webapp.database import Establishment
+    from datetime import timedelta
+    est_id = _create_est(consultant_a, "CEIL004", coverage_date="01-04-2026")
+    est_row = test_db.query(Establishment).filter(Establishment.id == est_id).first()
+    est_row.trial_ends_on = _FrozenDate._frozen + timedelta(days=30)
+    test_db.commit()
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000043"})
+
+    with patch("webapp.app.date", _FrozenDate):
+        # Trial exempts payment, so these all succeed unpaid -- filling Mar..Jul makes
+        # Aug (month_idx 5) itself the next_open_month, isolating the calendar-ceiling
+        # check from the (separate) skip-ahead check.
+        for m_idx in range(5):
+            res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+                "month_idx": m_idx, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+            })
+            assert res.status_code == 200, res.text
+
+        res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+            "month_idx": 5, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+        })
+        assert res.status_code == 409
+        assert "opens on" in res.text
+
+
+def test_superadmin_bypasses_calendar_ceiling(superadmin_session, consultant_a):
+    est_id = _create_est(consultant_a, "CEIL005", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000044"})
+    superadmin_session.set_establishment(est_id)
+
+    with patch("webapp.app.date", _FrozenDate):
+        res = superadmin_session.post("/api/years/2026-27/wages/bulk_month", json={
+            "month_idx": 5, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+        })
+        assert res.status_code == 200, res.text
+
+
+# ── Download gate: no grace period -- any unpaid month with data blocks immediately ──
+#
+# These specifically target a month that the OLD is_month_overdue() grace logic would
+# NOT yet consider overdue (still within its "1 day past month-end" window, or not even
+# ended yet) -- proving the new no-grace policy, not just re-confirming an already-
+# elapsed grace period that the real calendar date would trigger regardless. Wage data
+# for the current month is seeded via superadmin (bypasses entry-gating, which is a
+# separate concern from the download gate under test here).
+
+def test_ecr_download_blocked_immediately_for_current_unpaid_month_no_grace(superadmin_session, consultant_a):
+    """Before this change, is_month_overdue() gave a 1-day-past-month-end grace window
+    before a download was blocked. Policy change: every download requires payment
+    upfront, even for the current, still-in-progress month."""
+    est_id = _create_est(consultant_a, "NOGRACE001", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000045"})
+    superadmin_session.set_establishment(est_id)
+
+    with patch("webapp.app.date", _FrozenDate):
+        # Aug 2026 (month_idx 5) is TODAY's own in-progress month under the frozen
+        # date -- old grace logic wouldn't consider it overdue until 01-09-2026.
+        res_seed = superadmin_session.post("/api/years/2026-27/wages/bulk_month", json={
+            "month_idx": 5, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+        })
+        assert res_seed.status_code == 200, res_seed.text
+
+        res = consultant_a.get("/api/reports/2026-27/ecr/5")
+        assert res.status_code == 402
+        assert "unpaid" in res.text.lower()
+
+
+def test_whole_year_form_download_blocked_immediately_no_grace(superadmin_session, consultant_a):
+    est_id = _create_est(consultant_a, "NOGRACE002", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000046"})
+    superadmin_session.set_establishment(est_id)
+
+    with patch("webapp.app.date", _FrozenDate):
+        res_seed = superadmin_session.post("/api/years/2026-27/wages/bulk_month", json={
+            "month_idx": 5, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+        })
+        assert res_seed.status_code == 200, res_seed.text
+
+        res = consultant_a.get("/api/reports/2026-27")
+        assert res.status_code == 402
+
+
+def test_download_unlocks_immediately_once_paid(superadmin_session, consultant_a, test_db):
+    from webapp.database import SubscriptionFee
+    est_id = _create_est(consultant_a, "NOGRACE003", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000047"})
+    superadmin_session.set_establishment(est_id)
+
+    with patch("webapp.app.date", _FrozenDate):
+        res_seed = superadmin_session.post("/api/years/2026-27/wages/bulk_month", json={
+            "month_idx": 5, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+        })
+        assert res_seed.status_code == 200, res_seed.text
+
+        fee = test_db.query(SubscriptionFee).filter(SubscriptionFee.establishment_id == est_id, SubscriptionFee.month == "Aug").first()
+        fee.is_paid = True
+        test_db.commit()
+
+        res = consultant_a.get("/api/reports/2026-27/ecr/5")
+        assert res.status_code == 200
+
+
+def test_superadmin_bypasses_no_grace_download_gate(superadmin_session, consultant_a):
+    est_id = _create_est(consultant_a, "NOGRACE004", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000048"})
+    superadmin_session.set_establishment(est_id)
+
+    with patch("webapp.app.date", _FrozenDate):
+        res_seed = superadmin_session.post("/api/years/2026-27/wages/bulk_month", json={
+            "month_idx": 5, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+        })
+        assert res_seed.status_code == 200, res_seed.text
+
+        res = superadmin_session.get("/api/reports/2026-27/ecr/5")
+        assert res.status_code == 200
+
+
+# ── Regression: bulk_month_wages must not wipe a prior month's wages for a member_id
+# longer than 7 characters (found while writing the calendar-ceiling tests above) ──
+
+def test_entering_a_later_month_does_not_wipe_an_earlier_months_wages_for_long_member_id(consultant_a, test_db):
+    """upsert_entry() (epf_engine.py) stores/looks up entries by normalize_member_id()
+    (last 7 chars), not the raw id. bulk_month_wages's own existing-entry lookup used to
+    compare against the RAW member_id -- for any id longer than 7 characters that lookup
+    always missed, so it rebuilt wages_arr from all zeros and set only the new month,
+    which upsert_entry then saved over the real entry (matched by normalized id),
+    silently erasing every previously-entered month. Real member ids in production are
+    routinely longer than 7 characters (e.g. "DELTA001001"), so this was a live
+    data-loss bug, not a hypothetical one."""
+    est_id = _create_est(consultant_a, "LONGID001", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    long_id = "DELTA001001"  # 11 chars -- longer than normalize_member_id's 7-char keep
+    consultant_a.post("/api/employees", json={"member_id": long_id, "name": "Emp One", "uan": "100000000050"})
+
+    res_mar = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 0, "employees": [{"member_id": long_id, "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    assert res_mar.status_code == 200, res_mar.text
+
+    from webapp.database import SubscriptionFee
+    fee = test_db.query(SubscriptionFee).filter(SubscriptionFee.establishment_id == est_id, SubscriptionFee.month == "Mar").first()
+    fee.is_paid = True
+    test_db.commit()
+
+    res_apr = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 1, "employees": [{"member_id": long_id, "gross_wage": 18000, "epf_wage": 18000, "ncp_days": 0}]
+    })
+    assert res_apr.status_code == 200, res_apr.text
+
+    db, est_obj, project = _load_est_and_project(est_id)
+    try:
+        entry = next(e for e in project.years["2026-27"].entries if e.member_id == normalize_member_id(long_id))
+        assert entry.wages[0] == 15000, "Mar's wage must survive Apr being entered afterward"
+        assert entry.wages[1] == 18000
+    finally:
+        db.close()

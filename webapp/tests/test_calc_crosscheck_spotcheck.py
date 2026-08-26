@@ -18,7 +18,7 @@ def _pay_all_fees(test_db, est_id):
     test_db.commit()
 
 
-def test_dashboard_challans_form12a_agree(consultant_a, test_db):
+def test_dashboard_challans_form12a_agree(superadmin_session, consultant_a, test_db):
     res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2026", "code": "CHK001", "name": "Crosscheck Corp"})
     assert res.status_code == 200, res.text
     est = res.json()["establishment"]
@@ -30,12 +30,18 @@ def test_dashboard_challans_form12a_agree(consultant_a, test_db):
     # Employee A: wages straddle the ceiling (Apr=12000 <ceiling, May=20000 >ceiling, Jun=15000 =ceiling)
     consultant_a.post("/api/employees", json={"member_id": "CHK001001", "name": "Emp One", "uan": "700000000001"})
     consultant_a.post("/api/employees", json={"member_id": "CHK001002", "name": "Emp Two", "uan": "700000000002"})
-    consultant_a.post("/api/years/2026-27/wages", json={
+    # Wage setup goes through superadmin -- this test is about cross-surface number
+    # agreement, not the chronological entry gate, and it needs 3 months seeded for
+    # one employee in a single call, which the gate would otherwise reject.
+    superadmin_session.set_establishment(est["id"])
+    res_seed1 = superadmin_session.post("/api/years/2026-27/wages", json={
         "member_id": "CHK001001", "wages": [12000.0, 20000.0, 15000.0] + [0.0] * 9
     })
-    consultant_a.post("/api/years/2026-27/wages", json={
+    assert res_seed1.status_code == 200, res_seed1.text
+    res_seed2 = superadmin_session.post("/api/years/2026-27/wages", json={
         "member_id": "CHK001002", "wages": [8000.0, 9500.0, 0.0] + [0.0] * 9
     })
+    assert res_seed2.status_code == 200, res_seed2.text
 
     # Fee rows are lazily synced (created) on first read, not on wage save -- force
     # that sync before marking everything paid, or the mark-paid step is a no-op.
