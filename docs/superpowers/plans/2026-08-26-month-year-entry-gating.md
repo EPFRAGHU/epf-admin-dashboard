@@ -179,7 +179,7 @@ def test_lock_status_locks_second_month_until_first_is_paid(consultant_a):
     consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000001"})
     # Mar (month_idx 0) gets wage data but is never paid.
     consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wages": 15000, "wages": 15000, "ncp_days": 0}]
+        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
     })
 
     db, est_obj, project = _load_est_and_project(est_id)
@@ -197,7 +197,7 @@ def test_lock_status_unlocks_second_month_once_first_is_paid(consultant_a, test_
     consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
     consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000002"})
     consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wages": 15000, "wages": 15000, "ncp_days": 0}]
+        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
     })
     fee = test_db.query(SubscriptionFee).filter(
         SubscriptionFee.establishment_id == est_id, SubscriptionFee.month == "Mar"
@@ -538,12 +538,12 @@ def test_cannot_save_second_month_wages_before_first_month_is_paid(consultant_a)
     consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
     consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000003"})
     res1 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wages": 15000, "wages": 15000, "ncp_days": 0}]
+        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
     })
     assert res1.status_code == 200, res1.text
 
     res2 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 1, "employees": [{"member_id": "M1", "gross_wages": 15000, "wages": 15000, "ncp_days": 0}]
+        "month_idx": 1, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
     })
     assert res2.status_code == 409
     assert "Mar" in res2.text
@@ -556,10 +556,10 @@ def test_re_saving_an_already_entered_month_is_never_blocked(consultant_a):
     consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
     consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000004"})
     consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wages": 15000, "wages": 15000, "ncp_days": 0}]
+        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
     })
     res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wages": 16000, "wages": 16000, "ncp_days": 0}]
+        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 16000, "epf_wage": 16000, "ncp_days": 0}]
     })
     assert res.status_code == 200, res.text
 
@@ -570,7 +570,7 @@ def test_month_unlocks_once_previous_month_paid(consultant_a, test_db):
     consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
     consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000005"})
     consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wages": 15000, "wages": 15000, "ncp_days": 0}]
+        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
     })
     fee = test_db.query(SubscriptionFee).filter(
         SubscriptionFee.establishment_id == est_id, SubscriptionFee.month == "Mar"
@@ -579,7 +579,7 @@ def test_month_unlocks_once_previous_month_paid(consultant_a, test_db):
     test_db.commit()
 
     res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 1, "employees": [{"member_id": "M1", "gross_wages": 15000, "wages": 15000, "ncp_days": 0}]
+        "month_idx": 1, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
     })
     assert res.status_code == 200, res.text
 
@@ -590,7 +590,7 @@ def test_superadmin_bypasses_monthly_wage_entry_gating(superadmin_session, consu
     consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000006"})
     superadmin_session.set_establishment(est_id)
     res = superadmin_session.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 5, "employees": [{"member_id": "M1", "gross_wages": 15000, "wages": 15000, "ncp_days": 0}]
+        "month_idx": 5, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
     })
     assert res.status_code == 200, res.text
 ```
