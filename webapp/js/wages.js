@@ -943,8 +943,6 @@ App.registerPage('wage-entry', async (container) => {
 
   currentWagesData = await App.get(`/api/years/${currentYearKey}/wages`);
 
-  window._entryLockStatus = App.isSuperadmin() ? null : await App.get('/api/establishment/entry-lock-status').catch(() => null);
-
   // Ensure master employees are loaded
   const { employees: masterEmployees } = await App.get('/api/employees');
   window._masterEmployees = masterEmployees;
@@ -961,24 +959,16 @@ App.registerPage('wage-entry', async (container) => {
   } catch (e) { }
 
   const mths = constantsCache.month_short_names;
-  // Gate on next_open_month, not merely locked_month -- a month strictly AFTER it is
-  // always blocked (skipping ahead), even when next_open_month itself isn't currently
-  // locked for any reason. next_open_month itself is only disabled when locked_month
-  // says so -- otherwise it's the legitimate next slot and must stay enabled. See
-  // get_entry_lock_status / bulk_month_wages in webapp/app.py for the full rationale.
-  const nextOpen = window._entryLockStatus && window._entryLockStatus.next_open_month;
-  const isLockedField = window._entryLockStatus && window._entryLockStatus.locked_month;
-  // Compare chronologically (year_from, month_idx), not year_key equality -- a month in
-  // a LATER financial year than the next-open one is also at/after the boundary, not
-  // just months within the exact next-open year (Finding 2).
-  const nextOpenYearFrom = nextOpen ? parseInt(nextOpen.year_key.split('-')[0], 10) : null;
+  // Months are free-form now -- the only thing that can still disable a month in this
+  // dropdown is the calendar ceiling (a month that hasn't ended yet in real life),
+  // which applies uniformly regardless of which year is selected. Superadmin bypasses
+  // it entirely, same as the backend (webapp/app.py, bulk_month_wages).
+  const maxEnterable = constantsCache.max_enterable_month;
   const currentYearFrom = parseInt(currentYearKey.split('-')[0], 10);
   const isDisabled = (i) => {
-    if (!nextOpen) return false;
-    const isAfter = currentYearFrom > nextOpenYearFrom || (currentYearFrom === nextOpenYearFrom && i > nextOpen.month_idx);
-    if (isAfter) return true;
-    const isExactlyNextOpen = currentYearFrom === nextOpenYearFrom && i === nextOpen.month_idx;
-    return isExactlyNextOpen && !!isLockedField;
+    if (App.isSuperadmin() || !maxEnterable) return false;
+    const maxYearFrom = parseInt(maxEnterable.year_key.split('-')[0], 10);
+    return currentYearFrom > maxYearFrom || (currentYearFrom === maxYearFrom && i > maxEnterable.month_idx);
   };
   const monthOptions = mths.map((m, i) => {
     const isLocked = isDisabled(i);
@@ -1735,56 +1725,23 @@ window.calcBulkRow = (tr) => {
 
 window.saveMonthlyWages = async () => {
   const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
-  const nextOpen = window._entryLockStatus && window._entryLockStatus.next_open_month;
-  const lock = window._entryLockStatus && window._entryLockStatus.locked_month;
-  if (nextOpen) {
-    // Compare chronologically (year_from, month_idx), not year_key equality -- a save
-    // into a LATER financial year than next_open_month must also be blocked
-    // client-side (Finding 2), matching the backend's chronological comparison.
-    const nextOpenYearFrom = parseInt(nextOpen.year_key.split('-')[0], 10);
+  // Months are free-form now -- only the calendar ceiling can still block a save,
+  // mirrored client-side from the same maxEnterable used to build the month dropdown
+  // above. Superadmin bypasses it entirely, matching the backend.
+  const maxEnterable = constantsCache.max_enterable_month;
+  if (!App.isSuperadmin() && maxEnterable) {
+    const maxYearFrom = parseInt(maxEnterable.year_key.split('-')[0], 10);
     const currentYearFrom = parseInt(currentYearKey.split('-')[0], 10);
-    const isAtOrAfterNextOpen = currentYearFrom > nextOpenYearFrom || (currentYearFrom === nextOpenYearFrom && monthIdx >= nextOpen.month_idx);
-    const isExactlyNextOpen = currentYearFrom === nextOpenYearFrom && monthIdx === nextOpen.month_idx;
-    const monthShortNames = constantsCache.month_short_names;
-
-    if (isAtOrAfterNextOpen && !isExactlyNextOpen) {
-      // Skipping straight past a month that hasn't been entered yet, even though
-      // that month itself might not currently carry a lock reason.
-      App.toast(`${nextOpen.month_abbr} ${nextOpen.year_key} must be entered before you can enter ${monthShortNames[monthIdx]} ${currentYearKey}.`, 'error');
-      return;
-    }
-
-    if (isExactlyNextOpen && lock) {
-      if (lock.reason === 'not_yet_due') {
-        // The locked month itself hasn't finished on the calendar yet -- naming a
-        // "prior month" makes no sense here, since payment isn't the issue. Mirrors
-        // the backend's "opens on" date math (webapp/app.py, bulk_month_wages).
-        const lockYearFrom = parseInt(lock.year_key.split('-')[0], 10);
-        let calMonth, calYear;
-        if (lock.month_idx <= 9) { calMonth = lock.month_idx + 3; calYear = lockYearFrom; }
-        else { calMonth = lock.month_idx - 9; calYear = lockYearFrom + 1; }
-        let opensMonth = calMonth + 1, opensYear = calYear;
-        if (opensMonth > 12) { opensMonth = 1; opensYear += 1; }
-        const opensStr = `01-${String(opensMonth).padStart(2, '0')}-${opensYear}`;
-        App.toast(`${lock.month_abbr} ${lock.year_key} cannot be entered until that month has ended -- it opens on ${opensStr}.`, 'error');
-        return;
-      }
-      // Name the actual PRIOR month that must be entered/paid (not the locked month
-      // itself, which is self-contradictory -- "Apr must be entered before you can
-      // enter Apr"). Mirrors the backend's bulk_month_wages 409 message construction
-      // (webapp/app.py), including the Feb-of-previous-year wraparound (Finding 3).
-      const lockYearFrom = parseInt(lock.year_key.split('-')[0], 10);
-      const prevMonthIdx = lock.month_idx - 1;
-      let prevAbbr, prevYearKey;
-      if (prevMonthIdx >= 0) {
-        prevAbbr = monthShortNames[prevMonthIdx];
-        prevYearKey = lock.year_key;
-      } else {
-        prevAbbr = monthShortNames[11];
-        const prevYearFrom = lockYearFrom - 1;
-        prevYearKey = `${prevYearFrom}-${String(prevYearFrom + 1).slice(-2)}`;
-      }
-      App.toast(`${prevAbbr} ${prevYearKey} must be entered and its fee paid before you can enter ${monthShortNames[monthIdx]} ${currentYearKey}.`, 'error');
+    const isAfterCeiling = currentYearFrom > maxYearFrom || (currentYearFrom === maxYearFrom && monthIdx > maxEnterable.month_idx);
+    if (isAfterCeiling) {
+      const monthShortNames = constantsCache.month_short_names;
+      let calMonth, calYear;
+      if (monthIdx <= 9) { calMonth = monthIdx + 3; calYear = currentYearFrom; }
+      else { calMonth = monthIdx - 9; calYear = currentYearFrom + 1; }
+      let opensMonth = calMonth + 1, opensYear = calYear;
+      if (opensMonth > 12) { opensMonth = 1; opensYear += 1; }
+      const opensStr = `01-${String(opensMonth).padStart(2, '0')}-${opensYear}`;
+      App.toast(`${monthShortNames[monthIdx]} ${currentYearKey} cannot be entered until that month has ended -- it opens on ${opensStr}.`, 'error');
       return;
     }
   }
