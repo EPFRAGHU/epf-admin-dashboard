@@ -358,6 +358,14 @@ def test_constants_endpoint_includes_short_month_names(client):
     assert body["months"][0] == "Mar Paid in Apr"
 
 
+def test_constants_endpoint_includes_max_enterable_month(client):
+    with patch("webapp.app.date", _FrozenDate):
+        res = client.get("/api/constants")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["max_enterable_month"] == {"year_key": "2026-27", "month_idx": 4}  # Jul, per _FrozenDate = 2026-08-26
+
+
 def test_legacy_wage_endpoint_writes_any_month_freely(consultant_a):
     """POST /api/years/{key}/wages (the older 12-month-at-once endpoint) used to carry
     a stopgap guard against smuggling data past the entry lock (Finding 4 in the prior

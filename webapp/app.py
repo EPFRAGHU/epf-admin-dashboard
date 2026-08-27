@@ -6210,6 +6210,7 @@ async def import_master_file(
 # ── Constants ─────────────────────────────────────────────────────────────
 @app.get("/api/constants")
 async def constants():
+    max_year_key, max_month_idx = get_max_enterable_month()
     return {
         "months": list(MONTHS),
         "month_short_names": list(MONTH_SHORT_NAMES),
@@ -6218,6 +6219,11 @@ async def constants():
             {"v": SCHEME_PRE_1997, "l": "Pre-1997 (EPF + FPF)"},
             {"v": SCHEME_POST_1997, "l": "1997-98 onwards (EPF 12% + EPS 8.33%)"},
         ],
+        # Pure calendar fact, independent of any establishment -- the latest
+        # (year_key, month_idx) wage entry is ever allowed for. Drives the Monthly
+        # Wage Entry month selector's calendar-ceiling disabling client-side
+        # (webapp/js/wages.js) now that per-month server-side locking is gone.
+        "max_enterable_month": {"year_key": max_year_key, "month_idx": max_month_idx},
     }
 
 
