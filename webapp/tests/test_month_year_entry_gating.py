@@ -110,60 +110,6 @@ def _load_est_and_project(est_id):
     return db, est_obj, project
 
 
-def test_lock_status_reports_coverage_year_as_next_year_to_add_when_no_years_exist(consultant_a):
-    est_id = _create_est(consultant_a, "GATE001", coverage_date="01-04-2026")
-    db, est_obj, project = _load_est_and_project(est_id)
-    try:
-        status = get_entry_lock_status(db, est_obj, project)
-        assert status["coverage_year_key"] == "2026-27"
-        assert status["next_year_to_add"] == "2026-27"
-        assert status["locked_month"] is None
-    finally:
-        db.close()
-
-
-def test_lock_status_locks_second_month_until_first_is_paid(consultant_a):
-    est_id = _create_est(consultant_a, "GATE002", coverage_date="01-04-2026")
-    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000001"})
-    # Mar (month_idx 0) gets wage data but is never paid.
-    res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    assert res.status_code == 200, res.text
-
-    db, est_obj, project = _load_est_and_project(est_id)
-    try:
-        status = get_entry_lock_status(db, est_obj, project)
-        assert status["next_year_to_add"] is None
-        assert status["locked_month"] == {"year_key": "2026-27", "month_idx": 1, "month_abbr": "Apr", "reason": "unpaid"}
-    finally:
-        db.close()
-
-
-def test_lock_status_unlocks_second_month_once_first_is_paid(consultant_a, test_db):
-    from webapp.database import SubscriptionFee
-    est_id = _create_est(consultant_a, "GATE003", coverage_date="01-04-2026")
-    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000002"})
-    res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    assert res.status_code == 200, res.text
-    fee = test_db.query(SubscriptionFee).filter(
-        SubscriptionFee.establishment_id == est_id, SubscriptionFee.month == "Mar"
-    ).first()
-    fee.is_paid = True
-    test_db.commit()
-
-    db, est_obj, project = _load_est_and_project(est_id)
-    try:
-        status = get_entry_lock_status(db, est_obj, project)
-        assert status["locked_month"] is None
-    finally:
-        db.close()
-
-
 def test_create_first_year_must_match_coverage_year(consultant_a):
     _create_est(consultant_a, "GATEYR001", coverage_date="01-04-2026")
     res = consultant_a.post("/api/years", json={"year_from": "2027", "year_to": "2028"})
@@ -328,8 +274,93 @@ def test_entry_lock_status_endpoint_reports_current_boundary(consultant_a):
     assert res.status_code == 200
     body = res.json()
     assert body["coverage_year_key"] == "2026-27"
-    assert body["next_year_to_add"] == "2026-27"
-    assert body["locked_month"] is None
+    assert body["can_add_year"] is True
+    assert body["blocking_year"] is None
+
+
+def test_lock_status_blocking_year_is_none_when_only_year_is_fully_paid(consultant_a, superadmin_session, test_db):
+    from webapp.database import SubscriptionFee
+    est_id = _create_est(consultant_a, "GATESTATUS002", coverage_date="01-04-2026")
+    superadmin_session.set_establishment(est_id)
+    superadmin_session.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    for m in ["Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]:
+        test_db.add(SubscriptionFee(establishment_id=est_id, financial_year="2026-27", month=m,
+                                     employee_count=0, amount_due=0, is_paid=True, billing_mode="per_employee"))
+    test_db.commit()
+
+    db, est_obj, project = _load_est_and_project(est_id)
+    try:
+        status = get_entry_lock_status(db, est_obj, project)
+        assert status["can_add_year"] is True
+        assert status["blocking_year"] is None
+    finally:
+        db.close()
+
+
+def test_lock_status_blocking_year_reports_the_most_recently_added_unpaid_year(consultant_a, superadmin_session):
+    est_id = _create_est(consultant_a, "GATESTATUS003", coverage_date="01-04-2026")
+    superadmin_session.set_establishment(est_id)
+    superadmin_session.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000060"})
+    res = superadmin_session.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    assert res.status_code == 200, res.text
+    # Mar 2026-27 has wage data and is unpaid -- this is the only (and therefore most
+    # recently added) year, so it must block.
+
+    db, est_obj, project = _load_est_and_project(est_id)
+    try:
+        status = get_entry_lock_status(db, est_obj, project)
+        assert status["can_add_year"] is False
+        assert status["blocking_year"]["year_key"] == "2026-27"
+        assert status["blocking_year"]["amount_due"] > 0
+    finally:
+        db.close()
+
+
+def test_lock_status_ignores_older_years_and_only_checks_the_most_recently_added_one(consultant_a, superadmin_session, test_db):
+    """A year added earlier being unpaid must NOT block further additions once a LATER-
+    added year (even if it's chronologically earlier as a financial year) is fully
+    paid -- only the most-recently-ADDED year matters."""
+    from webapp.database import SubscriptionFee
+    est_id = _create_est(consultant_a, "GATESTATUS004", coverage_date="01-04-2020")
+    superadmin_session.set_establishment(est_id)
+    # Superadmin backfills 2020-21 (added first) and leaves it with no fee rows at all
+    # (nothing billed, nothing paid) -- irrelevant, since it won't be "most recent".
+    res1 = superadmin_session.post("/api/years", json={"year_from": "2020", "year_to": "2021"})
+    assert res1.status_code == 200, res1.text
+
+    # 2026-27 is added SECOND (even though it's a later FY) and paid in full. Seeded via
+    # superadmin (same as 2020-21 above) purely to sidestep add_year's/bulk_month_wages's
+    # non-superadmin gating -- not yet updated to the new get_entry_lock_status contract
+    # until Tasks 3/4 land; this test is only about get_entry_lock_status itself.
+    res2 = superadmin_session.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    assert res2.status_code == 200, res2.text
+    for m in ["Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]:
+        test_db.add(SubscriptionFee(establishment_id=est_id, financial_year="2026-27", month=m,
+                                     employee_count=0, amount_due=0, is_paid=True, billing_mode="per_employee"))
+    test_db.commit()
+
+    db, est_obj, project = _load_est_and_project(est_id)
+    try:
+        status = get_entry_lock_status(db, est_obj, project)
+        assert status["can_add_year"] is True
+        assert status["blocking_year"] is None
+    finally:
+        db.close()
+
+
+def test_lock_status_can_add_year_true_when_no_years_exist_yet(consultant_a):
+    est_id = _create_est(consultant_a, "GATESTATUS005", coverage_date="01-04-2026")
+    db, est_obj, project = _load_est_and_project(est_id)
+    try:
+        status = get_entry_lock_status(db, est_obj, project)
+        assert status["coverage_year_key"] == "2026-27"
+        assert status["can_add_year"] is True
+        assert status["blocking_year"] is None
+    finally:
+        db.close()
 
 
 def test_constants_endpoint_includes_short_month_names(client):
@@ -554,25 +585,6 @@ def _enter_and_pay_month(consultant_a, test_db, est_id, key, month_idx, month_ab
     test_db.commit()
 
 
-def test_lock_status_locks_current_month_even_when_fully_paid(consultant_a, test_db):
-    est_id = _create_est(consultant_a, "CEIL001", coverage_date="01-04-2026")
-    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000040"})
-
-    with patch("webapp.app.date", _FrozenDate):
-        for m_idx, m_abbr in enumerate(["Mar", "Apr", "May", "Jun", "Jul"]):
-            _enter_and_pay_month(consultant_a, test_db, est_id, "2026-27", m_idx, m_abbr)
-
-        db, est_obj, project = _load_est_and_project(est_id)
-        try:
-            status = get_entry_lock_status(db, est_obj, project)
-            # Every month through Jul is entered and paid -- yet Aug is still locked,
-            # because Aug 2026 hasn't ended on the calendar, not because of payment.
-            assert status["locked_month"] == {"year_key": "2026-27", "month_idx": 5, "month_abbr": "Aug", "reason": "not_yet_due"}
-        finally:
-            db.close()
-
-
 def test_cannot_save_current_month_wages_even_fully_paid_through_previous(consultant_a, test_db):
     est_id = _create_est(consultant_a, "CEIL002", coverage_date="01-04-2026")
     consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
@@ -603,39 +615,6 @@ def test_can_save_the_last_fully_ended_month(consultant_a, test_db):
             "month_idx": 4, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
         })
         assert res.status_code == 200, res.text
-
-
-def test_cannot_skip_ahead_of_an_open_but_unentered_month(consultant_a, test_db):
-    """Even when the very next month happens to carry no lock reason (it's simply
-    open, waiting to be entered), a save must land on it -- not skip past it to a
-    later month in the same year."""
-    est_id = _create_est(consultant_a, "CEIL006", coverage_date="01-04-2026")
-    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000049"})
-
-    with patch("webapp.app.date", _FrozenDate):
-        _enter_and_pay_month(consultant_a, test_db, est_id, "2026-27", 0, "Mar")
-        # Apr (month_idx 1) is now open (Mar paid) but not yet entered. Try to skip
-        # straight to Jun (month_idx 3) instead.
-        res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-            "month_idx": 3, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-        })
-        assert res.status_code == 409
-        assert "Apr 2026-27 must be entered before you can enter" in res.text
-
-        # Confirm Apr itself is genuinely open (not blocked by a lock reason).
-        db, est_obj, project = _load_est_and_project(est_id)
-        try:
-            status = get_entry_lock_status(db, est_obj, project)
-            assert status["next_open_month"] == {"year_key": "2026-27", "month_idx": 1, "month_abbr": "Apr"}
-            assert status["locked_month"] is None
-        finally:
-            db.close()
-
-        res2 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-            "month_idx": 1, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-        })
-        assert res2.status_code == 200, res2.text
 
 
 def test_trial_establishment_still_bound_by_calendar_ceiling(superadmin_session, consultant_a, test_db):
@@ -804,70 +783,3 @@ def test_entering_a_later_month_does_not_wipe_an_earlier_months_wages_for_long_m
     finally:
         db.close()
 
-
-# ── Performance: get_entry_lock_status batches its per-year SubscriptionFee syncs into
-# a single commit instead of one round-trip per year walked (see its call to
-# sync_subscription_fees_for_year(..., commit=False)). Prove the batching didn't turn
-# into silent data loss: everything synced across a multi-year walk must still be
-# durably committed, visible from a brand-new DB session/connection, not just flushed
-# within the walk's own session. ──
-
-def test_entry_lock_status_multi_year_walk_persists_all_synced_years(consultant_a, superadmin_session, test_db):
-    from webapp.database import SubscriptionFee
-
-    class _FarFutureDate(_real_date):
-        """2027-28's months must be calendar-past for this test, or the walk would stop
-        on the "not_yet_due" calendar ceiling instead of reaching an "unpaid" month --
-        which would defeat the point of walking two years' worth of syncs."""
-        _frozen = _real_date(2028, 6, 1)
-
-        @classmethod
-        def today(cls):
-            return cls._frozen
-
-    est_id = _create_est(consultant_a, "PERFWALK001", coverage_date="01-04-2026")
-    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000051"})
-    superadmin_session.set_establishment(est_id)
-
-    with patch("webapp.app.date", _FarFutureDate):
-        # Fill every month of 2026-27 (superadmin bypasses the chronological gate) so the
-        # walk sails through this whole year and continues into the next one.
-        for month_idx in range(12):
-            res = superadmin_session.post("/api/years/2026-27/wages/bulk_month", json={
-                "month_idx": month_idx, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-            })
-            assert res.status_code == 200, res.text
-        test_db.query(SubscriptionFee).filter(
-            SubscriptionFee.establishment_id == est_id, SubscriptionFee.financial_year == "2026-27"
-        ).update({"is_paid": True})
-        test_db.commit()
-
-        # 2027-28 exists but only its first month has data, and it's unpaid -- the walk
-        # must reach into this second year to discover that before it can lock anything.
-        superadmin_session.post("/api/years", json={"year_from": "2027", "year_to": "2028"})
-        res_apr = superadmin_session.post("/api/years/2027-28/wages/bulk_month", json={
-            "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-        })
-        assert res_apr.status_code == 200, res_apr.text
-
-        db, est_obj, project = _load_est_and_project(est_id)
-        try:
-            status = get_entry_lock_status(db, est_obj, project)
-            assert status["locked_month"] == {"year_key": "2027-28", "month_idx": 1, "month_abbr": "Apr", "reason": "unpaid"}
-        finally:
-            db.close()
-
-    # A completely fresh session/connection -- not the one the walk ran in -- must see
-    # every row the walk synced across BOTH years. If commit=False rows were ever left
-    # uncommitted, this would come back empty for 2027-28.
-    verify_db = SessionLocal()
-    try:
-        assert verify_db.query(SubscriptionFee).filter(
-            SubscriptionFee.establishment_id == est_id, SubscriptionFee.financial_year == "2026-27"
-        ).count() == 12
-        assert verify_db.query(SubscriptionFee).filter(
-            SubscriptionFee.establishment_id == est_id, SubscriptionFee.financial_year == "2027-28"
-        ).count() == 12
-    finally:
-        verify_db.close()

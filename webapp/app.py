@@ -281,85 +281,41 @@ def get_max_enterable_month() -> Tuple[str, int]:
 
 
 def get_entry_lock_status(db: Session, est_obj: Establishment, project: Project) -> dict:
-    """Walks this establishment's financial years in coverage-date chronological order
-    and reports the single current entry-gating boundary.
+    """Reports whether a new financial year may be added right now.
 
-    Returns {"coverage_year_key": str|None, "next_year_to_add": str|None,
-             "next_open_month": {"year_key": str, "month_idx": int, "month_abbr": str} | None,
-             "locked_month": {"year_key": str, "month_idx": int, "month_abbr": str,
-                               "reason": "unpaid"|"not_yet_due"} | None}
+    Returns {"coverage_year_key": str|None, "can_add_year": bool,
+             "blocking_year": {"year_key": str, "amount_due": float} | None}
 
-    - next_year_to_add is set when the walk reaches a year that doesn't exist in
-      project.years yet -- POST /api/years may only create exactly this year next.
-    - next_open_month is the first month (within an existing year) that has no wage
-      data yet -- set whenever such a month exists, REGARDLESS of whether entry into
-      it is currently allowed. Callers use this to reject a save that skips ahead of
-      it entirely (e.g. straight into August while April is still empty, even though
-      April itself isn't individually "locked" for any reason) -- a save must land on
-      next_open_month itself, never past it.
-    - locked_month is next_open_month again, but ONLY when that specific month is
-      itself blocked: either (a) the month hasn't ended yet on the calendar
-      ("not_yet_due", checked first -- a month that hasn't happened yet can never be
-      entered no matter how caught-up on payment the establishment is), or (b) its
-      immediately-preceding month isn't paid ("unpaid"). None when next_open_month is
-      open for entry right now.
-      POST /api/years/{key}/wages/bulk_month must reject a save if the target is at
-      or after next_open_month AND (the target is strictly after next_open_month, OR
-      locked_month is set) -- see caller.
-    - All three (next_year_to_add, next_open_month, locked_month) None means every
-      existing year is fully paid/data-filled and the next chronological year hasn't
-      been requested yet, or coverage_year_key itself is unknown -- shouldn't happen
-      once coverage_date is mandatory, but fails open rather than blocking anything.
+    Financial years may be added in any order (backfill or forward-fill), not
+    strictly chronologically -- see
+    docs/superpowers/specs/2026-08-27-flexible-year-order-entry-gating-design.md.
+    The only ordering rule left is: the most-recently-ADDED year (by
+    YearRecord.added_at, NOT financial-year order -- years can be added out of
+    order) must have no outstanding subscription-fee due before another year can
+    be added. Trial establishments are exempt from this payment condition (never
+    from the coverage_date floor, which callers check separately using
+    coverage_year_key -- see POST /api/years).
+
+    coverage_year_key is None only for a legacy establishment with no
+    coverage_date on file -- callers fail open (no gating at all) in that case,
+    same as before this rewrite.
     """
     coverage_key = get_coverage_year_key(project)
-    result = {"coverage_year_key": coverage_key, "next_year_to_add": None, "next_open_month": None, "locked_month": None}
-    if not coverage_key:
+    result = {"coverage_year_key": coverage_key, "can_add_year": True, "blocking_year": None}
+    if not project.years:
         return result
 
-    # A trial establishment must never be payment-locked -- every other gate in the app
-    # (get_unpaid_months_detail_for_year, the ECR download gates, ...) already exempts
-    # trial establishments via is_establishment_in_trial. Note this ONLY relaxes the
-    # payment condition (prev_month_satisfied below); it deliberately does NOT skip the
-    # walk itself, so next_year_to_add's chronological year-order check (used by
-    # add_year, which is about ordering, not payment) still reflects the real state.
-    # It also never relaxes the calendar ceiling below -- being in a trial doesn't make
-    # an unfinished month any more finished.
-    in_trial = is_establishment_in_trial(est_obj)
-    max_year_key, max_month_idx = get_max_enterable_month()
-    max_year_from = int(max_year_key.split("-")[0])
+    latest_key = max(project.years, key=lambda k: datetime.fromisoformat(project.years[k].added_at))
 
-    year_from = int(coverage_key.split("-")[0])
-    prev_month_satisfied = True  # nothing precedes the very first month
+    if is_establishment_in_trial(est_obj):
+        return result
 
-    while True:
-        year_key = f"{year_from}-{str(year_from + 1)[-2:]}"
-        if year_key not in project.years:
-            result["next_year_to_add"] = year_key
-            db.commit()  # persist any earlier years' syncs from this same walk (deferred below)
-            return result
-
-        # commit=False: this walk may sync several years back-to-back (an establishment
-        # with N years of history means N calls here) -- committing after every single one
-        # is N sequential round-trips to Neon Postgres, which is cross-region and measurably
-        # slow (see sync_subscription_fees_for_year's own docstring for the same lesson
-        # learned at the single-year/12-month level). We commit once, at whichever return
-        # below actually ends the walk, instead.
-        fee_rows = sync_subscription_fees_for_year(db, est_obj, project, year_key, commit=False) or {}
-        for month_idx in range(12):
-            month_abbr = MONTH_SHORT_NAMES[month_idx]
-            has_data = count_ecr_employees_for_month(project, year_key, month_idx) > 0
-            if not has_data:
-                result["next_open_month"] = {"year_key": year_key, "month_idx": month_idx, "month_abbr": month_abbr}
-                if (year_from, month_idx) > (max_year_from, max_month_idx):
-                    result["locked_month"] = {"year_key": year_key, "month_idx": month_idx, "month_abbr": month_abbr, "reason": "not_yet_due"}
-                elif not prev_month_satisfied:
-                    result["locked_month"] = {"year_key": year_key, "month_idx": month_idx, "month_abbr": month_abbr, "reason": "unpaid"}
-                db.commit()
-                return result
-            fee_row = fee_rows.get(month_abbr)
-            prev_month_satisfied = in_trial or (fee_row is None) or fee_row.is_paid or fee_row.amount_due <= 0
-
-        year_from += 1
+    fee_rows = sync_subscription_fees_for_year(db, est_obj, project, latest_key) or {}
+    amount_due = round(sum(row.amount_due for row in fee_rows.values() if not row.is_paid and row.amount_due > 0), 2)
+    if amount_due > 0:
+        result["can_add_year"] = False
+        result["blocking_year"] = {"year_key": latest_key, "amount_due": amount_due}
+    return result
 
 
 def apply_advance_credit_if_available(db: Session, est_obj: Establishment, fee_row: SubscriptionFee):
@@ -399,13 +355,8 @@ def apply_advance_credit_if_available(db: Session, est_obj: Establishment, fee_r
     )
 
 
-def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project: Project, year_key: str, commit: bool = True):
+def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project: Project, year_key: str):
     """Sync or auto-generate 12-month subscription fee records for an establishment and financial year.
-
-    commit=False lets a caller that syncs several years in one request (e.g.
-    get_entry_lock_status's chronological walk) batch them into a single commit instead
-    of one round-trip per year -- see that function for why this matters. Every other
-    caller wants the default (commit immediately, as before).
 
     Fetches all 12 months' existing rows in a single query up front (instead of one
     query per month) -- this endpoint is on the hot path for page loads (Reports,
@@ -483,8 +434,7 @@ def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project
 
         existing_rows[month_abbr] = fee_row
 
-    if commit:
-        db.commit()
+    db.commit()
     return existing_rows
 
 def is_month_overdue(year_key: str, month_idx: int) -> bool:
