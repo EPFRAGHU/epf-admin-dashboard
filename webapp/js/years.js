@@ -9,7 +9,7 @@ App.registerPage('years', async (container) => {
   if (!__constants) __constants = await App.get('/api/constants');
   const { years } = await App.get('/api/years');
   __lockStatus = await App.get('/api/establishment/entry-lock-status').catch(() => null);
-  const nextYear = __lockStatus && __lockStatus.next_year_to_add;
+  const blockingYear = __lockStatus && __lockStatus.blocking_year;
 
   container.innerHTML = `<div class="fade-in">
     <div class="page-header">
@@ -22,8 +22,10 @@ App.registerPage('years', async (container) => {
         <button class="btn btn-primary" onclick="showYearModal()">+ Add Year</button>
       </div>
     </div>
-    ${nextYear ? `<div class="card" style="padding:10px 16px; margin-bottom:16px; font-size:13px; color:var(--text2);">
-      📌 Next year you can add: <strong style="color:var(--text1);">${App.esc(nextYear)}</strong>
+    ${blockingYear ? `<div class="card" style="padding:10px 16px; margin-bottom:16px; font-size:13px; color:var(--text2);">
+      💳 FY <strong style="color:var(--text1);">${App.esc(blockingYear.year_key)}</strong> has
+      <strong style="color:var(--text1);">₹${App.esc(String(blockingYear.amount_due))}</strong> outstanding in
+      subscription fees — pay it before adding another financial year.
     </div>` : ''}
 
     <div class="year-grid">
@@ -115,13 +117,11 @@ function showYearModal(yr = null) {
   // Initialize visibility
   setTimeout(() => {
     if (!isEdit) {
-      const nextYear = __lockStatus && __lockStatus.next_year_to_add;
-      if (nextYear) {
-        document.getElementById('y-from').value = nextYear.split('-')[0];
-        autoFillToYear();
-      } else {
-        autoFillRates();
-      }
+      // Years can now be added in any order (backfill or forward-fill) -- no single
+      // "next year" to force into the field. Leave it blank; autoFillToYear() (wired
+      // to oninput on y-from) fills the scheme/rates in once the consultant/employer
+      // types a year.
+      autoFillRates();
     } else {
       toggleSchemeFields(yr.scheme);
     }
@@ -200,15 +200,16 @@ window.saveYear = async (key) => {
       if (!localStorage.getItem(seenKey)) {
         localStorage.setItem(seenKey, '1');
         App.openModal(
-          'How Monthly Wage Entry Works Now',
+          'How Wage Entry Works Now',
           `<p style="color:var(--text2); font-size:13px; line-height:1.6;">
-            You can enter wages one month at a time, starting from your establishment's EPF Coverage Date.
-            Each month unlocks for entry once the previous month's subscription fee is paid
-            (or auto-covered from your Advance Credit balance).
+            You can add financial years in any order — backfill an older year or jump straight to a
+            recent one — as long as it's not before your establishment's EPF Coverage Date. Within a
+            year, months can be entered in any order too.
           </p>
           <p style="color:var(--text2); font-size:13px; line-height:1.6; margin-top:10px;">
-            Need to enter an earlier month or year? Add that financial year the same way you just did --
-            you'll be asked to pay it in the same chronological order.
+            Before adding another financial year, the one you most recently added needs its
+            subscription fees fully paid (or auto-covered from your Advance Credit balance). A month
+            can never be entered before it's actually ended on the calendar, no matter which year.
           </p>`,
           `<button class="btn btn-primary" onclick="App.closeModal()">Got it</button>`
         );
