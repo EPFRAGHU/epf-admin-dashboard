@@ -520,9 +520,8 @@ def test_trial_establishment_still_bound_by_calendar_ceiling(superadmin_session,
     consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000043"})
 
     with patch("webapp.app.date", _FrozenDate):
-        # Trial exempts payment, so these all succeed unpaid -- filling Mar..Jul makes
-        # Aug (month_idx 5) itself the next_open_month, isolating the calendar-ceiling
-        # check from the (separate) skip-ahead check.
+        # Trial exempts payment, so these all succeed unpaid -- filling Mar..Jul, then
+        # Aug (month_idx 5) is the one that must hit the calendar ceiling.
         for m_idx in range(5):
             res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
                 "month_idx": m_idx, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
