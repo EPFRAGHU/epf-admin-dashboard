@@ -123,19 +123,100 @@ def test_create_first_year_matching_coverage_year_succeeds(consultant_a):
     assert res.status_code == 200, res.text
 
 
-def test_cannot_create_second_year_before_first_is_fully_paid(consultant_a):
-    _create_est(consultant_a, "GATEYR003", coverage_date="01-04-2026")
-    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    res = consultant_a.post("/api/years", json={"year_from": "2027", "year_to": "2028"})
-    assert res.status_code == 400
-    assert "2026-27" in res.text
-
-
 def test_superadmin_bypasses_chronological_year_order(superadmin_session, consultant_a):
     est_id = _create_est(consultant_a, "GATEYR004", coverage_date="01-04-2026")
     superadmin_session.set_establishment(est_id)
     res = superadmin_session.post("/api/years", json={"year_from": "2030", "year_to": "2031"})
     assert res.status_code == 200, res.text
+
+
+def test_cannot_add_year_before_coverage_year(consultant_a):
+    _create_est(consultant_a, "GATEYR007", coverage_date="01-04-2026")
+    res = consultant_a.post("/api/years", json={"year_from": "2025", "year_to": "2026"})
+    assert res.status_code == 400
+    assert "2026-27" in res.text
+
+
+def test_can_add_a_forward_year_directly_as_the_first_year(consultant_a):
+    """Years no longer need to exactly match the coverage year -- only be at or after
+    it. A consultant onboarding an establishment can jump straight to a current/recent
+    year without being forced through the coverage year first."""
+    _create_est(consultant_a, "GATEYR008", coverage_date="01-04-2020")
+    res = consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    assert res.status_code == 200, res.text
+
+
+def test_can_backfill_an_earlier_year_after_forward_filling_once_it_is_paid(consultant_a, test_db):
+    """The core flexible-order scenario: add a recent year first, pay it off, then go
+    back and add an older year -- order is free as long as coverage_date is respected
+    and whatever was added most recently is paid up."""
+    from webapp.database import SubscriptionFee
+    est_id = _create_est(consultant_a, "GATEYR009", coverage_date="01-04-2020")
+    res1 = consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    assert res1.status_code == 200, res1.text
+    for m in ["Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]:
+        test_db.add(SubscriptionFee(establishment_id=est_id, financial_year="2026-27", month=m,
+                                     employee_count=0, amount_due=0, is_paid=True, billing_mode="per_employee"))
+    test_db.commit()
+
+    res2 = consultant_a.post("/api/years", json={"year_from": "2020", "year_to": "2021"})
+    assert res2.status_code == 200, res2.text
+
+
+def test_cannot_add_another_year_while_most_recently_added_one_is_unpaid(consultant_a, superadmin_session):
+    est_id = _create_est(consultant_a, "GATEYR010", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000061"})
+    # Wage seeding goes through superadmin -- bulk_month_wages's own gating (Task 4)
+    # isn't this test's concern, only add_year's is.
+    superadmin_session.set_establishment(est_id)
+    res_wage = superadmin_session.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    assert res_wage.status_code == 200, res_wage.text
+
+    res = consultant_a.post("/api/years", json={"year_from": "2027", "year_to": "2028"})
+    assert res.status_code == 400
+    assert "2026-27" in res.text
+
+
+def test_trial_establishment_can_add_next_year_despite_unpaid_prior_year(consultant_a, superadmin_session):
+    """Trial establishments must never be payment-locked -- see
+    is_establishment_in_trial. Confirms this now applies at the year-add gate."""
+    est_id = _create_est(consultant_a, "GATETRIAL003", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000062"})
+    superadmin_session.set_establishment(est_id)
+    res_wage = superadmin_session.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    assert res_wage.status_code == 200, res_wage.text
+    # 2026-27 has data and is unpaid -- would block a normal establishment.
+
+    res_trial = superadmin_session.put(f"/api/admin/establishments/{est_id}/trial", json={"trial_ends_on": "2099-12-31"})
+    assert res_trial.status_code == 200, res_trial.text
+
+    res = consultant_a.post("/api/years", json={"year_from": "2027", "year_to": "2028"})
+    assert res.status_code == 200, res.text
+
+
+def test_every_year_addition_logs_an_activity_entry(consultant_a, test_db):
+    """Unlike entry_gating_started (logged once, on the first year only), a new
+    'year.add' entry is logged on EVERY addition -- audit visibility for statutory
+    compliance, per docs/superpowers/specs/2026-08-27-flexible-year-order-entry-gating-design.md."""
+    from webapp.database import ActivityLog, SubscriptionFee
+    est_id = _create_est(consultant_a, "GATEYR011", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    for m in ["Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]:
+        test_db.add(SubscriptionFee(establishment_id=est_id, financial_year="2026-27", month=m,
+                                     employee_count=0, amount_due=0, is_paid=True, billing_mode="per_employee"))
+    test_db.commit()
+    consultant_a.post("/api/years", json={"year_from": "2027", "year_to": "2028"})
+
+    count = test_db.query(ActivityLog).filter(
+        ActivityLog.establishment_id == est_id, ActivityLog.action_type == "year.add"
+    ).count()
+    assert count == 2
 
 
 def test_first_year_creation_logs_activity_entry(consultant_a, test_db):
@@ -403,20 +484,6 @@ def test_trial_establishment_is_never_locked_pending_payment(consultant_a, super
         "month_idx": 1, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
     })
     assert res1.status_code == 200, res1.text
-
-
-def test_trial_status_does_not_break_chronological_year_add_ordering(consultant_a, superadmin_session):
-    """A trial establishment's payment-lock relief must not accidentally disable the
-    (unrelated, non-payment) chronological year-add ordering check in add_year -- that
-    check is driven by next_year_to_add, which must still reflect the real walk result
-    even while the establishment is in trial."""
-    est_id = _create_est(consultant_a, "GATETRIAL002", coverage_date="01-04-2026")
-    superadmin_session.set_establishment(est_id)
-    res_trial = superadmin_session.put(f"/api/admin/establishments/{est_id}/trial", json={"trial_ends_on": "2099-12-31"})
-    assert res_trial.status_code == 200, res_trial.text
-
-    res = consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    assert res.status_code == 200, res.text
 
 
 # ── Finding 2: the wage-save gate must be chronological across years, not just within
