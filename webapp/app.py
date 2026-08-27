@@ -5090,67 +5090,28 @@ async def bulk_month_wages(
     if not (0 <= d.month_idx <= 11):
         raise HTTPException(400, "Invalid month index")
 
-    if current_user.role != "superadmin" and count_ecr_employees_for_month(project, key, d.month_idx) == 0:
-        status = get_entry_lock_status(db, est_obj, project)
-        next_open = status["next_open_month"]
-        if next_open:
-            # Compare chronologically (year_from, month_idx), not year_key equality --
-            # a later financial year (e.g. superadmin-bulk-created for backfill) must
-            # still be gated by an earlier, still-open year, not just an exact
-            # year_key match (Finding 2).
-            target_year_from = int(key.split("-")[0])
-            next_open_year_from = int(next_open["year_key"].split("-")[0])
-            target = (target_year_from, d.month_idx)
-            next_open_key = (next_open_year_from, next_open["month_idx"])
-
-            if target > next_open_key:
-                # Skipping straight past a month that hasn't been entered yet -- even
-                # though that month itself might not carry an active lock reason (e.g.
-                # it's genuinely open right now), entry must land on it first, not jump
-                # ahead of it. Without this, once the very next month happens to be
-                # unlocked, every later month in the same year was reachable directly.
-                raise HTTPException(
-                    409,
-                    f"{next_open['month_abbr']} {next_open['year_key']} must be entered before you can enter "
-                    f"{MONTH_SHORT_NAMES[d.month_idx]} {key}."
-                )
-
-            lock = status["locked_month"]
-            if lock and target == next_open_key:
-                if lock.get("reason") == "not_yet_due":
-                    # The month itself hasn't finished on the calendar yet -- naming a
-                    # "prior month" makes no sense here, since payment isn't the issue.
-                    # "Opens" = the 1st of the calendar month right after this one ends.
-                    year_from = int(lock["year_key"].split("-")[0])
-                    if lock["month_idx"] <= 9:
-                        cal_month, cal_year = lock["month_idx"] + 3, year_from
-                    else:
-                        cal_month, cal_year = lock["month_idx"] - 9, year_from + 1
-                    opens_month, opens_year = cal_month + 1, cal_year
-                    if opens_month > 12:
-                        opens_month, opens_year = 1, opens_year + 1
-                    raise HTTPException(
-                        409,
-                        f"{lock['month_abbr']} {lock['year_key']} cannot be entered until that month has ended "
-                        f"-- it opens on 01-{opens_month:02d}-{opens_year}."
-                    )
-                # lock["month_idx"] is the target month itself, blocked by an unsatisfied
-                # predecessor (see get_entry_lock_status docstring) -- name the actual
-                # blocking month (the one before it) in the error, not the locked month
-                # itself, so the message doesn't say "X must be entered before entering X".
-                prev_month_idx = lock["month_idx"] - 1
-                if prev_month_idx >= 0:
-                    prev_abbr = MONTH_SHORT_NAMES[prev_month_idx]
-                    prev_year_key = lock["year_key"]
-                else:
-                    prev_abbr = MONTH_SHORT_NAMES[11]
-                    prev_year_from = int(lock["year_key"].split("-")[0]) - 1
-                    prev_year_key = f"{prev_year_from}-{str(prev_year_from + 1)[-2:]}"
-                raise HTTPException(
-                    409,
-                    f"{prev_abbr} {prev_year_key} must be entered and its fee paid before you can enter "
-                    f"{MONTH_SHORT_NAMES[d.month_idx]} {key}."
-                )
+    # Months within an already-added year are free-form -- no order, no per-month
+    # payment gate. The only thing that can still block a specific month is the
+    # calendar ceiling: a month that hasn't ended yet in real life can never be
+    # entered, regardless of year or payment status. See
+    # docs/superpowers/specs/2026-08-27-flexible-year-order-entry-gating-design.md.
+    if current_user.role != "superadmin":
+        target_year_from = int(key.split("-")[0])
+        max_year_key, max_month_idx = get_max_enterable_month()
+        max_year_from = int(max_year_key.split("-")[0])
+        if (target_year_from, d.month_idx) > (max_year_from, max_month_idx):
+            if d.month_idx <= 9:
+                cal_month, cal_year = d.month_idx + 3, target_year_from
+            else:
+                cal_month, cal_year = d.month_idx - 9, target_year_from + 1
+            opens_month, opens_year = cal_month + 1, cal_year
+            if opens_month > 12:
+                opens_month, opens_year = 1, opens_year + 1
+            raise HTTPException(
+                409,
+                f"{MONTH_SHORT_NAMES[d.month_idx]} {key} cannot be entered until that month has ended "
+                f"-- it opens on 01-{opens_month:02d}-{opens_year}."
+            )
 
     for emp_update in d.employees:
         if not project.get_master(emp_update.member_id):

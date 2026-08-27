@@ -110,13 +110,6 @@ def _load_est_and_project(est_id):
     return db, est_obj, project
 
 
-def test_create_first_year_must_match_coverage_year(consultant_a):
-    _create_est(consultant_a, "GATEYR001", coverage_date="01-04-2026")
-    res = consultant_a.post("/api/years", json={"year_from": "2027", "year_to": "2028"})
-    assert res.status_code == 400
-    assert "2026-27" in res.text
-
-
 def test_create_first_year_matching_coverage_year_succeeds(consultant_a):
     _create_est(consultant_a, "GATEYR002", coverage_date="01-04-2026")
     res = consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
@@ -261,94 +254,6 @@ def test_superadmin_can_still_bulk_create_years(superadmin_session, consultant_a
     assert res.json()["added"] == 6
 
 
-def test_cannot_save_second_month_wages_before_first_month_is_paid(consultant_a):
-    _create_est(consultant_a, "GATEWAGE001", coverage_date="01-04-2026")
-    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000003"})
-    res1 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    assert res1.status_code == 200, res1.text
-
-    res2 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 1, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    assert res2.status_code == 409
-    assert "Mar" in res2.text
-
-
-def test_re_saving_an_already_entered_month_is_never_blocked(consultant_a, superadmin_session):
-    """Grandfathering: editing a month that already has data must always be allowed,
-    even though it isn't paid yet -- and specifically when that month is PAST the
-    current lock boundary, not just the still-open frontier month. (Resaving the
-    frontier month itself -- the last contiguously-entered month -- would return 200
-    even without any grandfathering check, since the lock boundary always sits at or
-    after the frontier by the walk's own construction; that wouldn't prove anything.)
-    Mar is entered+left unpaid by consultant_a, which locks Apr (month_idx 1) onward.
-    Superadmin then bypasses the lock to seed Jun (month_idx 3) with data. A regular
-    consultant re-saving Jun -- which is past the lock boundary and still unpaid --
-    must still succeed; without the grandfathering skip this would be a 409 (3 >= 1)."""
-    est_id = _create_est(consultant_a, "GATEWAGE002", coverage_date="01-04-2026")
-    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000004"})
-    res0 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    assert res0.status_code == 200, res0.text
-
-    superadmin_session.set_establishment(est_id)
-    res_seed = superadmin_session.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 3, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    assert res_seed.status_code == 200, res_seed.text
-
-    res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 3, "employees": [{"member_id": "M1", "gross_wage": 16000, "epf_wage": 16000, "ncp_days": 0}]
-    })
-    assert res.status_code == 200, res.text
-
-
-def test_month_unlocks_once_previous_month_paid(consultant_a, test_db):
-    from webapp.database import SubscriptionFee
-    est_id = _create_est(consultant_a, "GATEWAGE003", coverage_date="01-04-2026")
-    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000005"})
-    consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    fee = test_db.query(SubscriptionFee).filter(
-        SubscriptionFee.establishment_id == est_id, SubscriptionFee.month == "Mar"
-    ).first()
-    fee.is_paid = True
-    test_db.commit()
-
-    res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 1, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    assert res.status_code == 200, res.text
-
-
-def test_superadmin_bypasses_monthly_wage_entry_gating(superadmin_session, consultant_a):
-    """Establish a REAL active lock first (Mar entered+unpaid locks Apr onward for a
-    regular consultant), then have superadmin save into a month at/after that lock
-    boundary. Without the superadmin bypass this would be a 409 (5 >= 1); saving into
-    an untouched establishment with nothing locked yet (as the original version of this
-    test did) wouldn't distinguish the bypass from "there was nothing to block"."""
-    est_id = _create_est(consultant_a, "GATEWAGE004", coverage_date="01-04-2026")
-    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000006"})
-    res0 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    assert res0.status_code == 200, res0.text
-
-    superadmin_session.set_establishment(est_id)
-    res = superadmin_session.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 5, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    assert res.status_code == 200, res.text
-
-
 def test_entry_lock_status_endpoint_reports_current_boundary(consultant_a):
     _create_est(consultant_a, "GATESTATUS001", coverage_date="01-04-2026")
     res = consultant_a.get("/api/establishment/entry-lock-status")
@@ -451,70 +356,6 @@ def test_constants_endpoint_includes_short_month_names(client):
     assert body["month_short_names"] == ["Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]
     # The existing long-form labels must be untouched -- other pages (ECR, remittances) rely on them.
     assert body["months"][0] == "Mar Paid in Apr"
-
-
-# ── Finding 1: the entry gate must never payment-lock a trial establishment ────────
-
-def test_trial_establishment_is_never_locked_pending_payment(consultant_a, superadmin_session):
-    """Previously get_entry_lock_status never checked is_establishment_in_trial, unlike
-    every other payment gate in the app. A brand-new trial establishment could enter its
-    first month fine, but then got permanently blocked entering month 2 even though it's
-    still within its free trial -- the opposite of what a trial should do."""
-    est_id = _create_est(consultant_a, "GATETRIAL001", coverage_date="01-04-2026")
-    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000010"})
-    res0 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    assert res0.status_code == 200, res0.text
-    # Mar is entered and left unpaid -- outside of a trial this would lock Apr onward.
-
-    superadmin_session.set_establishment(est_id)
-    res_trial = superadmin_session.put(f"/api/admin/establishments/{est_id}/trial", json={"trial_ends_on": "2099-12-31"})
-    assert res_trial.status_code == 200, res_trial.text
-
-    db, est_obj, project = _load_est_and_project(est_id)
-    try:
-        status = get_entry_lock_status(db, est_obj, project)
-        assert status["locked_month"] is None
-    finally:
-        db.close()
-
-    res1 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 1, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    assert res1.status_code == 200, res1.text
-
-
-# ── Finding 2: the wage-save gate must be chronological across years, not just within
-#    the exact locked year_key ──────────────────────────────────────────────────────
-
-def test_wage_save_gate_blocks_later_years_when_earlier_year_is_locked(consultant_a, superadmin_session):
-    """A later financial year must be gated by an earlier, still-locked year -- not just
-    the exact locked year_key. Superadmin's bulk-create (seeding backfill ranges) can
-    leave many years existing at once; the gate previously only compared
-    key == lock['year_key'], so month saves into any LATER year sailed through even
-    while an earlier year sat locked and unpaid."""
-    est_id = _create_est(consultant_a, "GATECHRON001", coverage_date="01-04-2026")
-    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000020"})
-    res0 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    assert res0.status_code == 200, res0.text
-    # Mar 2026-27 is unpaid -- this locks Apr 2026-27 onward chronologically.
-
-    superadmin_session.set_establishment(est_id)
-    res_bulk = superadmin_session.post("/api/years/bulk", json={"start_year": 2026, "end_year": 2028})
-    assert res_bulk.status_code == 200, res_bulk.text
-
-    # The consultant tries to save month 0 (Mar) of the LATER year 2027-28. That year
-    # didn't even exist when the lock was computed, but chronologically it is well past
-    # the still-unpaid 2026-27/Apr boundary and must be blocked too.
-    res = consultant_a.post("/api/years/2027-28/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    assert res.status_code == 409, res.text
 
 
 # ── Finding 4: the older whole-year wages endpoint must not be usable to smuggle data
@@ -637,6 +478,41 @@ def test_get_max_enterable_month_wraps_to_prior_fy_feb_in_march():
         assert get_max_enterable_month() == ("2025-26", 11)  # Feb of the prior FY
 
 
+def test_months_can_be_entered_in_any_order_within_a_year(consultant_a):
+    """Core free-form behavior: entering a later month first, with an earlier month
+    still empty and unpaid, must succeed -- no chronological order within a year."""
+    est_id = _create_est(consultant_a, "GATEFREE001", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000070"})
+
+    res = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 3, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    assert res.status_code == 200, res.text
+
+    res2 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    assert res2.status_code == 200, res2.text
+
+
+def test_months_can_be_entered_regardless_of_prior_month_payment_status(consultant_a):
+    est_id = _create_est(consultant_a, "GATEFREE002", coverage_date="01-04-2026")
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000071"})
+
+    res1 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    assert res1.status_code == 200, res1.text
+    # Mar left unpaid on purpose -- Apr must still be enterable.
+
+    res2 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
+        "month_idx": 1, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
+    })
+    assert res2.status_code == 200, res2.text
+
+
 def _enter_and_pay_month(consultant_a, test_db, est_id, key, month_idx, month_abbr, member_id="M1"):
     res = consultant_a.post(f"/api/years/{key}/wages/bulk_month", json={
         "month_idx": month_idx, "employees": [{"member_id": member_id, "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
@@ -686,7 +562,10 @@ def test_can_save_the_last_fully_ended_month(consultant_a, test_db):
 
 def test_trial_establishment_still_bound_by_calendar_ceiling(superadmin_session, consultant_a, test_db):
     """Trial exemption relaxes PAYMENT, never the calendar ceiling -- a month that
-    hasn't ended yet can't be entered no matter how generous the billing terms are."""
+    hasn't ended yet can't be entered no matter how generous the billing terms are.
+    Months are free-form now, so filling Mar..Jul below no longer needs to "isolate"
+    anything -- it just demonstrates that entering several unpaid months succeeds
+    freely, right up until the calendar ceiling itself stops Aug."""
     from webapp.database import Establishment
     from datetime import timedelta
     est_id = _create_est(consultant_a, "CEIL004", coverage_date="01-04-2026")
