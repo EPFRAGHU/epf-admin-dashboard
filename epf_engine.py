@@ -11,7 +11,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import List, Optional, Set
 from collections import Counter
 
@@ -881,6 +881,11 @@ class YearRecord(ContributionSchemeMixin):
     emp_epf_rate: float = 12.0   # POST-1997 only: worker's EPF %
     er_epf_rate: float = 3.67    # POST-1997 only: employer's EPF portion %
     er_eps_rate: float = 8.33    # POST-1997 only: employer's Pension Fund portion %
+    # ISO 8601 datetime string, stamped once by Project.add_year(). Source of truth for
+    # "most recently added year" in webapp/app.py's get_entry_lock_status -- NOT
+    # financial-year order, since years can now be added out of order (backfill or
+    # forward-fill). See docs/superpowers/specs/2026-08-27-flexible-year-order-entry-gating-design.md.
+    added_at: str = ""
     entries: List[YearEntry] = field(default_factory=list)
     remittances: List[dict] = field(default_factory=list)
 
@@ -903,12 +908,21 @@ class YearRecord(ContributionSchemeMixin):
     @staticmethod
     def from_dict(d):
         entries = [YearEntry.from_dict(e) for e in d.get("entries", [])]
-        return YearRecord(year_from=d.get("year_from", ""), year_to=d.get("year_to", ""),
+        year_from = d.get("year_from", "")
+        # Pre-existing data has no added_at -- synthesize one from the year's own FY
+        # start so relative order among a legacy establishment's years is preserved
+        # (they were all necessarily added in strict chronological order under the old
+        # gate). Falls back to "now" only in the pathological case of no year_from at all.
+        added_at = d.get("added_at") or (
+            f"{year_from}-04-01T00:00:00" if year_from else datetime.now().isoformat()
+        )
+        return YearRecord(year_from=year_from, year_to=d.get("year_to", ""),
                            scheme=d.get("scheme", SCHEME_PRE_1997),
                            epf_rate=d.get("epf_rate", 6.84), fpf_rate=d.get("fpf_rate", 1.16),
                            emp_epf_rate=d.get("emp_epf_rate", 12.0),
                            er_epf_rate=d.get("er_epf_rate", 3.67),
                            er_eps_rate=d.get("er_eps_rate", 8.33),
+                           added_at=added_at,
                            entries=entries,
                            remittances=d.get("remittances", []))
 
@@ -1131,9 +1145,27 @@ class Project:
     def add_year(self, year_from, year_to, scheme=SCHEME_PRE_1997,
                  epf_rate=6.84, fpf_rate=1.16,
                  emp_epf_rate=12.0, er_epf_rate=3.67, er_eps_rate=8.33):
+        # datetime.now()'s resolution isn't always fine enough to guarantee two
+        # add_year() calls made back-to-back (e.g. a bulk backfill loop) get distinct
+        # timestamps -- observed colliding to the same microsecond on this system. A
+        # tie would make "most recently added" ambiguous (get_entry_lock_status's
+        # max() over added_at would silently pick the EARLIER-inserted year on a tie,
+        # since Python's max() keeps the first-seen max and dict iteration is
+        # insertion order) -- so force strict monotonicity against every existing
+        # year's added_at, regardless of what the wall clock reports.
+        now = datetime.now()
+        existing_stamps = [yr.added_at for yr in self.years.values() if yr.added_at]
+        if existing_stamps:
+            try:
+                last_dt = max(datetime.fromisoformat(s) for s in existing_stamps)
+                if now <= last_dt:
+                    now = last_dt + timedelta(microseconds=1)
+            except ValueError:
+                pass
         yr = YearRecord(year_from=year_from, year_to=year_to, scheme=scheme,
                          epf_rate=epf_rate, fpf_rate=fpf_rate,
-                         emp_epf_rate=emp_epf_rate, er_epf_rate=er_epf_rate, er_eps_rate=er_eps_rate)
+                         emp_epf_rate=emp_epf_rate, er_epf_rate=er_epf_rate, er_eps_rate=er_eps_rate,
+                         added_at=now.isoformat())
         key = yr.long_label
         self.years[key] = yr
         self.current_year_key = key

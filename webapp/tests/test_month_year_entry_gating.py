@@ -34,6 +34,51 @@ def test_get_coverage_year_key_returns_none_when_blank():
     assert get_coverage_year_key(p) is None
 
 
+def test_year_record_added_at_is_stamped_on_creation():
+    from epf_engine import Project as _P
+    from datetime import datetime as _dt
+    p = _P()
+    p.coverage_date = "01-04-2020"
+    p.add_year("2020", "2021")
+    added_at = p.years["2020-21"].added_at
+    assert added_at
+    _dt.fromisoformat(added_at)  # must not raise
+
+
+def test_year_record_added_at_reflects_real_add_order_not_fy_order():
+    """added_at must track when a year was actually added, not its financial-year
+    order -- years can now be added out of order (backfill or forward-fill), so
+    financial-year order can no longer be used to find "the most recently added
+    year"."""
+    from epf_engine import Project as _P
+    p = _P()
+    p.coverage_date = "01-04-2020"
+    p.add_year("2025", "2026")  # added first, even though FY-later
+    p.add_year("2020", "2021")  # added second, even though FY-earlier
+    assert p.years["2020-21"].added_at > p.years["2025-26"].added_at
+
+
+def test_year_record_from_dict_synthesizes_added_at_when_missing():
+    """Establishments serialized before this change have no added_at in their JSON
+    blob. Every one of their pre-existing years was necessarily added in strict
+    chronological order under the old gate, so from_dict must reconstruct that
+    relative order (via the year's own FY start) rather than leaving it blank --
+    otherwise a legacy establishment's "most recently added year" would be
+    undefined the first time it's loaded after this change ships."""
+    from epf_engine import YearRecord
+    d = {"year_from": "2020", "year_to": "2021", "entries": [], "remittances": []}
+    yr = YearRecord.from_dict(d)
+    assert yr.added_at == "2020-04-01T00:00:00"
+
+
+def test_year_record_from_dict_preserves_real_added_at_when_present():
+    from epf_engine import YearRecord
+    d = {"year_from": "2020", "year_to": "2021", "added_at": "2026-08-27T10:00:00.123456",
+         "entries": [], "remittances": []}
+    yr = YearRecord.from_dict(d)
+    assert yr.added_at == "2026-08-27T10:00:00.123456"
+
+
 from webapp.database import SessionLocal
 from webapp.app import get_entry_lock_status
 
