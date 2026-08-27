@@ -5023,43 +5023,6 @@ async def put_wages(
     capped_wages = [min(w, g) for w, g in zip(wages_int, gross_wages)]
     ncp_days = d.ncp_days if d.ncp_days and len(d.ncp_days) == 12 else [0] * 12
 
-    # Finding 4 stopgap: this older, whole-year-in-one-call endpoint was deliberately
-    # left out of the month-by-month entry gate (different semantics, doesn't map onto
-    # a single-month check) -- but writing wage data into a month at/after the current
-    # lock boundary would silently satisfy get_entry_lock_status's has_data check for
-    # that month and clear locked_month back to None, unlocking bulk_month_wages for
-    # months nothing was ever paid for. Block only the specific case that can dissolve
-    # the gate: a NON-ZERO value going into a month that (a) is at/after the lock
-    # boundary and (b) doesn't already have data from anyone (i.e. is the exact
-    # condition bulk_month_wages itself would refuse). Edits to months that already
-    # have data, and any month before the lock boundary, are left untouched.
-    if current_user.role != "superadmin":
-        status = get_entry_lock_status(db, est_obj, project)
-        next_open = status["next_open_month"]
-        if next_open:
-            # Gate on next_open_month, not merely locked_month -- a month strictly AFTER
-            # it is always blocked (skipping ahead), even when next_open_month itself
-            # isn't currently locked for any reason. next_open_month itself is only
-            # blocked when status["locked_month"] says so (see get_entry_lock_status /
-            # bulk_month_wages for the full rationale) -- otherwise it's the legitimate
-            # next slot and this write must be allowed to land on it.
-            next_open_key = (int(next_open["year_key"].split("-")[0]), next_open["month_idx"])
-            lock = status["locked_month"]
-            target_year_from = int(key.split("-")[0])
-            for month_idx in range(12):
-                target = (target_year_from, month_idx)
-                if target < next_open_key:
-                    continue
-                if target == next_open_key and not lock:
-                    continue
-                if capped_wages[month_idx] and capped_wages[month_idx] > 0 and \
-                        count_ecr_employees_for_month(project, key, month_idx) == 0:
-                    raise HTTPException(
-                        409,
-                        f"{MONTH_SHORT_NAMES[month_idx]} {key} is locked pending chronological entry and "
-                        f"payment of an earlier month. Use Monthly Wage Entry to enter months in order."
-                    )
-
     project.upsert_entry(key, d.member_id, capped_wages, gross_wages=gross_wages, ncp_days=ncp_days, age_crosses_58=d.age_crosses_58,
                           higher_epf_ee=d.higher_epf_ee, higher_epf_er=d.higher_epf_er,
                           pohw=d.pohw, pohw_additional_1_16=d.pohw_additional_1_16)

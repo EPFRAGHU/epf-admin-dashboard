@@ -358,82 +358,18 @@ def test_constants_endpoint_includes_short_month_names(client):
     assert body["months"][0] == "Mar Paid in Apr"
 
 
-# ── Finding 4: the older whole-year wages endpoint must not be usable to smuggle data
-#    past the entry lock ────────────────────────────────────────────────────────────
-
-def test_legacy_wage_endpoint_cannot_smuggle_data_past_the_entry_lock(consultant_a):
-    """POST /api/years/{key}/wages (the older, ungated 12-month-at-once endpoint used by
-    the plain Wage Entry page, distinct from bulk_month_wages) must not be usable to
-    write data into a genuinely-new month at or after the current entry-lock boundary --
-    that would silently satisfy get_entry_lock_status's has_data check for that month and
-    clear locked_month back to None, unlocking bulk_month_wages for months nothing was
-    ever paid for."""
-    est_id = _create_est(consultant_a, "GATELEGACY001", coverage_date="01-04-2026")
+def test_legacy_wage_endpoint_writes_any_month_freely(consultant_a):
+    """POST /api/years/{key}/wages (the older 12-month-at-once endpoint) used to carry
+    a stopgap guard against smuggling data past the entry lock (Finding 4 in the prior
+    design). That lock no longer exists for months, so this endpoint needs no special
+    guard at all -- writing into any month, entered or not, must simply succeed."""
+    est_id = _create_est(consultant_a, "GATELEGACY004", coverage_date="01-04-2026")
     consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000030"})
-    res0 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    assert res0.status_code == 200, res0.text
-    # Mar unpaid -- Apr (month_idx 1) onward is now locked.
+    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000072"})
 
     wages = [0] * 12
-    wages[1] = 15000  # Apr -- genuinely new, at/after the lock boundary
+    wages[5] = 15000  # a month with no data yet, arbitrarily chosen
     res = consultant_a.post("/api/years/2026-27/wages", json={
-        "member_id": "M1", "wages": wages, "gross_wages": wages
-    })
-    assert res.status_code in (400, 409), res.text
-
-    # And it must not have leaked past the lock via the write that was rejected.
-    db, est_obj, project = _load_est_and_project(est_id)
-    try:
-        status = get_entry_lock_status(db, est_obj, project)
-        assert status["locked_month"] == {"year_key": "2026-27", "month_idx": 1, "month_abbr": "Apr", "reason": "unpaid"}
-    finally:
-        db.close()
-
-
-def test_legacy_wage_endpoint_still_allows_edits_to_already_entered_months(consultant_a):
-    """The stopgap guard must not over-block: editing a month that already has data
-    (Mar, already entered above) must remain allowed through this endpoint exactly as
-    before, even though it's unpaid."""
-    est_id = _create_est(consultant_a, "GATELEGACY002", coverage_date="01-04-2026")
-    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000031"})
-    consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    wages = [0] * 12
-    wages[0] = 16000  # editing Mar, which already has data -- must remain allowed
-    res = consultant_a.post("/api/years/2026-27/wages", json={
-        "member_id": "M1", "wages": wages, "gross_wages": wages
-    })
-    assert res.status_code == 200, res.text
-
-
-def test_legacy_wage_endpoint_allows_writes_before_the_lock_boundary(consultant_a, superadmin_session):
-    """Writing a genuinely-new month that is chronologically BEFORE the current lock
-    boundary (e.g. a superadmin-seeded historical backfill year) must remain unaffected
-    by the stopgap guard -- it only targets months at or after the lock."""
-    est_id = _create_est(consultant_a, "GATELEGACY003", coverage_date="01-04-2026")
-    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    consultant_a.post("/api/employees", json={"member_id": "M1", "name": "Emp One", "uan": "100000000032"})
-    res0 = consultant_a.post("/api/years/2026-27/wages/bulk_month", json={
-        "month_idx": 0, "employees": [{"member_id": "M1", "gross_wage": 15000, "epf_wage": 15000, "ncp_days": 0}]
-    })
-    assert res0.status_code == 200, res0.text
-    # Mar unpaid -- Apr (month_idx 1) 2026-27 onward is now locked.
-
-    superadmin_session.set_establishment(est_id)
-    res_bulk = superadmin_session.post("/api/years/bulk", json={"start_year": 2020, "end_year": 2025})
-    assert res_bulk.status_code == 200, res_bulk.text
-
-    # 2020-21 is chronologically well before the 2026-27/Apr lock boundary -- a
-    # superadmin-seeded historical backfill year must remain freely writable through
-    # this endpoint.
-    wages = [0] * 12
-    wages[0] = 12000
-    res = consultant_a.post("/api/years/2020-21/wages", json={
         "member_id": "M1", "wages": wages, "gross_wages": wages
     })
     assert res.status_code == 200, res.text
