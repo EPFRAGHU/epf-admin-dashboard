@@ -814,7 +814,13 @@ def on_startup():
 
 
 # ── Static Index Route ─────────────────────────────────────────────────────
-@app.get("/", response_class=HTMLResponse)
+# Explicitly registered for both GET and HEAD -- FastAPI/Starlette does NOT
+# auto-add HEAD support to a GET-only route (unlike some frameworks), so uptime
+# monitors that default to HEAD requests (e.g. UptimeRobot) got a 405 "Allow: GET"
+# on every check and reported the site as down, even though it was fully up.
+# uvicorn strips the response body for HEAD automatically per HTTP semantics, so
+# the same handler serves both.
+@app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
 async def index():
     return (WEB / "index.html").read_text(encoding="utf-8")
 
