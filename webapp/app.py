@@ -12,6 +12,7 @@ import json
 import uuid
 import calendar
 import requests
+import sentry_sdk
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict
 from datetime import datetime, date, timedelta, timezone
@@ -45,6 +46,27 @@ from . import google_oauth
 from . import version_info
 
 from epf_engine import Project
+
+# ── Error tracking (Sentry) ─────────────────────────────────────────────────
+# Optional: entirely inert unless SENTRY_DSN is set (local dev / tests never need it,
+# and never accidentally send anything anywhere). send_default_pii is deliberately left
+# at its default (False) -- this app handles EPF/payment data, so request bodies and
+# user-identifying details must never leave the process via this integration.
+# traces_sample_rate=0 -- errors only for now, not performance tracing. Sentry's free
+# tier has a much smaller separate quota for performance "transactions" than for error
+# events; raise this (e.g. to 0.1) later if performance tracing is specifically wanted.
+_sentry_dsn = os.environ.get("SENTRY_DSN")
+if _sentry_dsn:
+    sentry_sdk.init(
+        dsn=_sentry_dsn,
+        environment=os.environ.get("SENTRY_ENVIRONMENT", "production"),
+        release=version_info.get_version_info().get("short_hash"),
+        traces_sample_rate=0.0,
+    )
+    print(f"  [OK] Sentry error tracking enabled (environment={os.environ.get('SENTRY_ENVIRONMENT', 'production')})")
+else:
+    print("  [INFO] SENTRY_DSN not set -- Sentry error tracking disabled.")
+
 
 def log_activity(
     db: Session,
