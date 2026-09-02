@@ -8,7 +8,13 @@ Neon both staying up.
 
 - `backup_neon_to_supabase.py` — the backup itself. `pg_dump`s the Neon database (read-only —
   `pg_dump` never issues write statements against its source) and `pg_restore`s it into a
-  Supabase Postgres project, fully replacing whatever was there from the previous run.
+  Supabase Postgres project, fully replacing whatever was there from the previous run. After
+  the restore, it also re-enables Row-Level Security (default-deny, no policies) on every
+  table in the Supabase target — belt-and-suspenders against Supabase's own auto-exposed REST
+  API (PostgREST) ever serving this data publicly, on top of that project's Data API being
+  disabled at the dashboard level (Project Settings → Data API). Neither this script nor
+  `verify_backup.py` is affected, since both connect directly as the table owner, which
+  Postgres RLS doesn't restrict by default.
 - `verify_backup.py` — manual spot-check that compares row counts for the key tables
   (`users`, `establishments`, `payments`, `subscription_fees`, etc.) between Neon and
   Supabase. Read-only on both sides, safe to run against production any time.
