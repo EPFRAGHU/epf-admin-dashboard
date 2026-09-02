@@ -20,6 +20,9 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SUPABASE_DATABASE_URL: ${{ secrets.SUPABASE_DATABASE_URL }}
+          # Optional -- see scripts/README.md. If this secret doesn't exist yet, the
+          # expression evaluates to an empty string and the script just skips pinging.
+          HEALTHCHECKS_PING_URL: ${{ secrets.HEALTHCHECKS_PING_URL }}
         run: python3 scripts/backup_neon_to_supabase.py
 
       # Runners are ephemeral, so the log written by the script wouldn't otherwise survive

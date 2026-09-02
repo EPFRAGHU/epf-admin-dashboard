@@ -23,6 +23,14 @@ Neon both staying up.
   record to check.
 - If a scheduled run fails, GitHub automatically emails the repository owner — no extra
   email/SMTP setup needed for that part.
+- **Optional**: if `HEALTHCHECKS_PING_URL` is set (see step 5 below), the script also pings
+  [healthchecks.io](https://healthchecks.io) (or any compatible dead-man's-switch service) at
+  the end of every run — success or failure. This is a second, independent layer on top of
+  GitHub's own failure email: GitHub only notices a run that actually happened and failed;
+  Healthchecks.io also catches the case where the scheduled run never fires at all (e.g. GitHub
+  Actions scheduling silently stops triggering it, which does happen on inactive repos), since
+  it alerts on a *missing* ping, not just a failing one. If the env var isn't set, this is
+  skipped entirely and the backup behaves exactly as before.
 
 ## One-time setup (you need to do this — I can't create accounts or set secrets on your behalf)
 
@@ -52,5 +60,20 @@ Neon both staying up.
    ```
    This should print `OK` for every table.
 
-After that, it just runs nightly on its own — check the Actions tab occasionally, or wait for
-a failure email if something breaks.
+5. **(Optional) Set up Healthchecks.io** to get a dashboard of "did last night's backup
+   actually run" plus alerting on a missed/failed run:
+   - Sign up for a free account at [healthchecks.io](https://healthchecks.io) (I can't create
+     this account for you).
+   - Create a new check. Name it something like `epf-dashboard-nightly-backup`. Set its
+     schedule to a **Cron expression**: `30 20 * * *`, timezone **UTC** — this must match
+     `.github/workflows/neon-to-supabase-backup.yml`'s own `cron:` value exactly, or the two
+     will disagree about when a run is "late." Leave the grace period at its default (a few
+     hours is plenty of slack for a job that normally takes 1-2 minutes).
+   - Copy the check's **Ping URL** (looks like `https://hc-ping.com/<uuid>`).
+   - Add it as a GitHub Actions secret named `HEALTHCHECKS_PING_URL` (same place as the other
+     two secrets in step 2).
+   - Trigger a manual run (step 3) and confirm the check flips to "Up" on the Healthchecks.io
+     dashboard within a minute or two of the run finishing.
+
+After that, it just runs nightly on its own — check the Actions tab occasionally, check
+Healthchecks.io's dashboard if you set it up, or wait for an alert email if something breaks.

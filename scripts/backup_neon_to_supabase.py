@@ -21,14 +21,27 @@ in this app, read via os.environ):
     SUPABASE_DATABASE_URL   Supabase connection string (target). This is the ONLY database this
                              script ever writes to; it gets fully replaced on every run.
 
+Optional environment variable:
+    HEALTHCHECKS_PING_URL   A dead-man's-switch URL from healthchecks.io (or any compatible
+                             service) -- pinged with the bare URL on success, or "<url>/fail" on
+                             any failure. If unset, pinging is skipped entirely; this integration
+                             is not required for the backup itself to run. See scripts/README.md
+                             for one-time setup (an account + a check need creating manually --
+                             not something this script or its author can do on your behalf).
+
 Exit code 0 on success, 1 on any failure -- this is what GitHub Actions uses to decide whether
 the scheduled run "failed" (which triggers GitHub's own automatic failure-notification email
-to the repo owner, with zero additional email/SMTP setup needed).
+to the repo owner, with zero additional email/SMTP setup needed). The Healthchecks.io ping is a
+second, independent layer on top of that: GitHub's failure email only fires if the workflow
+itself runs and fails; Healthchecks.io also catches the case where the workflow never runs at
+all (e.g. GitHub Actions scheduling silently stops firing), since it alerts on a MISSING ping,
+not just a failing one.
 """
 import os
 import subprocess
 import sys
 import tempfile
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -51,6 +64,23 @@ def _log(message: str) -> None:
     print(line)
     with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def _ping_healthchecks(succeeded: bool) -> None:
+    """Reports this run's outcome to HEALTHCHECKS_PING_URL, if configured. A bare GET to the
+    URL reports success; "<url>/fail" reports failure explicitly (healthchecks.io convention --
+    also supported by most compatible self-hosted alternatives). Silently does nothing if the
+    env var isn't set, and never raises -- a Healthchecks.io outage or misconfiguration must
+    never be what makes the backup itself look like it failed."""
+    ping_url = os.environ.get("HEALTHCHECKS_PING_URL")
+    if not ping_url:
+        return
+    url = ping_url if succeeded else f"{ping_url.rstrip('/')}/fail"
+    try:
+        urllib.request.urlopen(url, timeout=10)
+        _log(f"Pinged Healthchecks.io ({'success' if succeeded else 'failure'}).")
+    except Exception as e:
+        _log(f"WARNING: failed to ping Healthchecks.io: {e}")
 
 
 def _pg_env_from_url(url: str) -> dict:
@@ -161,4 +191,8 @@ def run_backup() -> bool:
 
 if __name__ == "__main__":
     ok = run_backup()
+    # Centralized single ping covers every failure path above (pg_dump, pg_restore, or the
+    # RLS step) plus the success path, without needing a ping call at each individual
+    # early-return inside run_backup().
+    _ping_healthchecks(ok)
     sys.exit(0 if ok else 1)
