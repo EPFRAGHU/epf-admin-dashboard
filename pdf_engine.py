@@ -156,6 +156,7 @@ style_mwe_cell_left = ParagraphStyle(name='MWECellLeft', parent=styles['Normal']
 style_mwe_flag = ParagraphStyle(name='MWEFlag', parent=styles['Normal'], fontName='Helvetica', fontSize=7, alignment=TA_LEFT, textColor=colors.HexColor('#555555'))
 style_mwe_total_label = ParagraphStyle(name='MWETotalLabel', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=9, alignment=TA_RIGHT)
 style_mwe_total_val = ParagraphStyle(name='MWETotalVal', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=9, alignment=TA_CENTER)
+style_mwe_year_big = ParagraphStyle(name='MWEYearBig', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=22, leading=26, alignment=TA_CENTER, textColor=colors.black, spaceAfter=6)
 
 
 def _mwe_parse_ddmmyyyy(s):
@@ -329,29 +330,50 @@ MWE_YEARLY_ROW_DEFS = [
 
 
 def generate_yearly_wage_checklist_pdf(project, est, employees, filepath: str):
-    """One block per employee (identity line + a 6-row x 12-month table), for every
-    employee with at least one wage entry that financial year (same inclusion as
+    """One block per employee (serial-numbered identity line + a 6-row x 12-month table),
+    for every employee with at least one wage entry that financial year (same inclusion as
     project.build_employees_for_year -- matches Form 3A/6A's own convention), plus a
-    Grand Total block summing every employee month-by-month. Not a statutory form --
-    a checklist for spotting missing months at a glance. `est`/`employees` come from
-    project.build_establishment_for_year(key) / project.build_employees_for_year(key).
-    Reuses Employee.month_rows() for EE Share/EPS Cont./ER Share -- see
-    generate_monthly_wage_entry_pdf's docstring for why the EPS Wages figure (a wage
-    BASE, not a contribution) has to be computed separately, mirroring wages.js's
-    calcBulkRow(), since month_rows() never returns it."""
-    doc = _build_pdf_doc(filepath, orientation="landscape")
+    month-wise employee headcount summary and a Grand Total block summing every employee
+    month-by-month. Not a statutory form -- a checklist for spotting missing months at a
+    glance. `est`/`employees` come from project.build_establishment_for_year(key) /
+    project.build_employees_for_year(key). Reuses Employee.month_rows() for EE Share/EPS
+    Cont./ER Share -- see generate_monthly_wage_entry_pdf's docstring for why the EPS Wages
+    figure (a wage BASE, not a contribution) has to be computed separately, mirroring
+    wages.js's calcBulkRow(), since month_rows() never returns it. Establishment code/
+    address are drawn as a running header on every page (via onFirstPage/onLaterPages)
+    rather than a story Paragraph, since Establishment Code/Address is used both as a
+    one-time cover line, and now the requirement is that it repeats per page."""
+    pagesize = landscape(A4)
+    est_code = est.code or "-"
+    est_address = est.address or ""
+
+    def _draw_running_header(canvas, doc_):
+        canvas.saveState()
+        page_w, page_h = pagesize
+        canvas.setFont('Helvetica-Bold', 9)
+        canvas.drawString(doc_.leftMargin, page_h - 16, f"Establishment Code: {est_code}")
+        if est_address:
+            canvas.setFont('Helvetica', 8)
+            canvas.drawString(doc_.leftMargin, page_h - 28, f"Address: {est_address}")
+        canvas.setStrokeColor(colors.HexColor('#D5DBE3'))
+        canvas.setLineWidth(0.75)
+        canvas.line(doc_.leftMargin, page_h - 34, page_w - doc_.rightMargin, page_h - 34)
+        canvas.restoreState()
+
+    doc = SimpleDocTemplate(
+        filepath, pagesize=pagesize,
+        rightMargin=0.3 * inch, leftMargin=0.3 * inch,
+        topMargin=0.58 * inch, bottomMargin=0.3 * inch
+    )
     story = []
 
+    story.append(Paragraph(f"FY {est.year_from}-{str(est.year_to)[-2:]}", style_mwe_year_big))
     story.append(Paragraph("YEARLY WAGE CHECKLIST", style_mwe_title))
     story.append(Paragraph(
         f"Financial Year {est.year_from}-{str(est.year_to)[-2:]} &nbsp;&bull;&nbsp; {est.name}",
         style_mwe_subtitle
     ))
-    meta_bits = [f"<b>Establishment Code:</b> {est.code or '—'}"]
-    if est.address:
-        meta_bits.append(f"<b>Address:</b> {est.address}")
-    story.append(Paragraph(" &nbsp;|&nbsp; ".join(meta_bits), style_mwe_meta))
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 6))
 
     from epf_engine import get_wage_ceilings_for_year
     wage_ceilings = get_wage_ceilings_for_year(est.year_from)
@@ -386,7 +408,8 @@ def generate_yearly_wage_checklist_pdf(project, est, employees, filepath: str):
         return t
 
     grand = {key: [0.0] * 12 for _, key in MWE_YEARLY_ROW_DEFS}
-    emp_count = 0
+    monthly_headcount = [0] * 12
+    emp_blocks = []
 
     for emp in employees:
         mrows = emp.month_rows(est.worker_epf_rate, est.worker_eps_rate,
@@ -413,31 +436,57 @@ def generate_yearly_wage_checklist_pdf(project, est, employees, filepath: str):
             rows_by_key["ee_share"].append(w_epf)
             rows_by_key["eps_cont"].append(e_eps)
             rows_by_key["er_share"].append(e_epf)
+            if gross:
+                monthly_headcount[i] += 1
 
-        emp_count += 1
-        identity = (
-            f"<b>{emp.name or ''}</b> &nbsp;|&nbsp; UAN: {emp.uan or '-'} "
-            f"&nbsp;|&nbsp; Member ID: {emp.member_id or '-'} "
-            f"&nbsp;|&nbsp; DOB: {emp.dob or '-'} &nbsp;|&nbsp; DOJ: {emp.doj or '-'} "
-            f"&nbsp;|&nbsp; DOL: {emp.doe or '-'} &nbsp;|&nbsp; Reason: {emp.reason_leaving or '-'}"
-        )
-        story.append(Paragraph(identity, style_mwe_meta))
-        story.append(Spacer(1, 4))
-        story.append(build_block(rows_by_key))
-        story.append(Spacer(1, 14))
-
+        emp_blocks.append((emp, rows_by_key))
         for _, key in MWE_YEARLY_ROW_DEFS:
             for i in range(12):
                 grand[key][i] += rows_by_key[key][i]
 
+    emp_count = len(emp_blocks)
+
     if emp_count == 0:
         story.append(Paragraph("No employees on file for this financial year.", style_mwe_cell_left))
     else:
+        story.append(Paragraph("EMPLOYEES WITH WAGES ENTERED &mdash; MONTH-WISE", style_mwe_total_label))
+        story.append(Spacer(1, 4))
+        count_header = ([Paragraph("", style_mwe_header)]
+                         + [Paragraph(m, style_mwe_header) for m in FORM_3A_MONTHS]
+                         + [Paragraph("Total Employees", style_mwe_header)])
+        count_row = [Paragraph("No. of Employees", style_mwe_cell_left)] + [
+            Paragraph(str(c) if c else "-", style_mwe_cell) for c in monthly_headcount
+        ]
+        count_row.append(Paragraph(str(emp_count), style_mwe_cell))
+        count_table = Table([count_header, count_row], colWidths=col_widths)
+        count_table.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#D5DBE3')),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BACKGROUND', (0, 0), (-1, 0), MWE_ACCENT),
+            ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
+        ]))
+        story.append(count_table)
+        story.append(Spacer(1, 16))
+
+        for serial, (emp, rows_by_key) in enumerate(emp_blocks, start=1):
+            identity = (
+                f"<b>{serial}. {emp.name or ''}</b> &nbsp;|&nbsp; UAN: {emp.uan or '-'} "
+                f"&nbsp;|&nbsp; Member ID: {emp.member_id or '-'} "
+                f"&nbsp;|&nbsp; DOB: {emp.dob or '-'} &nbsp;|&nbsp; DOJ: {emp.doj or '-'} "
+                f"&nbsp;|&nbsp; DOL: {emp.doe or '-'} &nbsp;|&nbsp; Reason: {emp.reason_leaving or '-'}"
+            )
+            story.append(Paragraph(identity, style_mwe_meta))
+            story.append(Spacer(1, 4))
+            story.append(build_block(rows_by_key))
+            story.append(Spacer(1, 14))
+
         story.append(Paragraph("GRAND TOTAL &mdash; ALL EMPLOYEES", style_mwe_total_label))
         story.append(Spacer(1, 4))
         story.append(build_block(grand))
 
-    doc.build(story)
+    doc.build(story, onFirstPage=_draw_running_header, onLaterPages=_draw_running_header)
     return filepath
 
 
