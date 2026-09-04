@@ -190,7 +190,7 @@ from epf_engine import (
     import_wages_from_excel, generate_form9, import_master_from_excel, parse_ecr_text_file,
     natural_sort_key, get_wage_ceilings_for_year,
     account2_rate_percent, account22_rate_percent,
-    ACCOUNT_21_RATE, ACCOUNT_22_MIN,
+    ACCOUNT_21_RATE, ACCOUNT_22_MIN, ACCOUNT_2_MIN,
     generate_ecr_month, calendar_year_for_month, Employee,
     normalize_member_id, get_excel_sheet_names, get_month_num,
     filter_employees_by_scope, resolve_scope_path_for_ids, resolve_employee_scope_path,
@@ -3606,7 +3606,7 @@ def compute_remittance_row(yr, est, month_idx, wages_total, ee_total, er_total, 
     a22_rate = account22_rate_percent(cal_year, m_num)
     
     acc_01 = ee_total + (er_total - a10_total)
-    a2_amt = round(wages_total * a2_rate / 100) if wages_total > 0 else 0
+    a2_amt = max(round(wages_total * a2_rate / 100), ACCOUNT_2_MIN) if wages_total > 0 else 0
     a21_amt = round(wages_total * ACCOUNT_21_RATE / 100) if wages_total > 0 else 0
     a22_amt = (max(round(wages_total * a22_rate / 100), ACCOUNT_22_MIN)
                if (a22_rate > 0 and wages_total > 0) else 0)

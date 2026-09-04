@@ -1621,6 +1621,9 @@ def _row_height_for_cells(cells, line_height=13, padding=6, min_height=15):
 # --------------------------------------------------------------------------
 ACCOUNT_21_RATE = 0.50   # % of monthly total wages -- EDLI contribution (A/c 21). Unchanged historically.
 ACCOUNT_22_MIN = 200     # minimum Rs. 200/month for A/c 22, when a charge applies
+ACCOUNT_2_MIN = 500      # minimum Rs. 500/month for A/c 2 (EPF Administrative/Inspection charges),
+                          # whenever there's any wage data that month -- computed % alone (e.g. 0.50%
+                          # of a small total) routinely falls under this floor and must be topped up to it.
 
 _MONTH_NUM = {"APR": 4, "MAY": 5, "JUN": 6, "JUL": 7, "AUG": 8, "SEP": 9,
               "OCT": 10, "NOV": 11, "DEC": 12, "JAN": 1, "FEB": 2, "MAR": 3}
@@ -2261,7 +2264,7 @@ class ExcelGenerator:
                 er_total = sum(rows[i][4] for rows in all_month_rows)     # A/c 1 (ER)
                 a10_total = sum(rows[i][5] for rows in all_month_rows)    # A/c 10 (Pension Fund)
                 
-                a2_amt = round(wages_total * a2_rate / 100)
+                a2_amt = max(round(wages_total * a2_rate / 100), ACCOUNT_2_MIN) if wages_total > 0 else 0
                 a21_amt = round(wages_total * ACCOUNT_21_RATE / 100)
                 a22_amt = (max(round(wages_total * a22_rate / 100), ACCOUNT_22_MIN)
                           if (a22_rate > 0 and wages_total > 0) else 0)

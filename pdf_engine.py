@@ -654,7 +654,7 @@ def generate_form_12a_pdf(project, year_key: str, filepath: str, member_ids: Opt
     
     data = [[Paragraph(h.replace('\n', '<br/>'), style_cell_bold) for h in headers]]
     
-    from epf_engine import calendar_year_for_month, get_month_num, account2_rate_percent, account22_rate_percent, ACCOUNT_21_RATE, ACCOUNT_22_MIN, MONTHS
+    from epf_engine import calendar_year_for_month, get_month_num, account2_rate_percent, account22_rate_percent, ACCOUNT_21_RATE, ACCOUNT_22_MIN, ACCOUNT_2_MIN, MONTHS
     
     all_month_rows = [emp.month_rows(est.worker_epf_rate, est.worker_eps_rate, est.employer_epf_rate, est.employer_eps_rate) for emp in employees]
     
@@ -673,7 +673,7 @@ def generate_form_12a_pdf(project, year_key: str, filepath: str, member_ids: Opt
             er_total = sum(rows[i][4] for rows in all_month_rows)
             a10_total = sum(rows[i][5] for rows in all_month_rows)
             
-            a2_amt = round(wages_total * a2_rate / 100)
+            a2_amt = max(round(wages_total * a2_rate / 100), ACCOUNT_2_MIN) if wages_total > 0 else 0
             a21_amt = round(wages_total * ACCOUNT_21_RATE / 100)
             a22_amt = (max(round(wages_total * a22_rate / 100), ACCOUNT_22_MIN) if (a22_rate > 0 and wages_total > 0) else 0)
             
