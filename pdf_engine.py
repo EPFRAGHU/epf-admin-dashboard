@@ -461,8 +461,6 @@ def generate_yearly_wage_checklist_pdf(project, est, employees, filepath: str):
     if emp_count == 0:
         story.append(Paragraph("No employees on file for this financial year.", style_mwe_cell_left))
     else:
-        story.append(Paragraph("EMPLOYEES WITH WAGES ENTERED &mdash; MONTH-WISE", style_mwe_total_label))
-        story.append(Spacer(1, 4))
         count_header = ([Paragraph("", style_mwe_header)]
                          + [Paragraph(m, style_mwe_header) for m in FORM_3A_MONTHS]
                          + [Paragraph("Total Employees", style_mwe_header)])
@@ -479,7 +477,10 @@ def generate_yearly_wage_checklist_pdf(project, est, employees, filepath: str):
             ('BACKGROUND', (0, 0), (-1, 0), MWE_ACCENT),
             ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
         ]))
-        story.append(count_table)
+        story.append(KeepTogether([
+            Paragraph("EMPLOYEES WITH WAGES ENTERED &mdash; MONTH-WISE", style_mwe_total_label),
+            Spacer(1, 4), count_table
+        ]))
         story.append(Spacer(1, 16))
 
         for serial, (emp, rows_by_key) in enumerate(emp_blocks, start=1):
@@ -489,14 +490,15 @@ def generate_yearly_wage_checklist_pdf(project, est, employees, filepath: str):
                 f"&nbsp;|&nbsp; DOB: {emp.dob or '-'} &nbsp;|&nbsp; DOJ: {emp.doj or '-'} "
                 f"&nbsp;|&nbsp; DOL: {emp.doe or '-'} &nbsp;|&nbsp; Reason: {emp.reason_leaving or '-'}"
             )
-            story.append(Paragraph(identity, style_mwe_meta))
-            story.append(Spacer(1, 4))
-            story.append(build_block(rows_by_key))
-            story.append(Spacer(1, 14))
+            story.append(KeepTogether([
+                Paragraph(identity, style_mwe_meta),
+                Spacer(1, 3), build_block(rows_by_key), Spacer(1, 8)
+            ]))
 
-        story.append(Paragraph("GRAND TOTAL &mdash; ALL EMPLOYEES", style_mwe_total_label))
-        story.append(Spacer(1, 4))
-        story.append(build_block(grand))
+        story.append(KeepTogether([
+            Paragraph("GRAND TOTAL &mdash; ALL EMPLOYEES", style_mwe_total_label),
+            Spacer(1, 4), build_block(grand)
+        ]))
 
     doc.build(
         story, onFirstPage=_draw_running_header, onLaterPages=_draw_running_header,
