@@ -45,7 +45,7 @@ from . import cashfree_client
 from . import google_oauth
 from . import version_info
 
-from epf_engine import Project
+from epf_engine import Project, safe_filename_part
 
 # ── Error tracking (Sentry) ─────────────────────────────────────────────────
 # Optional: entirely inert unless SENTRY_DSN is set (local dev / tests never need it,
@@ -5051,7 +5051,7 @@ async def download_yearly_wage_checklist_pdf(
     emps = project.build_employees_for_year(key)
 
     tmp = tempfile.mkdtemp()
-    safe_name = (project.name or 'EPF').replace("/", "-").replace("\\", "-").strip() or 'EPF'
+    safe_name = safe_filename_part(project.name, 'EPF')
     fname = f"{safe_name}_YearlyWageChecklist_{key}.pdf"
     path = os.path.join(tmp, fname)
     try:
@@ -5090,7 +5090,7 @@ async def download_monthly_wage_entry_pdf(
     days_in_month = calendar.monthrange(cal_year, cal_month)[1] if cal_year and cal_month else 30
 
     tmp = tempfile.mkdtemp()
-    safe_name = (project.name or 'EPF').replace("/", "-").replace("\\", "-").strip() or 'EPF'
+    safe_name = safe_filename_part(project.name, 'EPF')
     fname = f"{safe_name}_MonthlyWageEntry_{key}_{month_abbr}.pdf"
     path = os.path.join(tmp, fname)
     try:
@@ -5391,8 +5391,8 @@ async def report_employee_wage_history_pdf(
 
     from pdf_engine import generate_employee_wage_history_pdf
     tmp = tempfile.mkdtemp()
-    safe_name = (data["profile"]["name"] or "Employee").replace("/", "-").replace("\\", "-").strip() or "Employee"
-    safe_uan = (data["profile"]["uan"] or "NO_UAN").strip() or "NO_UAN"
+    safe_name = safe_filename_part(data["profile"]["name"], "Employee")
+    safe_uan = safe_filename_part(data["profile"]["uan"], "NO_UAN")
     fname = f"{safe_name}_{safe_uan}_WageHistory.pdf"
     path = os.path.join(tmp, fname)
     try:
@@ -5454,7 +5454,7 @@ def generate_report(
 
     forms_list = [f.strip() for f in forms.split(',')] if forms else ['3A', '6A', '12A', '5', '10']
     gen = ExcelGenerator(est, emps, project=project, forms_to_generate=forms_list, scope_member_ids=scope_member_ids)
-    safe = (project.code or "EPF").replace("/", "-").replace("\\", "-").strip() or "EPF"
+    safe = safe_filename_part(project.code, "EPF")
     fname = f"{safe}_{yr.short_label}.xlsx"
     tmp = tempfile.mkdtemp()
     path = os.path.join(tmp, fname)
@@ -5518,7 +5518,7 @@ def generate_employee_report(
     
     forms_list = [f.strip() for f in forms.split(',')] if forms else ['3A']
     gen = ExcelGenerator(est, [emp], project=project, forms_to_generate=forms_list, scope_member_ids={acc})
-    safe = (emp.name or "Employee").replace("/", "-").replace("\\", "-").strip() or "Employee"
+    safe = safe_filename_part(emp.name, "Employee")
     fname = f"{safe}_Form3A.xlsx"
     tmp = tempfile.mkdtemp()
     path = os.path.join(tmp, fname)
@@ -5588,7 +5588,7 @@ def generate_employee_form3a_multi_year(
 
     import pdf_engine
     tmp = tempfile.mkdtemp()
-    safe = emp_name.replace("/", "-").replace("\\", "-").strip() or "Employee"
+    safe = safe_filename_part(emp_name, "Employee")
     fname = f"{safe}_Form3A_MultiYear.pdf"
     path = os.path.join(tmp, fname)
 
@@ -5634,7 +5634,7 @@ def report_form9(
     if not project.master:
         raise HTTPException(400, "No employees")
     tmp = tempfile.mkdtemp()
-    safe_name = (project.name or 'EPF').replace("/", "-").replace("\\", "-").strip() or 'EPF'
+    safe_name = safe_filename_part(project.name, 'EPF')
     fname = f"{safe_name}_Form9.xlsx"
     path = os.path.join(tmp, fname)
     generate_form9(project, path)

@@ -22,6 +22,20 @@ from openpyxl.worksheet.page import PageMargins
 from openpyxl.worksheet.pagebreak import Break
 
 
+_FILENAME_UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def safe_filename_part(value, fallback: str) -> str:
+    """Strips characters invalid in a filename on Windows and Unix alike
+    (< > : " / \\ | ? * and control chars) from a DB-sourced value (establishment/
+    project name or code, employee name, UAN, etc.) before it's used to build a
+    download filename. Plain str.replace("/", "-") only handled the two Unix-relevant
+    separators -- a name containing '<' or '>' (or any of the others) still raises
+    WinError 22 on Windows. Falls back to `fallback` if nothing usable is left."""
+    cleaned = _FILENAME_UNSAFE_CHARS.sub("-", str(value or "")).strip(" .")
+    return cleaned or fallback
+
+
 def normalize_member_id(mid):
     s = str(mid).strip()
     if s.startswith("__UAN__"):
@@ -2381,7 +2395,7 @@ def generate_forms_for_year(project: "Project", year_key: str, output_dir: str,
     employees = project.build_employees_for_year(year_key)
     gen = ExcelGenerator(est, employees, project=project)
 
-    safe_code = (project.code or "EPF").replace("/", "-").replace("\\", "-").strip() or "EPF"
+    safe_code = safe_filename_part(project.code, "EPF")
     base = f"{safe_code}_{yr.short_label}"
     written = {}
 
