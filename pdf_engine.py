@@ -213,10 +213,27 @@ def generate_monthly_wage_entry_pdf(project, est, employees, filepath: str, mont
         gross = emp.gross_wages[month_idx] if month_idx is not None and month_idx < len(emp.gross_wages) else 0
         if not gross:
             continue
+        # month_rows() returns (wages, w_epf, w_eps, w_total, e_epf, e_eps, e_total) -- all
+        # CONTRIBUTION amounts except index 0. The grid's "EPS Wages" column is a WAGE BASE
+        # (what EPS is calculated ON), which month_rows() never returns at all -- mirrored
+        # here from wages.js's calcBulkRow(), the only other place this figure is computed.
         mrows = emp.month_rows(est.worker_epf_rate, est.worker_eps_rate,
                                est.employer_epf_rate, est.employer_eps_rate,
                                wage_ceilings=wage_ceilings)
-        w, we, ws, wt, ee, es, et = mrows[month_idx]
+        wages, w_epf, w_eps, w_total, e_epf, e_eps, e_total = mrows[month_idx]
+
+        wage_raw = int(round(float(emp.wages[month_idx]))) if emp.wages[month_idx] else 0
+        ceiling = wage_ceilings[month_idx] if wage_ceilings and month_idx < len(wage_ceilings) else 15000
+        if est.employer_eps_rate > 0:
+            if emp.age_crosses_58:
+                eps_wage_base = 0
+            elif emp.pohw:
+                eps_wage_base = wage_raw
+            else:
+                eps_wage_base = min(wage_raw, ceiling)
+        else:
+            eps_wage_base = 0
+
         ncp = emp.ncp_days[month_idx] if hasattr(emp, 'ncp_days') and month_idx < len(emp.ncp_days) else 0
         work_days = max(0, days_in_month - (ncp or 0))
 
@@ -245,15 +262,15 @@ def generate_monthly_wage_entry_pdf(project, est, employees, filepath: str, mont
             Paragraph(str(ncp or 0), style_mwe_cell),
             Paragraph(str(work_days), style_mwe_cell),
             Paragraph(f"{gross:,.0f}", style_mwe_cell),
-            Paragraph(f"{w:,.0f}", style_mwe_cell),
-            Paragraph(f"{we:,.0f}", style_mwe_cell),
-            Paragraph(f"{ee:,.0f}", style_mwe_cell),
-            Paragraph(f"{es:,.0f}", style_mwe_cell),
-            Paragraph(f"{et:,.0f}", style_mwe_cell),
+            Paragraph(f"{wages:,.0f}", style_mwe_cell),
+            Paragraph(f"{eps_wage_base:,.0f}", style_mwe_cell),
+            Paragraph(f"{w_epf:,.0f}", style_mwe_cell),
+            Paragraph(f"{e_epf:,.0f}", style_mwe_cell),
+            Paragraph(f"{e_eps:,.0f}", style_mwe_cell),
             Paragraph(", ".join(flags), style_mwe_flag),
         ])
-        totals["gross"] += gross; totals["epf"] += w; totals["eps"] += we
-        totals["ee"] += ee; totals["erpf"] += es; totals["pension"] += et
+        totals["gross"] += gross; totals["epf"] += wages; totals["eps"] += eps_wage_base
+        totals["ee"] += w_epf; totals["erpf"] += e_epf; totals["pension"] += e_eps
 
     if row_count == 0:
         data.append([Paragraph("No wage data entered for this month.", style_mwe_cell_left)] + [Paragraph("", style_mwe_cell)] * 13)
