@@ -91,10 +91,11 @@ App.registerPage('employees', async (container) => {
     App.get('/api/org-structure')
   ]);
   masterEmployees = empRes.employees || [];
-  filteredEmployees = [...masterEmployees];
+  // Default view is Member ID-wise (matches Form 9); header stays clickable to re-sort.
+  empSortState = { column: 'member_id', direction: 'asc' };
+  filteredEmployees = [...masterEmployees].sort((a, b) => compareEmp(a, b, empSortState.column));
   orgStructureData = orgRes || { branches: [], divisions: [], units: [] };
   currentEmpPage = 1;
-  empSortState = { column: null, direction: 'asc' };
   nextSerialNo = computeNextSerialNo(masterEmployees);
 
   const branches = orgStructureData.branches || [];
@@ -282,6 +283,7 @@ App.registerPage('employees', async (container) => {
   const slEl = document.getElementById('ae-sl');
   if (slEl) slEl.value = nextSerialNo;
 
+  updateEmpSortHeaders();
   renderEmpTable();
 });
 
