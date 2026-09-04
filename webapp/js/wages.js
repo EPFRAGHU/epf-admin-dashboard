@@ -720,7 +720,9 @@ window.showImportModal = () => {
       <p style="color:var(--text2); font-size:13px; line-height:1.5; margin-top:12px;" id="import-instructions">
         Upload an Excel file to import wages for <strong>${currentWagesData.label}</strong>. The file must have a header row and columns like:
         <br><br>
-        <code>UAN | Name | APR | APR NCP | MAY | MAY NCP ...</code>
+        <code>UAN | NAME | MAR | APR | MAY | JUN | JUL | AUG | SEP | OCT | NOV | DEC | JAN | FEB</code>
+        <br><br>
+        Month columns are wages only -- don't add NCP Days columns for a yearly import.
       </p>
     </div>
     <div class="form-group">
@@ -749,7 +751,9 @@ window.toggleImportMonth = () => {
     instructions.innerHTML = `
           Upload an Excel file to import wages for <strong>${currentWagesData.label}</strong>. The file must have a header row and columns like:
           <br><br>
-          <code>UAN | Name | APR | APR NCP | MAY | MAY NCP ...</code>
+          <code>UAN | NAME | MAR | APR | MAY | JUN | JUL | AUG | SEP | OCT | NOV | DEC | JAN | FEB</code>
+          <br><br>
+          Month columns are wages only -- don't add NCP Days columns for a yearly import.
         `;
   }
 };
