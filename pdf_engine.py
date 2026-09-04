@@ -342,16 +342,28 @@ def generate_yearly_wage_checklist_pdf(project, est, employees, filepath: str):
     wages.js's calcBulkRow(), since month_rows() never returns it. Establishment code/
     address are drawn as a running header on every page (via onFirstPage/onLaterPages)
     rather than a story Paragraph, since Establishment Code/Address is used both as a
-    one-time cover line, and now the requirement is that it repeats per page."""
+    one-time cover line, and now the requirement is that it repeats per page. From page 2
+    onward the header also carries the establishment name (top-left, after the code) and
+    the FY label (top-right) -- page 1 already shows both prominently in the title block,
+    so repeating them there would be redundant. Page numbering ("Page X of N", bottom-
+    right) reuses the proven _wyh_make_numbered_canvas two-pass NumberedCanvas factory."""
     pagesize = landscape(A4)
     est_code = est.code or "-"
     est_address = est.address or ""
+    fy_label = f"FY {est.year_from}-{str(est.year_to)[-2:]}"
 
     def _draw_running_header(canvas, doc_):
         canvas.saveState()
         page_w, page_h = pagesize
+        page_num = canvas.getPageNumber()
         canvas.setFont('Helvetica-Bold', 9)
-        canvas.drawString(doc_.leftMargin, page_h - 16, f"Establishment Code: {est_code}")
+        line1 = f"Establishment Code: {est_code}"
+        if page_num >= 2:
+            line1 += f"    |    Name: {est.name or '-'}"
+        canvas.drawString(doc_.leftMargin, page_h - 16, line1)
+        if page_num >= 2:
+            canvas.setFont('Helvetica-Bold', 10)
+            canvas.drawRightString(page_w - doc_.rightMargin, page_h - 16, fy_label)
         if est_address:
             canvas.setFont('Helvetica', 8)
             canvas.drawString(doc_.leftMargin, page_h - 28, f"Address: {est_address}")
@@ -363,11 +375,11 @@ def generate_yearly_wage_checklist_pdf(project, est, employees, filepath: str):
     doc = SimpleDocTemplate(
         filepath, pagesize=pagesize,
         rightMargin=0.3 * inch, leftMargin=0.3 * inch,
-        topMargin=0.58 * inch, bottomMargin=0.3 * inch
+        topMargin=0.58 * inch, bottomMargin=0.45 * inch
     )
     story = []
 
-    story.append(Paragraph(f"FY {est.year_from}-{str(est.year_to)[-2:]}", style_mwe_year_big))
+    story.append(Paragraph(fy_label, style_mwe_year_big))
     story.append(Paragraph("YEARLY WAGE CHECKLIST", style_mwe_title))
     story.append(Paragraph(
         f"Financial Year {est.year_from}-{str(est.year_to)[-2:]} &nbsp;&bull;&nbsp; {est.name}",
@@ -486,7 +498,10 @@ def generate_yearly_wage_checklist_pdf(project, est, employees, filepath: str):
         story.append(Spacer(1, 4))
         story.append(build_block(grand))
 
-    doc.build(story, onFirstPage=_draw_running_header, onLaterPages=_draw_running_header)
+    doc.build(
+        story, onFirstPage=_draw_running_header, onLaterPages=_draw_running_header,
+        canvasmaker=_wyh_make_numbered_canvas("")
+    )
     return filepath
 
 
