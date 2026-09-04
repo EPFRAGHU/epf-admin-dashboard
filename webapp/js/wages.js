@@ -39,6 +39,7 @@ App.registerPage('wages', async (container) => {
         <button class="btn btn-danger" onclick="deleteAllWages()">🗑️ Delete All</button>
         <button class="btn btn-glass" onclick="showBulkImportModal()">📥 Bulk Import</button>
         <button class="btn btn-glass" onclick="showImportModal()">📥 Import Excel</button>
+        <button class="btn btn-glass" onclick="downloadYearlyWageChecklistPdf()">📋 Yearly Checklist PDF</button>
         <button class="btn btn-primary" onclick="App.navigate('wage-entry')">+ Monthly Wage Entry</button>
         <button class="btn btn-primary" onclick="showWageModal()">+ Add Employee Wages</button>
       </div>
@@ -228,6 +229,13 @@ window.switchWageYear = () => {
   currentYearKey = document.getElementById('wage-year-select').value;
   currentWageCardsPage = 1;
   App.navigate('wages');
+};
+
+window.downloadYearlyWageChecklistPdf = () => {
+  App.downloadFile(
+    `/api/years/${currentYearKey}/wages/checklist/pdf`,
+    `YearlyWageChecklist_${currentYearKey}.pdf`
+  );
 };
 
 function renderWageCard(emp) {

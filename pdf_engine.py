@@ -316,6 +316,131 @@ def generate_monthly_wage_entry_pdf(project, est, employees, filepath: str, mont
     doc.build(story)
     return filepath
 
+
+# --------------------------------------------------------------------------
+# Yearly Wage Checklist -- one per-employee block per financial year, mirrors the
+# Wage Entry page's whole-year view; used to spot-check that every month's wages/
+# contributions were actually entered for every employee.
+# --------------------------------------------------------------------------
+MWE_YEARLY_ROW_DEFS = [
+    ("Gross Wages", "gross"), ("EPF Wages", "epf"), ("EPS Wages", "eps_wage"),
+    ("EE Share", "ee_share"), ("EPS Cont.", "eps_cont"), ("ER Share", "er_share"),
+]
+
+
+def generate_yearly_wage_checklist_pdf(project, est, employees, filepath: str):
+    """One block per employee (identity line + a 6-row x 12-month table), for every
+    employee with at least one wage entry that financial year (same inclusion as
+    project.build_employees_for_year -- matches Form 3A/6A's own convention), plus a
+    Grand Total block summing every employee month-by-month. Not a statutory form --
+    a checklist for spotting missing months at a glance. `est`/`employees` come from
+    project.build_establishment_for_year(key) / project.build_employees_for_year(key).
+    Reuses Employee.month_rows() for EE Share/EPS Cont./ER Share -- see
+    generate_monthly_wage_entry_pdf's docstring for why the EPS Wages figure (a wage
+    BASE, not a contribution) has to be computed separately, mirroring wages.js's
+    calcBulkRow(), since month_rows() never returns it."""
+    doc = _build_pdf_doc(filepath, orientation="landscape")
+    story = []
+
+    story.append(Paragraph("YEARLY WAGE CHECKLIST", style_mwe_title))
+    story.append(Paragraph(
+        f"Financial Year {est.year_from}-{str(est.year_to)[-2:]} &nbsp;&bull;&nbsp; {est.name}",
+        style_mwe_subtitle
+    ))
+    meta_bits = [f"<b>Establishment Code:</b> {est.code or '—'}"]
+    if est.address:
+        meta_bits.append(f"<b>Address:</b> {est.address}")
+    story.append(Paragraph(" &nbsp;|&nbsp; ".join(meta_bits), style_mwe_meta))
+    story.append(Spacer(1, 10))
+
+    from epf_engine import get_wage_ceilings_for_year
+    wage_ceilings = get_wage_ceilings_for_year(est.year_from)
+
+    available_width = doc.pagesize[0] - doc.rightMargin - doc.leftMargin
+    label_w = 0.09 * available_width
+    month_w = (available_width - label_w) / 13
+    col_widths = [label_w] + [month_w] * 13
+
+    def build_block(rows_by_key):
+        header = ([Paragraph("", style_mwe_header)]
+                  + [Paragraph(m, style_mwe_header) for m in FORM_3A_MONTHS]
+                  + [Paragraph("Total", style_mwe_header)])
+        rows = [header]
+        for label, key in MWE_YEARLY_ROW_DEFS:
+            vals = rows_by_key[key]
+            row = [Paragraph(label, style_mwe_cell_left)] + [
+                Paragraph(f"{v:,.0f}" if v else "-", style_mwe_cell) for v in vals
+            ]
+            row.append(Paragraph(f"{sum(vals):,.0f}", style_mwe_cell))
+            rows.append(row)
+        t = Table(rows, colWidths=col_widths)
+        t.setStyle(TableStyle([
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#D5DBE3')),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('BACKGROUND', (0, 0), (-1, 0), MWE_ACCENT),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, MWE_ZEBRA]),
+            ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
+        ]))
+        return t
+
+    grand = {key: [0.0] * 12 for _, key in MWE_YEARLY_ROW_DEFS}
+    emp_count = 0
+
+    for emp in employees:
+        mrows = emp.month_rows(est.worker_epf_rate, est.worker_eps_rate,
+                               est.employer_epf_rate, est.employer_eps_rate,
+                               wage_ceilings=wage_ceilings)
+        rows_by_key = {key: [] for _, key in MWE_YEARLY_ROW_DEFS}
+        for i in range(12):
+            wages, w_epf, w_eps, w_total, e_epf, e_eps, e_total = mrows[i]
+            gross = emp.gross_wages[i] if i < len(emp.gross_wages) else 0
+            wage_raw = emp.wages[i] if i < len(emp.wages) else 0
+            ceiling = wage_ceilings[i] if wage_ceilings and i < len(wage_ceilings) else 15000
+            if est.employer_eps_rate > 0:
+                if emp.age_crosses_58:
+                    eps_wage_base = 0
+                elif emp.pohw:
+                    eps_wage_base = wage_raw
+                else:
+                    eps_wage_base = min(wage_raw, ceiling)
+            else:
+                eps_wage_base = 0
+            rows_by_key["gross"].append(gross)
+            rows_by_key["epf"].append(wages)
+            rows_by_key["eps_wage"].append(eps_wage_base)
+            rows_by_key["ee_share"].append(w_epf)
+            rows_by_key["eps_cont"].append(e_eps)
+            rows_by_key["er_share"].append(e_epf)
+
+        emp_count += 1
+        identity = (
+            f"<b>{emp.name or ''}</b> &nbsp;|&nbsp; UAN: {emp.uan or '-'} "
+            f"&nbsp;|&nbsp; Member ID: {emp.member_id or '-'} "
+            f"&nbsp;|&nbsp; DOB: {emp.dob or '-'} &nbsp;|&nbsp; DOJ: {emp.doj or '-'} "
+            f"&nbsp;|&nbsp; DOL: {emp.doe or '-'} &nbsp;|&nbsp; Reason: {emp.reason_leaving or '-'}"
+        )
+        story.append(Paragraph(identity, style_mwe_meta))
+        story.append(Spacer(1, 4))
+        story.append(build_block(rows_by_key))
+        story.append(Spacer(1, 14))
+
+        for _, key in MWE_YEARLY_ROW_DEFS:
+            for i in range(12):
+                grand[key][i] += rows_by_key[key][i]
+
+    if emp_count == 0:
+        story.append(Paragraph("No employees on file for this financial year.", style_mwe_cell_left))
+    else:
+        story.append(Paragraph("GRAND TOTAL &mdash; ALL EMPLOYEES", style_mwe_total_label))
+        story.append(Spacer(1, 4))
+        story.append(build_block(grand))
+
+    doc.build(story)
+    return filepath
+
+
 # --------------------------------------------------------------------------
 # Form 3A
 # --------------------------------------------------------------------------

@@ -5029,6 +5029,39 @@ async def get_wages(
     }
 
 
+@app.get("/api/years/{key}/wages/checklist/pdf")
+async def download_yearly_wage_checklist_pdf(
+    key: str,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Standalone print/share PDF of every employee's whole-year wage entries for one
+    financial year -- one block per employee, plus a grand total. Not a statutory
+    form, same no-payment-gate + forms.download RBAC convention as the monthly PDF
+    below. Registered BEFORE /wages/{month_idx}/pdf deliberately -- FastAPI matches
+    routes by structure before coercing {month_idx} to int, so "checklist" would
+    otherwise 422 there instead of ever reaching this route."""
+    require_permission(db, current_user, "forms.download")
+    est_obj, project = active
+    if key not in project.years:
+        raise HTTPException(404, "Year not found")
+
+    est = project.build_establishment_for_year(key)
+    emps = project.build_employees_for_year(key)
+
+    tmp = tempfile.mkdtemp()
+    safe_name = (project.name or 'EPF').replace("/", "-").replace("\\", "-").strip() or 'EPF'
+    fname = f"{safe_name}_YearlyWageChecklist_{key}.pdf"
+    path = os.path.join(tmp, fname)
+    try:
+        from pdf_engine import generate_yearly_wage_checklist_pdf
+        generate_yearly_wage_checklist_pdf(project, est, emps, path)
+    except Exception as e:
+        raise HTTPException(500, f"PDF generation failed: {str(e)}")
+    return FileResponse(path, filename=fname, media_type="application/pdf")
+
+
 @app.get("/api/years/{key}/wages/{month_idx}/pdf")
 async def download_monthly_wage_entry_pdf(
     key: str,
