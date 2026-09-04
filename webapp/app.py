@@ -5029,6 +5029,45 @@ async def get_wages(
     }
 
 
+@app.get("/api/years/{key}/wages/{month_idx}/pdf")
+async def download_monthly_wage_entry_pdf(
+    key: str,
+    month_idx: int,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Standalone print/share PDF of the Monthly Wage Entry grid for one month -- not a
+    statutory form, so unlike /api/reports/... it deliberately carries no subscription-
+    fee payment gate (per user request), just the same forms.download RBAC permission
+    every other download uses."""
+    require_permission(db, current_user, "forms.download")
+    est_obj, project = active
+    if key not in project.years:
+        raise HTTPException(404, "Year not found")
+    if not (0 <= month_idx <= 11):
+        raise HTTPException(400, "Invalid month index")
+
+    yr = project.years[key]
+    est = project.build_establishment_for_year(key)
+    emps = project.build_employees_for_year(key)
+    month_abbr = MONTH_SHORT_NAMES[month_idx]
+    cal_year = calendar_year_for_month(month_abbr, yr.year_from, yr.year_to)
+    cal_month = get_month_num(month_abbr)
+    days_in_month = calendar.monthrange(cal_year, cal_month)[1] if cal_year and cal_month else 30
+
+    tmp = tempfile.mkdtemp()
+    safe_name = (project.name or 'EPF').replace("/", "-").replace("\\", "-").strip() or 'EPF'
+    fname = f"{safe_name}_MonthlyWageEntry_{key}_{month_abbr}.pdf"
+    path = os.path.join(tmp, fname)
+    try:
+        from pdf_engine import generate_monthly_wage_entry_pdf
+        generate_monthly_wage_entry_pdf(project, est, emps, path, month_idx, month_abbr, cal_year, cal_month, days_in_month)
+    except Exception as e:
+        raise HTTPException(500, f"PDF generation failed: {str(e)}")
+    return FileResponse(path, filename=fname, media_type="application/pdf")
+
+
 @app.post("/api/years/{key}/wages")
 async def put_wages(
     key: str,

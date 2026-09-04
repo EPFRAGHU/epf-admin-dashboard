@@ -142,6 +142,164 @@ def generate_form_9_pdf(project, filepath: str, member_ids: Optional[Set[str]] =
     return filepath
 
 # --------------------------------------------------------------------------
+# Monthly Wage Entry -- one-month snapshot, mirrors the on-screen bulk-entry grid
+# --------------------------------------------------------------------------
+MWE_ACCENT = colors.HexColor('#1F3A5F')
+MWE_ZEBRA = colors.HexColor('#F4F6F9')
+
+style_mwe_title = ParagraphStyle(name='MWETitle', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=15, alignment=TA_CENTER, textColor=MWE_ACCENT, spaceAfter=2)
+style_mwe_subtitle = ParagraphStyle(name='MWESubtitle', parent=styles['Normal'], fontName='Helvetica', fontSize=10, alignment=TA_CENTER, textColor=colors.grey, spaceAfter=10)
+style_mwe_meta = ParagraphStyle(name='MWEMeta', parent=styles['Normal'], fontName='Helvetica', fontSize=9, alignment=TA_LEFT)
+style_mwe_header = ParagraphStyle(name='MWEHeaderCell', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=8, alignment=TA_CENTER, textColor=colors.white)
+style_mwe_cell = ParagraphStyle(name='MWECell', parent=styles['Normal'], fontName='Helvetica', fontSize=8, alignment=TA_CENTER)
+style_mwe_cell_left = ParagraphStyle(name='MWECellLeft', parent=styles['Normal'], fontName='Helvetica', fontSize=8, alignment=TA_LEFT)
+style_mwe_flag = ParagraphStyle(name='MWEFlag', parent=styles['Normal'], fontName='Helvetica', fontSize=7, alignment=TA_LEFT, textColor=colors.HexColor('#555555'))
+style_mwe_total_label = ParagraphStyle(name='MWETotalLabel', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=9, alignment=TA_RIGHT)
+style_mwe_total_val = ParagraphStyle(name='MWETotalVal', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=9, alignment=TA_CENTER)
+
+
+def _mwe_parse_ddmmyyyy(s):
+    if not s:
+        return None
+    parts = str(s).strip().split("-")
+    if len(parts) != 3:
+        return None
+    try:
+        d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+        return (y, m, d)
+    except ValueError:
+        return None
+
+
+def generate_monthly_wage_entry_pdf(project, est, employees, filepath: str, month_idx: int,
+                                     month_abbr: str, cal_year, cal_month, days_in_month: int):
+    """One month's Monthly Wage Entry grid, exactly as shown on-screen, as a standalone
+    PDF -- not a statutory form, just an elegant printable/shareable record of what was
+    entered. `employees` are epf_engine.Employee objects for this financial year (from
+    project.build_employees_for_year); only those with wage data in this month are
+    included, same as the on-screen grid's own "has data" convention elsewhere
+    (count_ecr_employees_for_month). `est` is the year-scoped Establishment (from
+    project.build_establishment_for_year) whose worker_epf_rate/eps_rate/employer_*
+    rate properties drive the EE/ER/Pension math via Employee.month_rows() -- the same
+    calculation engine every other form (3A/6A/9) already uses, so these figures can
+    never drift from the grid's own numbers."""
+    doc = _build_pdf_doc(filepath, orientation="landscape")
+    story = []
+
+    story.append(Paragraph("MONTHLY WAGE ENTRY", style_mwe_title))
+    story.append(Paragraph(f"{month_abbr} {cal_year or ''} &nbsp;&bull;&nbsp; {est.name}", style_mwe_subtitle))
+
+    meta_bits = [f"<b>Establishment Code:</b> {est.code or '—'}"]
+    if est.address:
+        meta_bits.append(f"<b>Address:</b> {est.address}")
+    meta_bits.append(f"<b>Financial Year:</b> {est.year_from}-{str(est.year_to)[-2:]}")
+    story.append(Paragraph(" &nbsp;|&nbsp; ".join(meta_bits), style_mwe_meta))
+    story.append(Spacer(1, 10))
+
+    from epf_engine import get_wage_ceilings_for_year
+    wage_ceilings = get_wage_ceilings_for_year(est.year_from)
+
+    headers = [
+        "Sl\nNo.", "Member ID", "UAN", "Name", "Days\nin Mth", "NCP\nDays", "Work\nDays",
+        "Gross\nWages", "EPF\nWages", "EPS\nWages", "EE Share", "ER PF", "Pension", "Notes"
+    ]
+    header_row = [Paragraph(h.replace('\n', '<br/>'), style_mwe_header) for h in headers]
+    data = [header_row]
+
+    totals = {"gross": 0, "epf": 0, "eps": 0, "ee": 0, "erpf": 0, "pension": 0}
+    row_count = 0
+
+    for emp in employees:
+        gross = emp.gross_wages[month_idx] if month_idx is not None and month_idx < len(emp.gross_wages) else 0
+        if not gross:
+            continue
+        mrows = emp.month_rows(est.worker_epf_rate, est.worker_eps_rate,
+                               est.employer_epf_rate, est.employer_eps_rate,
+                               wage_ceilings=wage_ceilings)
+        w, we, ws, wt, ee, es, et = mrows[month_idx]
+        ncp = emp.ncp_days[month_idx] if hasattr(emp, 'ncp_days') and month_idx < len(emp.ncp_days) else 0
+        work_days = max(0, days_in_month - (ncp or 0))
+
+        flags = []
+        if emp.higher_epf_ee: flags.append("Higher EPF (EE)")
+        if emp.higher_epf_er: flags.append("Higher EPF (ER)")
+        if emp.age_crosses_58: flags.append("Age &gt; 58")
+        if emp.pohw: flags.append("PoHW")
+        if emp.pohw_additional_1_16: flags.append("+1.16%")
+        m = project.master.get(emp.member_id)
+        if m:
+            doj = _mwe_parse_ddmmyyyy(m.doj)
+            doe = _mwe_parse_ddmmyyyy(m.doe)
+            if doe and cal_year and doe[:2] == (cal_year, cal_month):
+                flags.append("<b>Exited this month</b>")
+            elif doj and cal_year and doj[:2] == (cal_year, cal_month):
+                flags.append("<b>Joined this month</b>")
+
+        row_count += 1
+        data.append([
+            Paragraph(str(row_count), style_mwe_cell),
+            Paragraph(emp.member_id or "", style_mwe_cell_left),
+            Paragraph(emp.uan or "", style_mwe_cell_left),
+            Paragraph(emp.name or "", style_mwe_cell_left),
+            Paragraph(str(days_in_month), style_mwe_cell),
+            Paragraph(str(ncp or 0), style_mwe_cell),
+            Paragraph(str(work_days), style_mwe_cell),
+            Paragraph(f"{gross:,.0f}", style_mwe_cell),
+            Paragraph(f"{w:,.0f}", style_mwe_cell),
+            Paragraph(f"{we:,.0f}", style_mwe_cell),
+            Paragraph(f"{ee:,.0f}", style_mwe_cell),
+            Paragraph(f"{es:,.0f}", style_mwe_cell),
+            Paragraph(f"{et:,.0f}", style_mwe_cell),
+            Paragraph(", ".join(flags), style_mwe_flag),
+        ])
+        totals["gross"] += gross; totals["epf"] += w; totals["eps"] += we
+        totals["ee"] += ee; totals["erpf"] += es; totals["pension"] += et
+
+    if row_count == 0:
+        data.append([Paragraph("No wage data entered for this month.", style_mwe_cell_left)] + [Paragraph("", style_mwe_cell)] * 13)
+    else:
+        data.append([
+            Paragraph("", style_mwe_cell), Paragraph("", style_mwe_cell), Paragraph("", style_mwe_cell),
+            Paragraph(f"TOTAL ({row_count} employees)", style_mwe_total_label),
+            Paragraph("", style_mwe_cell), Paragraph("", style_mwe_cell), Paragraph("", style_mwe_cell),
+            Paragraph(f"{totals['gross']:,.0f}", style_mwe_total_val),
+            Paragraph(f"{totals['epf']:,.0f}", style_mwe_total_val),
+            Paragraph(f"{totals['eps']:,.0f}", style_mwe_total_val),
+            Paragraph(f"{totals['ee']:,.0f}", style_mwe_total_val),
+            Paragraph(f"{totals['erpf']:,.0f}", style_mwe_total_val),
+            Paragraph(f"{totals['pension']:,.0f}", style_mwe_total_val),
+            Paragraph("", style_mwe_cell),
+        ])
+
+    available_width = doc.pagesize[0] - doc.rightMargin - doc.leftMargin
+    weights = [0.03, 0.09, 0.09, 0.12, 0.04, 0.04, 0.05, 0.07, 0.07, 0.06, 0.06, 0.06, 0.06, 0.16]
+    col_widths = [w * available_width for w in weights]
+
+    table = Table(data, colWidths=col_widths, repeatRows=1)
+    tstyle = TableStyle([
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#D5DBE3')),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ('TOPPADDING', (0, 0), (-1, -1), 5),
+        ('BACKGROUND', (0, 0), (-1, 0), MWE_ACCENT),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, MWE_ZEBRA]),
+        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#E4E9F0')),
+        ('LINEABOVE', (0, -1), (-1, -1), 1, MWE_ACCENT),
+    ])
+    table.setStyle(tstyle)
+    story.append(table)
+
+    story.append(Spacer(1, 14))
+    story.append(Paragraph(
+        f"Generated from Monthly Wage Entry &mdash; not a statutory form. "
+        f"Rates applied: EE {est.worker_epf_rate}% &bull; ER EPF {est.employer_epf_rate}% &bull; ER EPS {est.employer_eps_rate}%.",
+        style_mwe_flag
+    ))
+
+    doc.build(story)
+    return filepath
+
+# --------------------------------------------------------------------------
 # Form 3A
 # --------------------------------------------------------------------------
 FORM_3A_MONTHS = ["Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Jan", "Feb"]

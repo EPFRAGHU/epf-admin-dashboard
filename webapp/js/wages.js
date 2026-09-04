@@ -999,6 +999,7 @@ App.registerPage('wage-entry', async (container) => {
           ${years.map(y => `<option value="${y.key}" ${y.key === currentYearKey ? 'selected' : ''}>${y.label}</option>`).join('')}
         </select>
         <button class="btn btn-glass" onclick="showEcrImportModal()">📥 Import ECR File</button>
+        <button class="btn btn-glass" onclick="downloadMonthlyWageEntryPdf()">📄 Download PDF</button>
         <button class="btn btn-primary" onclick="saveMonthlyWages()">💾 Save Monthly Wages</button>
       </div>
     </div>
@@ -1064,6 +1065,15 @@ App.registerPage('wage-entry', async (container) => {
   initBulkTableState();
   renderWageEntryMonthSummary();
 });
+
+window.downloadMonthlyWageEntryPdf = () => {
+  const monthIdx = document.getElementById('bulk-month-select').value;
+  const monthAbbr = constantsCache.month_short_names[monthIdx];
+  App.downloadFile(
+    `/api/years/${currentYearKey}/wages/${monthIdx}/pdf`,
+    `MonthlyWageEntry_${currentYearKey}_${monthAbbr}.pdf`
+  );
+};
 
 window.switchWageEntryYear = () => {
   currentYearKey = document.getElementById('wage-entry-year-select').value;
