@@ -11,6 +11,7 @@ from reportlab.platypus import (
 )
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from reportlab.pdfgen.canvas import Canvas
+from epf_engine import natural_sort_key
 
 styles = getSampleStyleSheet()
 style_normal = styles["Normal"]
@@ -95,7 +96,9 @@ def generate_form_9_pdf(project, filepath: str, member_ids: Optional[Set[str]] =
     header_row = [Paragraph(h.replace('\n', '<br/>'), style_cell_bold) for h in headers]
     data = [header_row]
     
-    employees = project.master_list()
+    # Form 9 lists employees Member ID-wise (not master_list()'s default SL No. order --
+    # other forms keep that convention, this is scoped to Form 9 only per user request).
+    employees = sorted(project.master_list(), key=lambda e: natural_sort_key(e.member_id))
     if member_ids is not None:
         employees = [e for e in employees if e.member_id in member_ids]
     for i, emp in enumerate(employees, start=1):
