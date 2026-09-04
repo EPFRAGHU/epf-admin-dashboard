@@ -394,10 +394,13 @@ window.filterEmpTable = () => {
   renderEmpTable();
 };
 
-function empRow(e) {
+function empRow(e, index) {
+  // SL column is pure row position (1..N in the current sort/filter view), not the
+  // stored e.serial_no field -- see feedback that a sort-driven position change read
+  // as a bug when this showed the real (fixed, per-employee) serial number instead.
   const superCls = e.superannuation ? ' superannuation-row' : '';
   return `<tr class="${superCls}" data-search="${(e.member_id + ' ' + e.name + ' ' + e.uan).toLowerCase()}">
-    <td>${e.serial_no || ''}</td>
+    <td>${index + 1}</td>
     <td><strong>${App.fmtId(e.member_id)}</strong></td>
     <td>${App.esc(e.uan)}</td>
     <td class="txt">${App.esc(e.name)}</td>
