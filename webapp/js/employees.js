@@ -34,7 +34,9 @@ function computeScopePath(branchId, divisionId, unitId) {
 let empSortState = { column: null, direction: 'asc' };
 
 const EMP_SORT_TYPES = {
-  serial_no: 'number', member_id: 'string', uan: 'string', name: 'string',
+  // SL No deliberately excluded -- it's a fixed per-employee tag (real EPFO serial
+  // number), not a sortable column; sorting other columns must never touch it.
+  member_id: 'string', uan: 'string', name: 'string',
   scope_path: 'string', father_name: 'string', dob: 'date', sex: 'string',
   doj: 'date', doe: 'date', reason_leaving: 'string',
 };
@@ -264,7 +266,7 @@ App.registerPage('employees', async (container) => {
         <table id="emp-table">
           <thead>
             <tr>
-              ${empSortTh('serial_no', 'SL')}${empSortTh('member_id', 'Member ID')}${empSortTh('uan', 'UAN')}${empSortTh('name', 'Name')}
+              <th>SL</th>${empSortTh('member_id', 'Member ID')}${empSortTh('uan', 'UAN')}${empSortTh('name', 'Name')}
               ${empSortTh('scope_path', 'Org Scope')}
               ${empSortTh('father_name', "Father's Name")}${empSortTh('dob', 'DOB')}<th>Higher EPF</th>${empSortTh('sex', 'Sex')}
               ${empSortTh('doj', 'DOJ')}${empSortTh('doe', 'DOE')}${empSortTh('reason_leaving', 'Reason')}<th>Actions</th>
