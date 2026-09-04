@@ -6195,7 +6195,7 @@ async def import_master_file(
     tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
     try:
         tmp.write(await file.read()); tmp.close()
-        records = import_master_from_excel(tmp.name)
+        records, _ = import_master_from_excel(tmp.name)
         existing_uans = {m.uan for m in project.master.values() if m.uan}
         existing_ids = set(project.master.keys())
         imported_count = 0
