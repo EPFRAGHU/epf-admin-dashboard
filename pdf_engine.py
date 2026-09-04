@@ -11,7 +11,22 @@ from reportlab.platypus import (
 )
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from reportlab.pdfgen.canvas import Canvas
+from xml.sax.saxutils import escape as _xml_escape
 from epf_engine import natural_sort_key
+
+
+def esc(value) -> str:
+    """Escape a value before it goes into a ReportLab Paragraph's mini-XML markup.
+    Every Paragraph(...) call below mixes literal markup we control (<b>, &nbsp;, etc.)
+    with DB-sourced text (establishment/employee names, addresses, free-text fields like
+    reason_leaving) -- without this, a name containing '<' or '&' gets parsed as markup
+    instead of rendered literally, e.g. a name that happens to contain a valid tag like
+    '<b>' renders as bold instead of the literal text. Not applied to canvas.drawString
+    calls (running headers/footers) since those never parse markup in the first place."""
+    if value is None:
+        return ""
+    return _xml_escape(str(value))
+
 
 styles = getSampleStyleSheet()
 style_normal = styles["Normal"]
@@ -74,8 +89,8 @@ def generate_form_9_pdf(project, filepath: str, member_ids: Optional[Set[str]] =
     story.append(Paragraph("<i>Return of employees who are entitled and required to become members of the Employees' Provident Fund and Pension Fund</i>", style_header))
     story.append(Spacer(1, 12))
     
-    story.append(Paragraph(f"<b>Name & Address of the Factory/ Establishment :- </b> {project.name}, {project.address}", style_header))
-    story.append(Paragraph(f"<b>Code No. of the Factory/ Establishment :- </b> {project.code or ''}", style_header))
+    story.append(Paragraph(f"<b>Name & Address of the Factory/ Establishment :- </b> {esc(project.name)}, {esc(project.address)}", style_header))
+    story.append(Paragraph(f"<b>Code No. of the Factory/ Establishment :- </b> {esc(project.code) or ''}", style_header))
     
     coverage = project.coverage_date if project.coverage_date else "______________________"
     story.append(Paragraph(f"<b>Date of Coverage :- </b> {coverage}", style_normal))
@@ -105,17 +120,17 @@ def generate_form_9_pdf(project, filepath: str, member_ids: Optional[Set[str]] =
         leaving = ", ".join(x for x in (emp.doe, emp.reason_leaving) if x)
         row = [
             Paragraph(str(i), style_cell),
-            Paragraph(emp.member_id or "", style_cell_left),
-            Paragraph(emp.uan or "", style_cell_left),
-            Paragraph(emp.name or "", style_cell_left),
-            Paragraph(emp.father_name or "", style_cell_left),
-            Paragraph(emp.dob or "", style_cell),
-            Paragraph(emp.sex or "", style_cell),
-            Paragraph(emp.doj or "", style_cell),
+            Paragraph(esc(emp.member_id), style_cell_left),
+            Paragraph(esc(emp.uan), style_cell_left),
+            Paragraph(esc(emp.name), style_cell_left),
+            Paragraph(esc(emp.father_name), style_cell_left),
+            Paragraph(esc(emp.dob), style_cell),
+            Paragraph(esc(emp.sex), style_cell),
+            Paragraph(esc(emp.doj), style_cell),
             Paragraph("", style_cell),
             Paragraph("", style_cell),
             Paragraph("", style_cell),
-            Paragraph(leaving, style_cell_left),
+            Paragraph(esc(leaving), style_cell_left),
             Paragraph("", style_cell)
         ]
         data.append(row)
@@ -188,11 +203,11 @@ def generate_monthly_wage_entry_pdf(project, est, employees, filepath: str, mont
     story = []
 
     story.append(Paragraph("MONTHLY WAGE ENTRY", style_mwe_title))
-    story.append(Paragraph(f"{month_abbr} {cal_year or ''} &nbsp;&bull;&nbsp; {est.name}", style_mwe_subtitle))
+    story.append(Paragraph(f"{month_abbr} {cal_year or ''} &nbsp;&bull;&nbsp; {esc(est.name)}", style_mwe_subtitle))
 
-    meta_bits = [f"<b>Establishment Code:</b> {est.code or '—'}"]
+    meta_bits = [f"<b>Establishment Code:</b> {esc(est.code) or '—'}"]
     if est.address:
-        meta_bits.append(f"<b>Address:</b> {est.address}")
+        meta_bits.append(f"<b>Address:</b> {esc(est.address)}")
     meta_bits.append(f"<b>Financial Year:</b> {est.year_from}-{str(est.year_to)[-2:]}")
     story.append(Paragraph(" &nbsp;|&nbsp; ".join(meta_bits), style_mwe_meta))
     story.append(Spacer(1, 10))
@@ -256,9 +271,9 @@ def generate_monthly_wage_entry_pdf(project, est, employees, filepath: str, mont
         row_count += 1
         data.append([
             Paragraph(str(row_count), style_mwe_cell),
-            Paragraph(emp.member_id or "", style_mwe_cell_left),
-            Paragraph(emp.uan or "", style_mwe_cell_left),
-            Paragraph(emp.name or "", style_mwe_cell_left),
+            Paragraph(esc(emp.member_id), style_mwe_cell_left),
+            Paragraph(esc(emp.uan), style_mwe_cell_left),
+            Paragraph(esc(emp.name), style_mwe_cell_left),
             Paragraph(str(days_in_month), style_mwe_cell),
             Paragraph(str(ncp or 0), style_mwe_cell),
             Paragraph(str(work_days), style_mwe_cell),
@@ -382,7 +397,7 @@ def generate_yearly_wage_checklist_pdf(project, est, employees, filepath: str):
     story.append(Paragraph(fy_label, style_mwe_year_big))
     story.append(Paragraph("YEARLY WAGE CHECKLIST", style_mwe_title))
     story.append(Paragraph(
-        f"Financial Year {est.year_from}-{str(est.year_to)[-2:]} &nbsp;&bull;&nbsp; {est.name}",
+        f"Financial Year {est.year_from}-{str(est.year_to)[-2:]} &nbsp;&bull;&nbsp; {esc(est.name)}",
         style_mwe_subtitle
     ))
     story.append(Spacer(1, 6))
@@ -485,10 +500,10 @@ def generate_yearly_wage_checklist_pdf(project, est, employees, filepath: str):
 
         for serial, (emp, rows_by_key) in enumerate(emp_blocks, start=1):
             identity = (
-                f"<b>{serial}. {emp.name or ''}</b> &nbsp;|&nbsp; UAN: {emp.uan or '-'} "
-                f"&nbsp;|&nbsp; Member ID: {emp.member_id or '-'} "
-                f"&nbsp;|&nbsp; DOB: {emp.dob or '-'} &nbsp;|&nbsp; DOJ: {emp.doj or '-'} "
-                f"&nbsp;|&nbsp; DOL: {emp.doe or '-'} &nbsp;|&nbsp; Reason: {emp.reason_leaving or '-'}"
+                f"<b>{serial}. {esc(emp.name)}</b> &nbsp;|&nbsp; UAN: {esc(emp.uan) or '-'} "
+                f"&nbsp;|&nbsp; Member ID: {esc(emp.member_id) or '-'} "
+                f"&nbsp;|&nbsp; DOB: {esc(emp.dob) or '-'} &nbsp;|&nbsp; DOJ: {esc(emp.doj) or '-'} "
+                f"&nbsp;|&nbsp; DOL: {esc(emp.doe) or '-'} &nbsp;|&nbsp; Reason: {esc(emp.reason_leaving) or '-'}"
             )
             story.append(KeepTogether([
                 Paragraph(identity, style_mwe_meta),
@@ -530,18 +545,18 @@ def _build_form_3a_employee_block(est, emp, aw):
     block.append(Spacer(1, 12))
 
     # Info Table
-    member_id_display = emp.member_id or ""
+    member_id_display = esc(emp.member_id)
     if emp.uan:
-        member_id_display += f"  (UAN: {emp.uan})"
+        member_id_display += f"  (UAN: {esc(emp.uan)})"
 
-    rate_val = est.statutory_rate_text if est.is_post_1997 else f"{est.statutory_rate}%"
+    rate_val = esc(est.statutory_rate_text) if est.is_post_1997 else f"{est.statutory_rate}%"
 
     info_data = [
         [Paragraph("1.", style_cell_left), Paragraph("Member ID", style_cell_left), Paragraph(":", style_cell_left), Paragraph(f"<b>{member_id_display}</b>", style_cell_left)],
-        [Paragraph("2.", style_cell_left), Paragraph("Name of the Member", style_cell_left), Paragraph(":", style_cell_left), Paragraph(f"<b>{emp.name or ''}</b>", style_cell_left)],
-        [Paragraph("3.", style_cell_left), Paragraph("Father's Name", style_cell_left), Paragraph(":", style_cell_left), Paragraph(emp.father_name or "", style_cell_left)],
-        [Paragraph("4.", style_cell_left), Paragraph("Name & Address of the Establishment", style_cell_left), Paragraph(":", style_cell_left), Paragraph(f"{est.name}, {est.address}", style_cell_left)],
-        [Paragraph("", style_cell_left), Paragraph("Code No. of the Establishment", style_cell_left), Paragraph(":", style_cell_left), Paragraph(f"<b>{est.code}</b>", style_cell_left)],
+        [Paragraph("2.", style_cell_left), Paragraph("Name of the Member", style_cell_left), Paragraph(":", style_cell_left), Paragraph(f"<b>{esc(emp.name)}</b>", style_cell_left)],
+        [Paragraph("3.", style_cell_left), Paragraph("Father's Name", style_cell_left), Paragraph(":", style_cell_left), Paragraph(esc(emp.father_name), style_cell_left)],
+        [Paragraph("4.", style_cell_left), Paragraph("Name & Address of the Establishment", style_cell_left), Paragraph(":", style_cell_left), Paragraph(f"{esc(est.name)}, {esc(est.address)}", style_cell_left)],
+        [Paragraph("", style_cell_left), Paragraph("Code No. of the Establishment", style_cell_left), Paragraph(":", style_cell_left), Paragraph(f"<b>{esc(est.code)}</b>", style_cell_left)],
         [Paragraph("5.", style_cell_left), Paragraph("Statutory Rate of Contribution", style_cell_left), Paragraph(":", style_cell_left), Paragraph(rate_val, style_cell_left)],
         [Paragraph("", style_cell_left), Paragraph("Voluntary higher rate of employee's contribution, if any", style_cell_left), Paragraph(":", style_cell_left), Paragraph("", style_cell_left)]
     ]
@@ -633,7 +648,7 @@ def _build_form_3a_employee_block(est, emp, aw):
     block.append(Paragraph(cert1, style_cell_left))
 
     block.append(Spacer(1, 6))
-    block.append(Paragraph(f"(a) Date of leaving Service: {emp.doe or ''}                                (b) Reason for leaving service: {emp.reason_leaving or ''}", style_cell_left))
+    block.append(Paragraph(f"(a) Date of leaving Service: {esc(emp.doe)}                                (b) Reason for leaving service: {esc(emp.reason_leaving)}", style_cell_left))
     block.append(Spacer(1, 6))
 
     cert2 = "Certified that the difference between the total of the contributions shown under Cols. 3 & 4 of the above table and that arrived at on the total wages shown in Col. 2 at the prescribed rate is solely due to the rounding off of contribution to the nearest rupee under the rules."
@@ -738,10 +753,10 @@ def generate_form_6a_pdf(project, year_key: str, filepath: str, member_ids: Opti
     story.append(Paragraph(f"<i>Annual Statement of Contribution for the currency period from 1st April {est.year_from} to 31st March {est.year_to}</i>", style_header))
     story.append(Spacer(1, 12))
     
-    story.append(Paragraph(f"<b>Name & Address of the Establishment :- </b> {est.name}, {est.address}", style_header))
-    story.append(Paragraph(f"<b>Code No. of the Establishment :- </b> {est.code}", style_header))
+    story.append(Paragraph(f"<b>Name & Address of the Establishment :- </b> {esc(est.name)}, {esc(est.address)}", style_header))
+    story.append(Paragraph(f"<b>Code No. of the Establishment :- </b> {esc(est.code)}", style_header))
     story.append(Spacer(1, 12))
-    story.append(Paragraph(f"<i>Statutory Rate of Contribution : {est.statutory_rate_text}</i>", style_header))
+    story.append(Paragraph(f"<i>Statutory Rate of Contribution : {esc(est.statutory_rate_text)}</i>", style_header))
     story.append(Spacer(1, 12))
     
     headers_row1 = [
@@ -768,22 +783,22 @@ def generate_form_6a_pdf(project, year_key: str, filepath: str, member_ids: Opti
     grand = [0, 0, 0, 0, 0, 0, 0]
     
     for sl, emp in enumerate(employees, start=1):
-        member_id_display = emp.member_id or ""
+        member_id_display = esc(emp.member_id)
         if emp.uan:
-            member_id_display += f"  (UAN: {emp.uan})"
-        
+            member_id_display += f"  (UAN: {esc(emp.uan)})"
+
         wt, w_epf, w_eps, w_tot, e_epf, e_eps, e_tot = emp.annual_totals(
             est.worker_epf_rate, est.worker_eps_rate, est.employer_epf_rate, est.employer_eps_rate)
-            
+
         row_vals = [int(round(wt)), int(round(w_epf)), int(round(w_eps)), int(round(w_tot)),
                     int(round(e_epf)), int(round(e_eps)), int(round(e_tot))]
         for i, val in enumerate(row_vals):
             grand[i] += val
-            
+
         data.append([
             Paragraph(str(sl), style_cell),
             Paragraph(member_id_display, style_cell_left),
-            Paragraph(emp.name or "", style_cell_left),
+            Paragraph(esc(emp.name), style_cell_left),
             Paragraph(str(row_vals[0]) if row_vals[0] else "", style_cell_right),
             Paragraph(str(row_vals[1]) if row_vals[1] else "", style_cell_right),
             Paragraph(str(row_vals[2]) if row_vals[2] else "", style_cell_right),
@@ -850,8 +865,8 @@ def generate_form_12a_pdf(project, year_key: str, filepath: str, member_ids: Opt
     story.append(Paragraph(f"<i>Statement of Contribution for the currency period from 1st April {est.year_from} to 31st March {est.year_to}</i>", style_header))
     story.append(Spacer(1, 12))
     
-    story.append(Paragraph(f"<b>Name & Address of the Establishment :- </b> {est.name}, {est.address}", style_title))
-    story.append(Paragraph(f"<b>Code No. of the Establishment :- </b> {est.code}", style_title))
+    story.append(Paragraph(f"<b>Name & Address of the Establishment :- </b> {esc(est.name)}, {esc(est.address)}", style_title))
+    story.append(Paragraph(f"<b>Code No. of the Establishment :- </b> {esc(est.code)}", style_title))
     story.append(Spacer(1, 12))
     
     headers = [
@@ -1002,7 +1017,7 @@ def generate_form_5_pdf(project, filepath: str, member_ids: Optional[Set[str]] =
         block.append(Paragraph("To be sent to the Commissioner with Form 2", style_header))
         block.append(Spacer(1, 12))
         
-        block.append(Paragraph(f"<b>Name & Address of the Factory/ Establishment :- </b> {project.name}, {project.address}", style_header))
+        block.append(Paragraph(f"<b>Name & Address of the Factory/ Establishment :- </b> {esc(project.name)}, {esc(project.address)}", style_header))
         block.append(Spacer(1, 12))
         
         headers = [
@@ -1017,13 +1032,13 @@ def generate_form_5_pdf(project, filepath: str, member_ids: Optional[Set[str]] =
         for i, m in enumerate(matches, start=1):
             data.append([
                 Paragraph(str(i), style_cell),
-                Paragraph(m.member_id or "", style_cell_left),
-                Paragraph(m.uan or "", style_cell_left),
-                Paragraph(m.name or "", style_cell_left),
-                Paragraph(m.father_name or "", style_cell_left),
-                Paragraph(m.dob or "", style_cell),
-                Paragraph(m.sex or "", style_cell),
-                Paragraph(m.doj or "", style_cell),
+                Paragraph(esc(m.member_id), style_cell_left),
+                Paragraph(esc(m.uan), style_cell_left),
+                Paragraph(esc(m.name), style_cell_left),
+                Paragraph(esc(m.father_name), style_cell_left),
+                Paragraph(esc(m.dob), style_cell),
+                Paragraph(esc(m.sex), style_cell),
+                Paragraph(esc(m.doj), style_cell),
                 Paragraph("", style_cell),
                 Paragraph("", style_cell)
             ])
@@ -1088,7 +1103,7 @@ def generate_form_10_pdf(project, filepath: str, member_ids: Optional[Set[str]] 
         block.append(Paragraph(f"<i>Return of Members leaving service during the month of: {month_label}</i>", style_header))
         block.append(Spacer(1, 12))
         
-        block.append(Paragraph(f"<b>Name & Address of the Factory/ Establishment :- </b> {project.name}, {project.address}", style_header))
+        block.append(Paragraph(f"<b>Name & Address of the Factory/ Establishment :- </b> {esc(project.name)}, {esc(project.address)}", style_header))
         block.append(Spacer(1, 12))
         
         headers = [
@@ -1102,12 +1117,12 @@ def generate_form_10_pdf(project, filepath: str, member_ids: Optional[Set[str]] 
         for i, m in enumerate(matches, start=1):
             data.append([
                 Paragraph(str(i), style_cell),
-                Paragraph(m.member_id or "", style_cell_left),
-                Paragraph(m.uan or "", style_cell_left),
-                Paragraph(m.name or "", style_cell_left),
-                Paragraph(m.father_name or "", style_cell_left),
-                Paragraph(m.doe or "", style_cell),
-                Paragraph(m.reason_leaving or "", style_cell),
+                Paragraph(esc(m.member_id), style_cell_left),
+                Paragraph(esc(m.uan), style_cell_left),
+                Paragraph(esc(m.name), style_cell_left),
+                Paragraph(esc(m.father_name), style_cell_left),
+                Paragraph(esc(m.doe), style_cell),
+                Paragraph(esc(m.reason_leaving), style_cell),
                 Paragraph("", style_cell)
             ])
             
@@ -1275,7 +1290,7 @@ def generate_employee_wage_history_pdf(data: dict, filepath: str):
         return row
 
     for y in years:
-        block = [Paragraph(f"FY {y.get('year', '')}", style_subtitle), Spacer(1, 3)]
+        block = [Paragraph(f"FY {esc(y.get('year', ''))}", style_subtitle), Spacer(1, 3)]
 
         table_data = [
             _vals_row("Wages", y.get("wages") or [0] * 12, y.get("total"), style_wyh_label_wages, style_wyh_val_wages),
