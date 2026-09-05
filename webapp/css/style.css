@@ -605,7 +605,7 @@ html[data-theme="dark"] input[type="date"] { color-scheme: dark; }
 .year-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
 
 .timeline-scroll { overflow-x: auto; padding-bottom: 6px; margin: 0 -4px 20px; }
-.timeline { display: grid; grid-auto-flow: column; grid-auto-columns: 128px; gap: 10px; padding: 4px; width: max-content; min-width: 100%; }
+.timeline { display: grid; grid-auto-flow: column; grid-auto-columns: 144px; gap: 10px; padding: 4px; width: max-content; min-width: 100%; }
 .month-card {
   background: var(--card); border: 1px solid var(--card-border); border-radius: var(--radius-sm);
   padding: 12px 13px 11px; cursor: pointer; text-align: left; font: inherit; color: inherit;
@@ -614,7 +614,9 @@ html[data-theme="dark"] input[type="date"] { color-scheme: dark; }
 }
 .month-card:hover { border-color: var(--accent); transform: translateY(-1px); }
 .month-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
-.month-card .mname { font-size: 14px; font-weight: 700; }
+.mcard-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.month-card .mname { font-size: 13px; font-weight: 700; }
+.month-card .memp-count { font-size: 22px; font-weight: 800; color: var(--accent2); line-height: 1; letter-spacing: -.01em; }
 .month-card .mrange { font-size: 10.5px; color: var(--text3); line-height: 1.35; min-height: 26px; }
 .status-badge {
   display: inline-flex; align-items: center; gap: 5px; width: fit-content;

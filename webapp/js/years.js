@@ -235,7 +235,10 @@ function renderTimeline() {
 
   document.getElementById('timeline-strip').innerHTML = months.map(mo => `
     <button class="month-card${mo.idx === __timelineMonthIdx ? ' selected' : ''}" onclick="selectTimelineMonth(${mo.idx})">
-      <span class="mname">${mo.m} ${mo.calYear}</span>
+      <span class="mcard-head">
+        <span class="mname">${mo.m} ${mo.calYear}</span>
+        <span class="memp-count" title="Employees with a wage entry this month">${mo.ecrCount}</span>
+      </span>
       <span class="mrange">${mo.m} 1–${mo.days}<br>${mo.days} days</span>
       <span class="status-badge ${mo.status}">${TIMELINE_STATUS_LABEL[mo.status]}</span>
     </button>
