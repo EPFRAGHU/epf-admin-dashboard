@@ -625,6 +625,8 @@ html[data-theme="dark"] input[type="date"] { color-scheme: dark; }
 .status-badge.completed { background: var(--green-glow); color: var(--green); }
 .status-badge.current   { background: rgba(76,111,255,.14); color: var(--blue); }
 .status-badge.upcoming  { background: var(--card-border); color: var(--text3); }
+.status-badge.not-covered { background: transparent; color: var(--text3); opacity: .6; }
+.month-card:has(.status-badge.not-covered) { opacity: .55; }
 
 .timeline-section .panel { background: var(--bg2); border: 1px solid var(--card-border); border-radius: var(--radius); padding: 24px clamp(18px, 3vw, 28px); box-shadow: var(--shadow); }
 .timeline-section .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }

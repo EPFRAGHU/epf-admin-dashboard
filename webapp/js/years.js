@@ -10,8 +10,22 @@ let __lockStatus = null;
 // doesn't refetch /api/years/{key}/wages every time.
 let __timelineCache = {};
 let __timelineMaster = null; // /api/employees -- establishment-wide, not year-scoped, fetched once
+let __timelineCoverageTime = null; // est.coverage_date as a timestamp, or undefined if unset/unparseable
 let __timelineYearKey = null;
 let __timelineMonthIdx = null;
+
+// Stricter than the shared parseDMY() (employees.js) -- rejects anything that isn't
+// literally D(D)-M(M)-YYYY with a 4-digit year before attempting to parse it. Bulk-
+// imported employee doj/doe values have been seen in unexpected formats (e.g. a
+// 2-digit year); parseDMY('27-07-26') doesn't fail, it silently returns 1926 (JS's
+// `new Date(26, ...)` treats a 2-digit year as 1900+y) -- which then reads as
+// "on-roll since 1926", inflating every month's headcount including ones long before
+// the employee (or the establishment itself) existed. Used only for this timeline's
+// month-by-month counts; doesn't touch the shared parseDMY() other pages rely on.
+function timelineParseDMY(s) {
+  if (!s || !/^\d{1,2}-\d{1,2}-\d{4}$/.test(s)) return null;
+  return parseDMY(s);
+}
 
 App.registerPage('years', async (container) => {
   if (!__constants) __constants = await App.get('/api/constants');
@@ -124,12 +138,14 @@ window.loadTimelineYear = async (key) => {
     // invisible to that list, undercounting Total Employees/joiners here. Fetched once
     // per page visit since it isn't year-scoped.
     __timelineMaster = await App.get('/api/employees').then(r => r.employees).catch(() => []);
+    const est = await App.get('/api/establishment').catch(() => null);
+    __timelineCoverageTime = est ? timelineParseDMY(est.coverage_date) : null;
   }
 
   if (!__timelineCache[key]) {
     try {
       const data = await App.get(`/api/years/${key}/wages`);
-      __timelineCache[key] = { data, months: computeTimelineMonths(key, data, __timelineMaster) };
+      __timelineCache[key] = { data, months: computeTimelineMonths(key, data, __timelineMaster, __timelineCoverageTime) };
     } catch (_) {
       document.getElementById('timeline-strip').innerHTML = `<div style="padding:20px; color:var(--text3); font-size:13px;">Couldn't load this year's wage data.</div>`;
       return;
@@ -144,7 +160,7 @@ window.loadTimelineYear = async (key) => {
   renderTimeline();
 };
 
-function computeTimelineMonths(yearKey, data, master) {
+function computeTimelineMonths(yearKey, data, master, coverageTime) {
   const now = new Date();
   const todayY = now.getFullYear(), todayM = now.getMonth() + 1;
   const MONTH_NAMES = ['Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb'];
@@ -161,36 +177,57 @@ function computeTimelineMonths(yearKey, data, master) {
     const monthStart = new Date(calYear, calMonth - 1, 1).getTime();
     const monthEnd = new Date(calYear, calMonth, 0, 23, 59, 59).getTime();
 
+    // A month that ends before the establishment's own EPF coverage date can't have
+    // had any employees at all -- clamp it regardless of what any individual
+    // employee's (possibly bad) doj/doe says, rather than trusting per-employee dates
+    // alone to keep pre-coverage months empty.
+    const beforeCoverage = coverageTime != null && monthEnd < coverageTime;
+
     let status;
-    if (calYear === todayY && calMonth === todayM) status = 'current';
+    if (beforeCoverage) status = 'not-covered';
+    else if (calYear === todayY && calMonth === todayM) status = 'current';
     else if (calYear < todayY || (calYear === todayY && calMonth < todayM)) status = 'completed';
     else status = 'upcoming';
 
-    let totalEmployees = 0, joined = 0, left = 0, done = 0;
+    // "Total Employees" is the ECR headcount -- employees who actually have a wage
+    // entry for this month -- not an estimate derived from doj/doe. Employee Master
+    // doj/doe can be wrong (bad legacy data, typos) in ways a coverage-date clamp
+    // alone can't fully catch, and this establishment's own ECR is the one figure
+    // that's always correct by construction: it can only ever contain employees
+    // someone actually entered wages for. `onRollEstimate` (doj/doe-based) is kept as
+    // a secondary, clearly-labeled reference for spotting employees who are on roll
+    // but still missing an entry -- never as the headline count.
+    let ecrCount = 0, onRollEstimate = 0, joined = 0, left = 0;
     let wagesSum = 0, eeSum = 0, erSum = 0, epsSum = 0;
-    (master || []).forEach(m2 => {
-      const dojT = m2.doj ? parseDMY(m2.doj) : null;
-      const doeT = m2.doe ? parseDMY(m2.doe) : null;
-      const onRoll = dojT !== null && dojT <= monthEnd && (doeT === null || doeT >= monthStart);
-      if (onRoll) totalEmployees++;
-      if (dojT !== null && dojT >= monthStart && dojT <= monthEnd) joined++;
-      if (doeT !== null && doeT >= monthStart && doeT <= monthEnd) left++;
+    if (!beforeCoverage) {
+      (master || []).forEach(m2 => {
+        const dojT = timelineParseDMY(m2.doj);
+        const doeT = timelineParseDMY(m2.doe);
+        const onRoll = dojT !== null && dojT <= monthEnd && (doeT === null || doeT >= monthStart);
+        if (onRoll) onRollEstimate++;
+        if (dojT !== null && dojT >= monthStart && dojT <= monthEnd) joined++;
+        if (doeT !== null && doeT >= monthStart && doeT <= monthEnd) left++;
 
-      const wageEmp = wageByMember[m2.member_id];
-      if (wageEmp) {
-        if ((wageEmp.gross_wages[i] || 0) > 0) done++;
-        const mm = wageEmp.months[i];
-        if (mm) { wagesSum += mm.w; eeSum += mm.we; erSum += mm.ee; epsSum += mm.es; }
-      }
-    });
+        const wageEmp = wageByMember[m2.member_id];
+        if (wageEmp) {
+          if ((wageEmp.gross_wages[i] || 0) > 0) {
+            ecrCount++;
+            const mm = wageEmp.months[i];
+            if (mm) { wagesSum += mm.w; eeSum += mm.we; erSum += mm.ee; epsSum += mm.es; }
+          }
+        }
+      });
+    }
 
     return {
       idx: i, m, calYear, calMonth, days, status,
-      totalEmployees, joined, left, done,
+      ecrCount, onRollEstimate, joined, left,
       wagesSum, eeSum, erSum, epsSum, total: eeSum + erSum + epsSum,
     };
   });
 }
+
+const TIMELINE_STATUS_LABEL = { completed: 'completed', current: 'current', upcoming: 'upcoming', 'not-covered': 'not covered' };
 
 function renderTimeline() {
   const months = __timelineCache[__timelineYearKey].months;
@@ -200,14 +237,28 @@ function renderTimeline() {
     <button class="month-card${mo.idx === __timelineMonthIdx ? ' selected' : ''}" onclick="selectTimelineMonth(${mo.idx})">
       <span class="mname">${mo.m} ${mo.calYear}</span>
       <span class="mrange">${mo.m} 1–${mo.days}<br>${mo.days} days</span>
-      <span class="status-badge ${mo.status}">${mo.status}</span>
+      <span class="status-badge ${mo.status}">${TIMELINE_STATUS_LABEL[mo.status]}</span>
     </button>
   `).join('');
 
-  const pct = selected.totalEmployees > 0 ? Math.round((selected.done / selected.totalEmployees) * 100) : 0;
+  const panel = document.getElementById('timeline-panel');
+
+  if (selected.status === 'not-covered') {
+    panel.innerHTML = `
+      <div class="panel-head">
+        <div><h3>${selected.m}-${selected.calYear}<span class="range">(${selected.m} 1–${selected.days}, ${selected.calYear})</span></h3></div>
+      </div>
+      <div style="padding:24px 0; text-align:center; color:var(--text3); font-size:13px;">
+        This establishment's EPF coverage hadn't started yet in ${selected.m} ${selected.calYear} -- nothing to show for this month.
+      </div>
+    `;
+    return;
+  }
+
+  const pct = selected.onRollEstimate > 0 ? Math.round((selected.ecrCount / selected.onRollEstimate) * 100) : 0;
   const rupee = (n) => '₹' + Math.round(n).toLocaleString('en-IN');
 
-  document.getElementById('timeline-panel').innerHTML = `
+  panel.innerHTML = `
     <div class="panel-head">
       <div><h3>${selected.m}-${selected.calYear}<span class="range">(${selected.m} 1–${selected.days}, ${selected.calYear})</span></h3></div>
       <a class="run-link" href="#" onclick="App.navigate('wage-entry'); return false;">Open Wage Entry →</a>
@@ -216,8 +267,8 @@ function renderTimeline() {
     <div class="stat-row">
       <div class="stat-tile">
         <div class="label">Total Employees</div>
-        <div class="value">${selected.totalEmployees}${selected.joined ? `<span class="delta up">↑${selected.joined}</span>` : ''}${selected.left ? `<span class="delta down">↓${selected.left}</span>` : ''}</div>
-        <div class="meta">${selected.joined ? selected.joined + ' joined' : 'no joiners'}${selected.left ? ', ' + selected.left + ' exited' : ''} this month</div>
+        <div class="value">${selected.ecrCount}</div>
+        <div class="meta">have a wage entry (ECR) this month</div>
       </div>
       <div class="stat-tile">
         <div class="label">Calendar Days</div>
@@ -225,8 +276,9 @@ function renderTimeline() {
         <div class="meta">${selected.m} ${selected.calYear}</div>
       </div>
       <div class="stat-tile">
-        <div class="label">Wage Entries Completed</div>
-        <div class="value">${selected.done}<span class="meta" style="font-size:15px; font-weight:600; color:var(--text3)">/${selected.totalEmployees}</span></div>
+        <div class="label">On Roll (Master)</div>
+        <div class="value">${selected.onRollEstimate}${selected.joined ? `<span class="delta up">↑${selected.joined}</span>` : ''}${selected.left ? `<span class="delta down">↓${selected.left}</span>` : ''}</div>
+        <div class="meta">${selected.joined ? selected.joined + ' joined' : 'no joiners'}${selected.left ? ', ' + selected.left + ' exited' : ''} this month, per doj/doe</div>
         <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
       </div>
     </div>
