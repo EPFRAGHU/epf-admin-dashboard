@@ -207,6 +207,7 @@ def generate_monthly_wage_entry_pdf(project, est, employees, filepath: str, mont
 
     story.append(Paragraph(f"Financial Year {est.year_from}-{str(est.year_to)[-2:]}", style_mwe_fy_top))
     story.append(Paragraph(f"MONTHLY WAGE ENTRY ({month_abbr}-{cal_year or ''})", style_mwe_title))
+    story.append(Spacer(1, 8))
     story.append(Paragraph(esc(est.name), style_mwe_est_name))
     story.append(Paragraph(f"Establishment Code: {esc(est.code) or '—'}", style_mwe_meta_center))
     if est.address:
