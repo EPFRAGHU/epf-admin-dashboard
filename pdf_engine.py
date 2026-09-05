@@ -202,7 +202,7 @@ def generate_monthly_wage_entry_pdf(project, est, employees, filepath: str, mont
     doc = _build_pdf_doc(filepath, orientation="landscape")
     story = []
 
-    story.append(Paragraph("MONTHLY WAGE ENTRY", style_mwe_title))
+    story.append(Paragraph(f"MONTHLY WAGE ENTRY ({month_abbr}-{cal_year or ''})", style_mwe_title))
     story.append(Paragraph(f"{month_abbr} {cal_year or ''} &nbsp;&bull;&nbsp; {esc(est.name)}", style_mwe_subtitle))
 
     meta_bits = [f"<b>Establishment Code:</b> {esc(est.code) or '—'}"]
