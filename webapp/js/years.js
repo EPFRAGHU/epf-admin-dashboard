@@ -6,8 +6,10 @@ let __constants = null;
 let __lockStatus = null;
 
 // Wage Entry Timeline -- per-month summary strip shown below the year cards on this
-// page. Cached per financial year key so switching the dropdown back and forth
-// doesn't refetch /api/years/{key}/wages every time.
+// page. Cached per financial year key within one page visit, so switching the
+// dropdown back and forth doesn't refetch /api/years/{key}/wages every time --
+// reset from scratch on every visit to this page (see registerPage below), since a
+// year key like "2026-27" isn't unique across establishments.
 let __timelineCache = {};
 let __timelineMaster = null; // /api/employees -- establishment-wide, not year-scoped, fetched once
 let __timelineCoverageTime = null; // est.coverage_date as a timestamp, or undefined if unset/unparseable
@@ -28,6 +30,20 @@ function timelineParseDMY(s) {
 }
 
 App.registerPage('years', async (container) => {
+  // Reset every time this page is opened, not just once ever -- these are plain
+  // module-level JS variables, so they survive an establishment switch (this SPA
+  // doesn't hard-reload the page on switch). __timelineCache was keyed only by year
+  // key (e.g. "2026-27"), which isn't unique across establishments -- so switching to
+  // a different establishment that happens to also have a "2026-27" year silently
+  // reused the FIRST establishment's cached wage/employee/coverage-date data. Fresh
+  // fetches every visit is the only way to guarantee this page is never scoped to the
+  // wrong establishment.
+  __timelineCache = {};
+  __timelineMaster = null;
+  __timelineCoverageTime = null;
+  __timelineYearKey = null;
+  __timelineMonthIdx = null;
+
   if (!__constants) __constants = await App.get('/api/constants');
   const { years } = await App.get('/api/years');
   __lockStatus = await App.get('/api/establishment/entry-lock-status').catch(() => null);
