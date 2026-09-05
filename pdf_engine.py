@@ -165,6 +165,9 @@ MWE_ZEBRA = colors.HexColor('#F4F6F9')
 style_mwe_title = ParagraphStyle(name='MWETitle', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=15, alignment=TA_CENTER, textColor=MWE_ACCENT, spaceAfter=2)
 style_mwe_subtitle = ParagraphStyle(name='MWESubtitle', parent=styles['Normal'], fontName='Helvetica', fontSize=10, alignment=TA_CENTER, textColor=colors.grey, spaceAfter=10)
 style_mwe_meta = ParagraphStyle(name='MWEMeta', parent=styles['Normal'], fontName='Helvetica', fontSize=9, alignment=TA_LEFT)
+style_mwe_fy_top = ParagraphStyle(name='MWEFyTop', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=10, alignment=TA_CENTER, textColor=colors.grey, spaceAfter=6)
+style_mwe_est_name = ParagraphStyle(name='MWEEstName', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=12, alignment=TA_CENTER, textColor=MWE_ACCENT, spaceAfter=2)
+style_mwe_meta_center = ParagraphStyle(name='MWEMetaCenter', parent=styles['Normal'], fontName='Helvetica', fontSize=9, alignment=TA_CENTER, textColor=colors.grey, spaceAfter=2)
 style_mwe_header = ParagraphStyle(name='MWEHeaderCell', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=8, alignment=TA_CENTER, textColor=colors.white)
 style_mwe_cell = ParagraphStyle(name='MWECell', parent=styles['Normal'], fontName='Helvetica', fontSize=8, alignment=TA_CENTER)
 style_mwe_cell_left = ParagraphStyle(name='MWECellLeft', parent=styles['Normal'], fontName='Helvetica', fontSize=8, alignment=TA_LEFT)
@@ -202,14 +205,12 @@ def generate_monthly_wage_entry_pdf(project, est, employees, filepath: str, mont
     doc = _build_pdf_doc(filepath, orientation="landscape")
     story = []
 
+    story.append(Paragraph(f"Financial Year {est.year_from}-{str(est.year_to)[-2:]}", style_mwe_fy_top))
     story.append(Paragraph(f"MONTHLY WAGE ENTRY ({month_abbr}-{cal_year or ''})", style_mwe_title))
-    story.append(Paragraph(f"{month_abbr} {cal_year or ''} &nbsp;&bull;&nbsp; {esc(est.name)}", style_mwe_subtitle))
-
-    meta_bits = [f"<b>Establishment Code:</b> {esc(est.code) or '—'}"]
+    story.append(Paragraph(esc(est.name), style_mwe_est_name))
+    story.append(Paragraph(f"Establishment Code: {esc(est.code) or '—'}", style_mwe_meta_center))
     if est.address:
-        meta_bits.append(f"<b>Address:</b> {esc(est.address)}")
-    meta_bits.append(f"<b>Financial Year:</b> {est.year_from}-{str(est.year_to)[-2:]}")
-    story.append(Paragraph(" &nbsp;|&nbsp; ".join(meta_bits), style_mwe_meta))
+        story.append(Paragraph(f"Address: {esc(est.address)}", style_mwe_meta_center))
     story.append(Spacer(1, 10))
 
     from epf_engine import get_wage_ceilings_for_year
