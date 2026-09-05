@@ -9,6 +9,7 @@ let __lockStatus = null;
 // page. Cached per financial year key so switching the dropdown back and forth
 // doesn't refetch /api/years/{key}/wages every time.
 let __timelineCache = {};
+let __timelineMaster = null; // /api/employees -- establishment-wide, not year-scoped, fetched once
 let __timelineYearKey = null;
 let __timelineMonthIdx = null;
 
@@ -115,10 +116,20 @@ window.loadTimelineYear = async (key) => {
   document.getElementById('timeline-strip').innerHTML = `<div style="padding:20px; color:var(--text3); font-size:13px;">Loading…</div>`;
   document.getElementById('timeline-panel').innerHTML = '';
 
+  if (!__timelineMaster) {
+    // Establishment-wide employee master (doj/doe), NOT filtered to "has a wage entry
+    // this year" -- unlike /api/years/{key}/wages's `employees` list, which only
+    // includes employees with at least one non-zero wage entry so far (matches Form
+    // 3A/6A's own convention). A newly-joined employee with zero entries yet would be
+    // invisible to that list, undercounting Total Employees/joiners here. Fetched once
+    // per page visit since it isn't year-scoped.
+    __timelineMaster = await App.get('/api/employees').then(r => r.employees).catch(() => []);
+  }
+
   if (!__timelineCache[key]) {
     try {
       const data = await App.get(`/api/years/${key}/wages`);
-      __timelineCache[key] = { data, months: computeTimelineMonths(key, data) };
+      __timelineCache[key] = { data, months: computeTimelineMonths(key, data, __timelineMaster) };
     } catch (_) {
       document.getElementById('timeline-strip').innerHTML = `<div style="padding:20px; color:var(--text3); font-size:13px;">Couldn't load this year's wage data.</div>`;
       return;
@@ -133,10 +144,16 @@ window.loadTimelineYear = async (key) => {
   renderTimeline();
 };
 
-function computeTimelineMonths(yearKey, data) {
+function computeTimelineMonths(yearKey, data, master) {
   const now = new Date();
   const todayY = now.getFullYear(), todayM = now.getMonth() + 1;
   const MONTH_NAMES = ['Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb'];
+
+  // Wage-figure lookup by member_id -- data.employees only lists employees with at
+  // least one non-zero entry so far this year, so a member absent here simply has
+  // nothing entered yet (0 for every figure below is correct for them).
+  const wageByMember = {};
+  (data.employees || []).forEach(emp => { wageByMember[emp.member_id] = emp; });
 
   return MONTH_NAMES.map((m, i) => {
     const { year: calYear, month: calMonth } = timelineCalendarMonth(yearKey, i);
@@ -151,16 +168,20 @@ function computeTimelineMonths(yearKey, data) {
 
     let totalEmployees = 0, joined = 0, left = 0, done = 0;
     let wagesSum = 0, eeSum = 0, erSum = 0, epsSum = 0;
-    (data.employees || []).forEach(emp => {
-      const dojT = emp.doj ? parseDMY(emp.doj) : null;
-      const doeT = emp.doe ? parseDMY(emp.doe) : null;
+    (master || []).forEach(m2 => {
+      const dojT = m2.doj ? parseDMY(m2.doj) : null;
+      const doeT = m2.doe ? parseDMY(m2.doe) : null;
       const onRoll = dojT !== null && dojT <= monthEnd && (doeT === null || doeT >= monthStart);
       if (onRoll) totalEmployees++;
       if (dojT !== null && dojT >= monthStart && dojT <= monthEnd) joined++;
       if (doeT !== null && doeT >= monthStart && doeT <= monthEnd) left++;
-      if ((emp.gross_wages[i] || 0) > 0) done++;
-      const mm = emp.months[i];
-      if (mm) { wagesSum += mm.w; eeSum += mm.we; erSum += mm.ee; epsSum += mm.es; }
+
+      const wageEmp = wageByMember[m2.member_id];
+      if (wageEmp) {
+        if ((wageEmp.gross_wages[i] || 0) > 0) done++;
+        const mm = wageEmp.months[i];
+        if (mm) { wagesSum += mm.w; eeSum += mm.we; erSum += mm.ee; epsSum += mm.es; }
+      }
     });
 
     return {
