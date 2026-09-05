@@ -592,6 +592,74 @@ html[data-theme="dark"] input[type="date"] { color-scheme: dark; }
 .year-card-stat span:last-child { font-weight: 600; color: var(--text); }
 .year-card-actions { display: flex; gap: 6px; margin-top: 10px; }
 
+/* Wage Entry Timeline -- on the Financial Years page, below the year-grid */
+.timeline-section { border-top: 1px solid var(--card-border); padding-top: 24px; margin-top: 28px; }
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
+.year-select {
+  appearance: none; background: var(--card); color: var(--text); border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm); padding: 8px 34px 8px 13px; font-size: 13px; font-weight: 600;
+  font-family: inherit; cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text3) 50%), linear-gradient(135deg, var(--text3) 50%, transparent 50%);
+  background-position: calc(100% - 18px) center, calc(100% - 13px) center; background-size: 5px 5px; background-repeat: no-repeat;
+}
+.year-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+
+.timeline-scroll { overflow-x: auto; padding-bottom: 6px; margin: 0 -4px 20px; }
+.timeline { display: grid; grid-auto-flow: column; grid-auto-columns: 128px; gap: 10px; padding: 4px; width: max-content; min-width: 100%; }
+.month-card {
+  background: var(--card); border: 1px solid var(--card-border); border-radius: var(--radius-sm);
+  padding: 12px 13px 11px; cursor: pointer; text-align: left; font: inherit; color: inherit;
+  transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease;
+  display: flex; flex-direction: column; gap: 9px;
+}
+.month-card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.month-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
+.month-card .mname { font-size: 14px; font-weight: 700; }
+.month-card .mrange { font-size: 10.5px; color: var(--text3); line-height: 1.35; min-height: 26px; }
+.status-badge {
+  display: inline-flex; align-items: center; gap: 5px; width: fit-content;
+  font-size: 10px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 999px;
+}
+.status-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.status-badge.completed { background: var(--green-glow); color: var(--green); }
+.status-badge.current   { background: rgba(76,111,255,.14); color: var(--blue); }
+.status-badge.upcoming  { background: var(--card-border); color: var(--text3); }
+
+.timeline-section .panel { background: var(--bg2); border: 1px solid var(--card-border); border-radius: var(--radius); padding: 24px clamp(18px, 3vw, 28px); box-shadow: var(--shadow); }
+.timeline-section .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+.timeline-section .panel-head h3 { font-size: 17px; font-weight: 800; letter-spacing: -.01em; }
+.timeline-section .panel-head .range { color: var(--text3); font-size: 13px; font-weight: 500; margin-left: 8px; }
+.timeline-section .run-link { font-size: 13px; font-weight: 600; color: var(--accent2); text-decoration: none; }
+.timeline-section .run-link:hover { text-decoration: underline; }
+
+.stat-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 22px; }
+.stat-tile { background: var(--card); border: 1px solid var(--card-border); border-radius: var(--radius-sm); padding: 15px 16px; }
+.stat-tile .label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--text3); margin-bottom: 8px; }
+.stat-tile .value { font-size: 24px; font-weight: 800; letter-spacing: -.01em; }
+.stat-tile .delta { font-size: 12px; font-weight: 600; margin-left: 6px; }
+.stat-tile .delta.up { color: var(--green); }
+.stat-tile .delta.down { color: var(--red); }
+.stat-tile .meta { font-size: 12px; color: var(--text3); margin-top: 4px; }
+.progress-track { height: 6px; border-radius: 999px; background: var(--card-border); margin-top: 10px; overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 999px; background: var(--blue); }
+
+.equation { display: flex; align-items: stretch; gap: 10px; flex-wrap: wrap; }
+.eq-tile { flex: 1 1 150px; background: var(--card); border: 1px solid var(--card-border); border-radius: var(--radius-sm); padding: 14px 16px; min-width: 0; }
+.eq-tile.total { background: var(--accent-glow); border-color: transparent; }
+.eq-tile .label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--text3); }
+.eq-tile.total .label { color: var(--accent2); }
+.eq-tile .amt { font-size: 19px; font-weight: 800; margin-top: 6px; letter-spacing: -.01em; }
+.eq-tile .rate { font-size: 11.5px; color: var(--text3); margin-top: 3px; }
+.eq-op { display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 700; color: var(--text3); padding: 0 2px; }
+
+.panel-foot { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--card-border); font-size: 12.5px; color: var(--text3); }
+
+@media (max-width: 640px) {
+  .stat-row { grid-template-columns: 1fr; }
+  .eq-op { transform: rotate(90deg); }
+}
+
 /* Wages */
 .wage-table input {
   background: var(--surface);

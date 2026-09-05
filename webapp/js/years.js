@@ -5,11 +5,19 @@
 let __constants = null;
 let __lockStatus = null;
 
+// Wage Entry Timeline -- per-month summary strip shown below the year cards on this
+// page. Cached per financial year key so switching the dropdown back and forth
+// doesn't refetch /api/years/{key}/wages every time.
+let __timelineCache = {};
+let __timelineYearKey = null;
+let __timelineMonthIdx = null;
+
 App.registerPage('years', async (container) => {
   if (!__constants) __constants = await App.get('/api/constants');
   const { years } = await App.get('/api/years');
   __lockStatus = await App.get('/api/establishment/entry-lock-status').catch(() => null);
   const blockingYear = __lockStatus && __lockStatus.blocking_year;
+  const defaultTimelineKey = pickDefaultTimelineYear(years);
 
   container.innerHTML = `<div class="fade-in">
     <div class="page-header">
@@ -58,9 +66,170 @@ App.registerPage('years', async (container) => {
     ${years.length === 0 ? `<div class="empty-state">
       <div class="empty-state-icon">📅</div>
       <div class="empty-state-text">No financial years added yet. Click "+ Add Year" to begin.</div>
-    </div>` : ''}
+    </div>` : `
+    <div class="timeline-section">
+      <div class="section-head">
+        <div class="section-title" style="margin-bottom:0">Wage Entry Timeline</div>
+        <select class="year-select" id="timeline-year-select" onchange="loadTimelineYear(this.value)">
+          ${years.map(y => `<option value="${y.key}" ${y.key === defaultTimelineKey ? 'selected' : ''}>${y.label}</option>`).join('')}
+        </select>
+      </div>
+      <div class="timeline-scroll"><div class="timeline" id="timeline-strip"></div></div>
+      <div class="panel" id="timeline-panel"></div>
+    </div>
+    `}
   </div>`;
+
+  if (years.length > 0) loadTimelineYear(defaultTimelineKey);
 });
+
+// Picks the financial year whose Mar-Feb window contains today, falling back to the
+// most recently added year (year_keys_sorted() returns them ascending).
+function pickDefaultTimelineYear(years) {
+  if (!years.length) return null;
+  const now = new Date();
+  const todayY = now.getFullYear(), todayM = now.getMonth() + 1;
+  const match = years.find(y => {
+    const yf = parseInt(y.year_from, 10);
+    return (todayY === yf && todayM >= 3) || (todayY === yf + 1 && todayM <= 2);
+  });
+  return (match || years[years.length - 1]).key;
+}
+
+// Maps a financial-year month index (0=Mar .. 11=Feb) to its calendar {year, month} --
+// same convention as wages.js's getWageMonthYearMonth(), duplicated here rather than
+// cross-called since it depends on wages.js's private currentYearKey, not an argument.
+function timelineCalendarMonth(yearKey, monthIdx) {
+  const startYear = parseInt(yearKey.split('-')[0], 10);
+  const targetYear = monthIdx < 10 ? startYear : startYear + 1;
+  let monthNumber;
+  if (monthIdx === 0) monthNumber = 3;
+  else if (monthIdx === 11) monthNumber = 2;
+  else if (monthIdx === 10) monthNumber = 1;
+  else monthNumber = monthIdx + 3;
+  return { year: targetYear, month: monthNumber };
+}
+
+window.loadTimelineYear = async (key) => {
+  __timelineYearKey = key;
+  document.getElementById('timeline-strip').innerHTML = `<div style="padding:20px; color:var(--text3); font-size:13px;">Loading…</div>`;
+  document.getElementById('timeline-panel').innerHTML = '';
+
+  if (!__timelineCache[key]) {
+    try {
+      const data = await App.get(`/api/years/${key}/wages`);
+      __timelineCache[key] = { data, months: computeTimelineMonths(key, data) };
+    } catch (_) {
+      document.getElementById('timeline-strip').innerHTML = `<div style="padding:20px; color:var(--text3); font-size:13px;">Couldn't load this year's wage data.</div>`;
+      return;
+    }
+  }
+
+  const months = __timelineCache[key].months;
+  const now = new Date();
+  const todayY = now.getFullYear(), todayM = now.getMonth() + 1;
+  const currentIdx = months.findIndex(mo => mo.calYear === todayY && mo.calMonth === todayM);
+  __timelineMonthIdx = currentIdx >= 0 ? currentIdx : 11;
+  renderTimeline();
+};
+
+function computeTimelineMonths(yearKey, data) {
+  const now = new Date();
+  const todayY = now.getFullYear(), todayM = now.getMonth() + 1;
+  const MONTH_NAMES = ['Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb'];
+
+  return MONTH_NAMES.map((m, i) => {
+    const { year: calYear, month: calMonth } = timelineCalendarMonth(yearKey, i);
+    const days = new Date(calYear, calMonth, 0).getDate();
+    const monthStart = new Date(calYear, calMonth - 1, 1).getTime();
+    const monthEnd = new Date(calYear, calMonth, 0, 23, 59, 59).getTime();
+
+    let status;
+    if (calYear === todayY && calMonth === todayM) status = 'current';
+    else if (calYear < todayY || (calYear === todayY && calMonth < todayM)) status = 'completed';
+    else status = 'upcoming';
+
+    let totalEmployees = 0, joined = 0, left = 0, done = 0;
+    let wagesSum = 0, eeSum = 0, erSum = 0, epsSum = 0;
+    (data.employees || []).forEach(emp => {
+      const dojT = emp.doj ? parseDMY(emp.doj) : null;
+      const doeT = emp.doe ? parseDMY(emp.doe) : null;
+      const onRoll = dojT !== null && dojT <= monthEnd && (doeT === null || doeT >= monthStart);
+      if (onRoll) totalEmployees++;
+      if (dojT !== null && dojT >= monthStart && dojT <= monthEnd) joined++;
+      if (doeT !== null && doeT >= monthStart && doeT <= monthEnd) left++;
+      if ((emp.gross_wages[i] || 0) > 0) done++;
+      const mm = emp.months[i];
+      if (mm) { wagesSum += mm.w; eeSum += mm.we; erSum += mm.ee; epsSum += mm.es; }
+    });
+
+    return {
+      idx: i, m, calYear, calMonth, days, status,
+      totalEmployees, joined, left, done,
+      wagesSum, eeSum, erSum, epsSum, total: eeSum + erSum + epsSum,
+    };
+  });
+}
+
+function renderTimeline() {
+  const months = __timelineCache[__timelineYearKey].months;
+  const selected = months[__timelineMonthIdx];
+
+  document.getElementById('timeline-strip').innerHTML = months.map(mo => `
+    <button class="month-card${mo.idx === __timelineMonthIdx ? ' selected' : ''}" onclick="selectTimelineMonth(${mo.idx})">
+      <span class="mname">${mo.m} ${mo.calYear}</span>
+      <span class="mrange">${mo.m} 1–${mo.days}<br>${mo.days} days</span>
+      <span class="status-badge ${mo.status}">${mo.status}</span>
+    </button>
+  `).join('');
+
+  const pct = selected.totalEmployees > 0 ? Math.round((selected.done / selected.totalEmployees) * 100) : 0;
+  const rupee = (n) => '₹' + Math.round(n).toLocaleString('en-IN');
+
+  document.getElementById('timeline-panel').innerHTML = `
+    <div class="panel-head">
+      <div><h3>${selected.m}-${selected.calYear}<span class="range">(${selected.m} 1–${selected.days}, ${selected.calYear})</span></h3></div>
+      <a class="run-link" href="#" onclick="App.navigate('wage-entry'); return false;">Open Wage Entry →</a>
+    </div>
+
+    <div class="stat-row">
+      <div class="stat-tile">
+        <div class="label">Total Employees</div>
+        <div class="value">${selected.totalEmployees}${selected.joined ? `<span class="delta up">↑${selected.joined}</span>` : ''}${selected.left ? `<span class="delta down">↓${selected.left}</span>` : ''}</div>
+        <div class="meta">${selected.joined ? selected.joined + ' joined' : 'no joiners'}${selected.left ? ', ' + selected.left + ' exited' : ''} this month</div>
+      </div>
+      <div class="stat-tile">
+        <div class="label">Calendar Days</div>
+        <div class="value">${selected.days}</div>
+        <div class="meta">${selected.m} ${selected.calYear}</div>
+      </div>
+      <div class="stat-tile">
+        <div class="label">Wage Entries Completed</div>
+        <div class="value">${selected.done}<span class="meta" style="font-size:15px; font-weight:600; color:var(--text3)">/${selected.totalEmployees}</span></div>
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
+      </div>
+    </div>
+
+    <div class="equation">
+      <div class="eq-tile"><div class="label">EE Share</div><div class="amt">${rupee(selected.eeSum)}</div><div class="rate">Worker's EPF</div></div>
+      <div class="eq-op">+</div>
+      <div class="eq-tile"><div class="label">ER Share</div><div class="amt">${rupee(selected.erSum)}</div><div class="rate">Employer's EPF</div></div>
+      <div class="eq-op">+</div>
+      <div class="eq-tile"><div class="label">EPS Cont.</div><div class="amt">${rupee(selected.epsSum)}</div><div class="rate">Employer's Pension Fund</div></div>
+      <div class="eq-op">=</div>
+      <div class="eq-tile total"><div class="label">Total Remittance</div><div class="amt">${rupee(selected.total)}</div><div class="rate">EPF wages: ${rupee(selected.wagesSum)}</div></div>
+    </div>
+
+    <div class="panel-foot">
+      <div>${__timelineCache[__timelineYearKey].data.rates.text || ''}</div>
+    </div>
+  `;
+}
+
+window.selectTimelineMonth = (idx) => {
+  __timelineMonthIdx = idx;
+  renderTimeline();
+};
 
 function showYearModal(yr = null) {
   const isEdit = !!yr;
