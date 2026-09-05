@@ -289,7 +289,7 @@ def generate_monthly_wage_entry_pdf(project, est, employees, filepath: str, mont
         totals["ee"] += w_epf; totals["erpf"] += e_epf; totals["pension"] += e_eps
 
     if row_count == 0:
-        data.append([Paragraph("No wage data entered for this month.", style_mwe_cell_left)] + [Paragraph("", style_mwe_cell)] * 13)
+        data.append([Paragraph("No wage data entered for this month.", style_mwe_cell)] + [""] * 13)
     else:
         data.append([
             Paragraph("", style_mwe_cell), Paragraph("", style_mwe_cell), Paragraph("", style_mwe_cell),
@@ -319,6 +319,12 @@ def generate_monthly_wage_entry_pdf(project, est, employees, filepath: str, mont
         ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#E4E9F0')),
         ('LINEABOVE', (0, -1), (-1, -1), 1, MWE_ACCENT),
     ])
+    if row_count == 0:
+        # The "No wage data" message was otherwise confined to the narrow Sl No.
+        # column, wrapping one character per line -- span it across every column so
+        # it reads as one centered line across the table instead.
+        tstyle.add('SPAN', (0, -1), (-1, -1))
+        tstyle.add('ALIGN', (0, -1), (-1, -1), 'CENTER')
     table.setStyle(tstyle)
     story.append(table)
 
