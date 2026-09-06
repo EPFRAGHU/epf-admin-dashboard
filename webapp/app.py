@@ -5655,6 +5655,110 @@ def report_form9(
 import zipfile
 import io
 
+class WageBatchCommitIn(BaseModel):
+    member_ids: List[str]
+
+
+@app.post("/api/years/{year_key}/wage-batches/{month_idx}/commit")
+async def commit_wage_batch(
+    year_key: str,
+    month_idx: int,
+    d: WageBatchCommitIn,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """The one place every Wage Entry Batch save path (a single row, the bulk 'Save
+    Batch' button, Fast Entry's 'Save All') commits through. Everyone committed here
+    joins the CURRENTLY OPEN batch for this month -- saving one employee, then
+    another, doesn't spawn a new batch number each time; a new batch only starts
+    once the open one is explicitly closed (see close_wage_batch below). No
+    duplicate member id across batches for the same month: committing someone who
+    already sits in an earlier CLOSED batch pulls them out of it first."""
+    require_permission(db, current_user, "wages.edit")
+    est_obj, project = active
+    year_record = project.years.get(year_key)
+    if not year_record:
+        raise HTTPException(404, "Year not found")
+    if not (0 <= month_idx <= 11):
+        raise HTTPException(400, "Invalid month index")
+    member_ids = [normalize_member_id(m) for m in d.member_ids if m]
+    if not member_ids:
+        raise HTTPException(400, "member_ids required")
+
+    month_batches = [b for b in year_record.ecr_batches if b.get("month_idx") == month_idx]
+    open_batch = next((b for b in month_batches if not b.get("closed")), None)
+    for b in month_batches:
+        if b is not open_batch:
+            b["members"] = [m for m in b.get("members", []) if m not in member_ids]
+    year_record.ecr_batches = [
+        b for b in year_record.ecr_batches
+        if b.get("month_idx") != month_idx or b is open_batch or b.get("members")
+    ]
+    if not open_batch:
+        existing_nums = [b.get("num", 0) for b in year_record.ecr_batches if b.get("month_idx") == month_idx]
+        open_batch = {
+            "num": max(existing_nums, default=0) + 1, "month_idx": month_idx,
+            "members": [], "closed": False,
+            "created_at": datetime.now().isoformat(), "downloads": [],
+        }
+        year_record.ecr_batches.append(open_batch)
+    for m in member_ids:
+        if m not in open_batch["members"]:
+            open_batch["members"].append(m)
+    open_batch["updated_at"] = datetime.now().isoformat()
+
+    save_establishment_project(db, est_obj, project)
+    log_activity(
+        db, est_obj.user_id, est_obj.id, "wage_batch_commit",
+        f"{len(member_ids)} employee(s) -> Batch {open_batch['num']} for {MONTH_SHORT_NAMES[month_idx]} {year_key} in {project.name}",
+        {"year_key": year_key, "month_idx": month_idx, "batch_num": open_batch["num"], "member_count": len(member_ids)}
+    )
+    return {"batch": open_batch}
+
+
+@app.post("/api/years/{year_key}/wage-batches/{month_idx}/close")
+async def close_wage_batch(
+    year_key: str,
+    month_idx: int,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Finalizes the currently open batch for this month -- from this point its
+    member list is frozen; the next commit_wage_batch() call starts a new Batch N+1."""
+    require_permission(db, current_user, "wages.edit")
+    est_obj, project = active
+    year_record = project.years.get(year_key)
+    if not year_record:
+        raise HTTPException(404, "Year not found")
+    open_batch = next(
+        (b for b in year_record.ecr_batches if b.get("month_idx") == month_idx and not b.get("closed")), None
+    )
+    if not open_batch:
+        raise HTTPException(404, "No open batch for this month")
+    open_batch["closed"] = True
+    save_establishment_project(db, est_obj, project)
+    return {"batch": open_batch}
+
+
+@app.get("/api/years/{year_key}/wage-batches/{month_idx}")
+async def list_wage_batches(
+    year_key: str,
+    month_idx: int,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment),
+):
+    est_obj, project = active
+    year_record = project.years.get(year_key)
+    if not year_record:
+        raise HTTPException(404, "Year not found")
+    batches = sorted(
+        (b for b in year_record.ecr_batches if b.get("month_idx") == month_idx),
+        key=lambda b: b.get("num", 0)
+    )
+    return {"batches": batches}
+
+
 def _build_ecr_employees_for_scope(project: Project, year_record, branch_id=None, division_id=None, unit_id=None):
     """The single builder for ECR-shaped Employee objects, used by every ECR
     endpoint below -- never reimplement this filtering loop per-endpoint."""
@@ -5694,6 +5798,8 @@ async def generate_ecr_txt(
     branch_id: Optional[int] = None,
     division_id: Optional[int] = None,
     unit_id: Optional[int] = None,
+    member_ids: Optional[str] = None,  # comma-separated member ids -- scopes the file to exactly these employees (a Wage Entry Batch)
+    batch_num: Optional[int] = None,   # if given, records this download in that batch's history (Reports -> Batch History)
     active: Tuple[Establishment, Project] = Depends(get_active_establishment),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -5731,6 +5837,13 @@ async def generate_ecr_txt(
     employees_with_wages = _build_ecr_employees_for_scope(
         project, year_record, branch_id=branch_id, division_id=division_id, unit_id=unit_id)
 
+    wanted_member_ids = None
+    if member_ids:
+        wanted_member_ids = {normalize_member_id(m) for m in member_ids.split(",") if m.strip()}
+        employees_with_wages = [e for e in employees_with_wages if e.member_id in wanted_member_ids]
+        if not employees_with_wages:
+            raise HTTPException(404, "None of the given employees have data for this month/scope")
+
     est = project.build_establishment_for_year(year_key)
     txt = generate_ecr_month(est, employees_with_wages, year_record, month_idx)
 
@@ -5738,12 +5851,30 @@ async def generate_ecr_txt(
     month_str = MONTHS[month_idx][:3].upper()
     cal_year = calendar_year_for_month(MONTHS[month_idx], year_record.year_from, year_record.year_to)
 
-    if scoped:
+    if batch_num is not None:
+        fname = f"{est_code}_ECR_{month_str}_{cal_year}_BATCH{batch_num}.txt"
+    elif scoped:
         scope_name = resolve_scope_path_for_ids(project, branch_id=branch_id, division_id=division_id, unit_id=unit_id)
         clean_b = "".join(c for c in scope_name if c.isalnum() or c in ('_', '-')) or "Unassigned"
         fname = f"{est_code}_ECR_{clean_b}_{month_str}_{cal_year}.txt"
     else:
         fname = f"{est_code}_ECR_{month_str}_{cal_year}.txt"
+
+    # Record this download against the batch it was generated for, so Reports ->
+    # Batch History shows it (and it's re-downloadable later without reselecting
+    # anyone). Only wanted_member_ids-scoped downloads can be tied to a batch --
+    # a whole-month or org-structure-scoped download isn't "for" any one batch.
+    if batch_num is not None:
+        batch = next(
+            (b for b in year_record.ecr_batches if b.get("month_idx") == month_idx and b.get("num") == batch_num),
+            None
+        )
+        if batch is not None:
+            batch.setdefault("downloads", []).append({
+                "file": fname, "count": len(employees_with_wages), "when": datetime.now().isoformat()
+            })
+            save_establishment_project(db, est_obj, project)
+
     return Response(content=txt, media_type="text/plain", headers={"Content-Disposition": f"attachment; filename={fname}"})
 
 

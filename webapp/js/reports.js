@@ -255,13 +255,13 @@ App.registerPage('reports', async (container) => {
           <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:20px;">
             <div class="form-group" style="flex:1; min-width:150px">
               <label class="form-label">Select Financial Year</label>
-              <select class="form-select" id="ecr-year">
+              <select class="form-select" id="ecr-year" onchange="refreshEcrBatchHistory()">
                 ${years.map(y => `<option value="${y.key}">${y.label}</option>`).reverse().join('')}
               </select>
             </div>
             <div class="form-group" style="flex:1; min-width:150px">
               <label class="form-label">Select Month / Format</label>
-              <select class="form-select" id="ecr-month">
+              <select class="form-select" id="ecr-month" onchange="refreshEcrBatchHistory()">
                 <option value="zip">All Year (ZIP of 12 Text Files)</option>
                 <option value="0">Mar Paid in Apr</option>
                 <option value="1">Apr Paid in May</option>
@@ -296,6 +296,14 @@ App.registerPage('reports', async (container) => {
             <button class="btn btn-glass" onclick="downloadECRBranchZip()" title="Generate separate ECR text file per Branch/Division/Unit bundled in one ZIP">📦 Download Grouped ZIP</button>
             <button class="btn btn-primary" onclick="downloadECR()">📥 Download ECR File</button>
           </div>
+
+          <div style="border-top:1px solid var(--border); margin-top:20px; padding-top:16px;">
+            <div style="font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; color:var(--text3); margin-bottom:8px;">
+              Batch History <span class="badge low">NEW</span>
+            </div>
+            <p style="color:var(--text2); font-size:12px; margin-bottom:10px;">Batches saved via Monthly Wage Entry Batch for the selected month, above. Each is re-downloadable any time without reselecting anyone.</p>
+            <div id="ecr-batch-history"></div>
+          </div>
         </div>
 
       </div>
@@ -323,6 +331,8 @@ App.registerPage('reports', async (container) => {
       </div>
     </div>
   </div>`;
+
+  refreshEcrBatchHistory();
 
   const reportScopeEl = document.getElementById('report-scope-picker');
   if (reportScopeEl) ScopePicker.render(reportScopeEl, orgData, { allowNoneBranch: true });
@@ -518,6 +528,47 @@ window.downloadMultiYearForm3A = (memberId, empName) => {
 };
 
 const ECR_MONTH_SHORT_NAMES = ['Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb'];
+
+// Batches are created on the Monthly Wage Entry Batch page (wage-entry-batch.js)
+// and stored server-side on the YearRecord -- this just lists+redownloads them.
+// "All Year (ZIP)" has no single month, so there's nothing to show a batch list
+// for; the box is simply left empty in that case.
+window.refreshEcrBatchHistory = async () => {
+  const box = document.getElementById('ecr-batch-history');
+  if (!box) return;
+  const y = document.getElementById('ecr-year')?.value;
+  const m = document.getElementById('ecr-month')?.value;
+  if (!y || m === 'zip' || m === undefined) {
+    box.innerHTML = `<div style="color:var(--text3); font-size:12px; padding:8px 0;">Select a specific month above to see its batches.</div>`;
+    return;
+  }
+  box.innerHTML = `<div style="color:var(--text3); font-size:12px; padding:8px 0;">Loading…</div>`;
+  let batches = [];
+  try {
+    const res = await App.get(`/api/years/${y}/wage-batches/${m}`);
+    batches = res.batches || [];
+  } catch (e) {
+    box.innerHTML = `<div style="color:var(--text3); font-size:12px; padding:8px 0;">Could not load batch history.</div>`;
+    return;
+  }
+  if (batches.length === 0) {
+    box.innerHTML = `<div style="color:var(--text3); font-size:12px; padding:8px 0;">No batches saved for ${ECR_MONTH_SHORT_NAMES[parseInt(m, 10)]} ${y} yet.</div>`;
+    return;
+  }
+  box.innerHTML = batches.map(b => {
+    const memberIds = (b.members || []).map(encodeURIComponent).join(',');
+    const url = `/api/reports/${y}/ecr/${m}?member_ids=${memberIds}&batch_num=${b.num}`;
+    const statusBadge = b.closed ? '<span class="badge low">Closed</span>' : '<span class="badge high">Open</span>';
+    const lastDownload = (b.downloads && b.downloads.length) ? b.downloads[b.downloads.length - 1] : null;
+    return `<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 0; border-bottom:1px solid var(--border);">
+      <div>
+        <b>Batch ${b.num}</b> ${statusBadge} <span style="color:var(--text2); font-size:12px;">— ${(b.members || []).length} employee${(b.members || []).length === 1 ? '' : 's'}</span>
+        ${lastDownload ? `<div style="font-size:11px; color:var(--text3);">Last downloaded: ${App.esc(lastDownload.file)}</div>` : `<div style="font-size:11px; color:var(--text3);">Not downloaded yet</div>`}
+      </div>
+      <button class="btn btn-glass btn-sm" onclick="App.downloadFile('${url}', 'ECR_${y}_${ECR_MONTH_SHORT_NAMES[parseInt(m, 10)]}_batch${b.num}.txt', {year:'${y}', month:'${ECR_MONTH_SHORT_NAMES[parseInt(m, 10)]}'})">⬇ Download</button>
+    </div>`;
+  }).join('');
+};
 
 window.downloadECR = () => {
   const y = document.getElementById('ecr-year').value;

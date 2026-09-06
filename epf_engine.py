@@ -902,6 +902,14 @@ class YearRecord(ContributionSchemeMixin):
     added_at: str = ""
     entries: List[YearEntry] = field(default_factory=list)
     remittances: List[dict] = field(default_factory=list)
+    # Monthly Wage Entry Batch groups -- lets a consultant enter wages for a subset of
+    # employees today, more tomorrow, and generate a separate ECR text file for each
+    # group, all within the same month. Plain dicts (not a dataclass) since nothing
+    # else needs to construct or type-check these directly -- only webapp/app.py's
+    # wage-batch endpoints read/write them. Shape:
+    # {num, month_idx, members: [member_id,...], closed, created_at, updated_at,
+    #  downloads: [{file, count, when}]}
+    ecr_batches: List[dict] = field(default_factory=list)
 
     @property
     def long_label(self) -> str:
@@ -938,7 +946,8 @@ class YearRecord(ContributionSchemeMixin):
                            er_eps_rate=d.get("er_eps_rate", 8.33),
                            added_at=added_at,
                            entries=entries,
-                           remittances=d.get("remittances", []))
+                           remittances=d.get("remittances", []),
+                           ecr_batches=d.get("ecr_batches", []))
 
 
 # --------------------------------------------------------------------------
