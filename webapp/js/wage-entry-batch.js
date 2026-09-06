@@ -27,7 +27,8 @@ const WEB_MONTH_ABBR = ["Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", 
 
 let webYearKey = '';
 let webMonthIdx = 0;
-let webWagesData = null;   // GET /api/years/{key}/wages -- also doubles as the employee list (name/uan) and full-year history, no separate /api/employees fetch needed
+let webWagesData = null;   // GET /api/years/{key}/wages -- ONLY employees who already have a wage entry for this financial year. Never search against this directly -- see webMaster.
+let webMaster = [];        // GET /api/employees -- every employee in the establishment, entry or no entry. The identity + search source of truth.
 let webBatches = [];       // GET /api/years/{key}/wage-batches/{month_idx}
 
 // Reset unconditionally on every page visit, never lazily ("fetch once") --
@@ -36,7 +37,6 @@ let webDraftMembers = [];  // member_ids added this session, not yet saved
 let webEditingIds = new Set(); // member_ids of saved rows reopened for correction IN PLACE (stays in its original batch)
 let webSelected = new Set();   // checked rows, for "Generate ECR for Selected"
 let webEdits = {};         // member_id -> {g, w, n} -- in-progress numbers for draft/editing rows
-let webAddRowOpen = false;
 
 App.registerPage('wage-entry-batch', async (container) => {
   const { years } = await App.get('/api/years');
@@ -67,9 +67,14 @@ function webDefaultMonthIdx() {
 async function webLoadMonth(yearKey, monthIdx) {
   webYearKey = yearKey;
   webMonthIdx = monthIdx;
-  webWagesData = await App.get(`/api/years/${yearKey}/wages`);
-  const res = await App.get(`/api/years/${yearKey}/wage-batches/${monthIdx}`);
-  webBatches = res.batches || [];
+  const [wagesRes, masterRes, batchesRes] = await Promise.all([
+    App.get(`/api/years/${yearKey}/wages`),
+    App.get('/api/employees'),
+    App.get(`/api/years/${yearKey}/wage-batches/${monthIdx}`),
+  ]);
+  webWagesData = wagesRes;
+  webMaster = masterRes.employees || [];
+  webBatches = batchesRes.batches || [];
   webDraftMembers = [];
   webEditingIds = new Set();
   webSelected = new Set();
@@ -147,8 +152,31 @@ async function webSwitchMonth(monthIdxStr) {
 }
 
 /* ── Lookups ─────────────────────────────────────────────────────── */
+// The one combined view every other function reads from: identity always comes
+// from the master list (present for EVERY employee, entered or not), wage figures
+// come from this year's entries if any exist yet, else all-zero. Fixes a real bug
+// where search/rows only ever considered webWagesData.employees -- which GET
+// .../wages populates ONLY from employees who already have a wage entry THIS
+// financial year, i.e. never the people this page exists to search for.
 function webRow(memberId) {
-  return webWagesData.employees.find(e => e.member_id === memberId);
+  const master = webMaster.find(m => m.member_id === memberId);
+  if (!master) return null;
+  const wageRow = webWagesData.employees.find(e => e.member_id === memberId);
+  return {
+    member_id: memberId,
+    name: master.name,
+    uan: master.uan,
+    gross_wages: wageRow ? wageRow.gross_wages : new Array(12).fill(0),
+    wages: wageRow ? wageRow.wages : new Array(12).fill(0),
+    ncp_days: wageRow ? wageRow.ncp_days : new Array(12).fill(0),
+    age_crosses_58: wageRow ? wageRow.age_crosses_58 : false,
+    // These four are master-level flags (not per-year-entry), so pulling them
+    // from webMaster is correct whether or not an entry exists yet this year.
+    higher_epf_ee: master.higher_epf_ee,
+    higher_epf_er: master.higher_epf_er,
+    pohw: master.pohw,
+    pohw_additional_1_16: master.pohw_additional_1_16,
+  };
 }
 function webWhichBatch(memberId) {
   return webBatches.find(b => (b.members || []).includes(memberId));
@@ -161,8 +189,8 @@ function webAllVisibleIds() {
 }
 function webMatchList(q) {
   q = (q || '').trim().toLowerCase();
-  if (!q || !webWagesData) return [];
-  return webWagesData.employees.filter(e =>
+  if (!q || !webMaster) return [];
+  return webMaster.filter(e =>
     (e.uan || '').toLowerCase().includes(q) || (e.name || '').toLowerCase().includes(q)
   ).slice(0, 8);
 }
@@ -265,40 +293,16 @@ function webRowHtml(memberId, mode) {
   </tr>`;
 }
 
-function webAddEmployeeRowHtml() {
-  if (!webAddRowOpen) {
-    return `<button class="btn btn-glass btn-sm" onclick="webToggleAddRow(true)">➕ Add Employee</button>`;
-  }
-  return `<div style="position:relative; max-width:380px;">
-    <input class="form-input" id="web-add-emp-search" placeholder="Search UAN or name…" oninput="webOnAddEmpSearch(this.value)" onkeydown="if(event.key==='Escape') webToggleAddRow(false)" autocomplete="off">
-    <div id="web-add-emp-results" style="display:none; position:absolute; top:calc(100% + 6px); left:0; right:0; z-index:30; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.14); max-height:260px; overflow-y:auto;"></div>
-  </div>`;
-}
-function webToggleAddRow(open) {
-  webAddRowOpen = open;
-  webRenderTable();
-  if (open) setTimeout(() => document.getElementById('web-add-emp-search')?.focus(), 30);
-}
-function webOnAddEmpSearch(q) {
-  webRenderSearchResults(q, 'web-add-emp-results', webPickFromAddEmpRow);
-}
-function webPickFromAddEmpRow(memberId) {
-  if (!webDraftMembers.includes(memberId)) webDraftMembers.push(memberId);
-  webAddRowOpen = false;
-  webRenderTable();
-}
-
 function webRenderTable() {
   const body = document.getElementById('web-table-body');
   if (!body) return;
   const totalShown = webAllVisibleIds().length;
-  document.getElementById('web-search-count').textContent = `${totalShown} of ${webWagesData.employees.length} employees shown`;
+  document.getElementById('web-search-count').textContent = `${totalShown} of ${webMaster.length} employees shown`;
 
-  if (totalShown === 0 && !webAddRowOpen) {
+  if (totalShown === 0) {
     body.innerHTML = `<tr><td colspan="14"><div style="padding:40px 20px; text-align:center; color:var(--text3); font-size:13px;">
       <div style="font-size:28px; margin-bottom:8px;">🔍</div>
-      Blank by default — search a UAN or name above, or add someone below, to enter wages for ${WEB_MONTH_ABBR[webMonthIdx]}.
-      <br><br>${webAddEmployeeRowHtml()}
+      Blank by default — search a UAN or name above, or use Fast Entry, to enter wages for ${WEB_MONTH_ABBR[webMonthIdx]}.
     </div></td></tr>`;
     webUpdateSelectionBar();
     return;
@@ -308,7 +312,6 @@ function webRenderTable() {
   if (webDraftMembers.length > 0) {
     html += `<tr><td colspan="14" style="background:var(--bg2); font-size:12px; font-weight:700; padding:8px 10px;">📝 Unsaved draft — ${webDraftMembers.length} employee${webDraftMembers.length === 1 ? '' : 's'} <span style="font-weight:500; color:var(--text3); margin-left:8px;">not saved yet</span></td></tr>`;
     html += webDraftMembers.map(id => webRowHtml(id, 'draft')).join('');
-    html += `<tr><td colspan="14" style="padding:10px;">${webAddEmployeeRowHtml()}</td></tr>`;
   }
   [...webBatches].sort((a, b) => a.num - b.num).forEach(b => {
     const isOpen = !b.closed;
@@ -319,16 +322,8 @@ function webRenderTable() {
     html += `<tr><td colspan="14" style="background:var(--bg2); font-size:12px; font-weight:700; padding:8px 10px;">${icon} Batch ${b.num} — ${(b.members || []).length} employee${(b.members || []).length === 1 ? '' : 's'} <span style="font-weight:500; color:var(--text3); margin-left:8px;">${stateLabel}</span>${closeBtn}${ecrBtn}</td></tr>`;
     html += (b.members || []).map(id => webRowHtml(id, webEditingIds.has(id) ? 'editing' : 'readonly')).join('');
   });
-  // Always show the add-employee affordance when there's no draft (the draft
-  // section renders its own copy above) -- including when totalShown is 0 but
-  // webAddRowOpen just flipped true, which is exactly the "blank state, then
-  // click + Add Employee" case the guard above no longer covers.
-  if (webDraftMembers.length === 0) {
-    html += `<tr><td colspan="14" style="padding:10px;">${webAddEmployeeRowHtml()}</td></tr>`;
-  }
   body.innerHTML = html;
   webUpdateSelectionBar();
-  if (webAddRowOpen) document.getElementById('web-add-emp-search')?.focus();
 }
 
 // Updates the model + the computed cells in place, WITHOUT re-rendering the row's
