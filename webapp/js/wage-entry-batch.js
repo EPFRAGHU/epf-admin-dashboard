@@ -319,7 +319,11 @@ function webRenderTable() {
     html += `<tr><td colspan="14" style="background:var(--bg2); font-size:12px; font-weight:700; padding:8px 10px;">${icon} Batch ${b.num} — ${(b.members || []).length} employee${(b.members || []).length === 1 ? '' : 's'} <span style="font-weight:500; color:var(--text3); margin-left:8px;">${stateLabel}</span>${closeBtn}${ecrBtn}</td></tr>`;
     html += (b.members || []).map(id => webRowHtml(id, webEditingIds.has(id) ? 'editing' : 'readonly')).join('');
   });
-  if (webDraftMembers.length === 0 && webBatches.length > 0) {
+  // Always show the add-employee affordance when there's no draft (the draft
+  // section renders its own copy above) -- including when totalShown is 0 but
+  // webAddRowOpen just flipped true, which is exactly the "blank state, then
+  // click + Add Employee" case the guard above no longer covers.
+  if (webDraftMembers.length === 0) {
     html += `<tr><td colspan="14" style="padding:10px;">${webAddEmployeeRowHtml()}</td></tr>`;
   }
   body.innerHTML = html;
