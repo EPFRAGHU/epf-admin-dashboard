@@ -1650,21 +1650,31 @@ ACCOUNT_2_MIN = 500      # minimum Rs. 500/month for A/c 2 (EPF Administrative/I
 
 
 def account2_min_floor(cal_year, cal_month):
-    """Both these minimum floors were introduced by the same Ministry of Labour
-    notification effective 1 January 2015 -- before that date, A/c 2 was pure
-    percentage-of-wages with NO minimum at all (found live 2026-09-08: a
-    FY1997-98 establishment was showing Rs. 500/month for every month, because
-    the floor below was being applied unconditionally regardless of date)."""
+    """The Rs. 500/month A/c 2 floor took effect 1 January 2015 (found live
+    2026-09-08: a FY1997-98 establishment was showing Rs. 500/month for every
+    month, because this floor was being applied unconditionally regardless of
+    date). Currently assumed 0 (no minimum at all) before that date -- UNLIKE
+    A/c 22, which is confirmed to have had its own smaller Rs. 2 minimum
+    pre-2015 (see account22_min_floor()). A/c 2's own pre-2015 minimum, if one
+    existed, hasn't been confirmed -- ask before trusting this for an
+    establishment with pre-2015 wage data if it matters."""
     if cal_year is None:
         return 0
     return ACCOUNT_2_MIN if (cal_year, cal_month) >= (2015, 1) else 0
 
 
+ACCOUNT_22_MIN_PRE_2015 = 2  # A/c 22 had its own, smaller minimum before the Jan-2015 revision
+                              # raised it to Rs. 200 -- NOT zero like A/c 2 was before that date
+                              # (per user correction 2026-09-08; A/c 2's own pre-2015 minimum, if
+                              # any, hasn't been confirmed -- see account2_min_floor()).
+
+
 def account22_min_floor(cal_year, cal_month):
-    """Same 1 January 2015 introduction date as account2_min_floor() -- see there."""
+    """Rs. 2/month before Jan 2015 (0.01% rate), Rs. 200/month from Jan 2015 -- unlike
+    A/c 2, this floor did NOT start at zero pre-2015."""
     if cal_year is None:
-        return 0
-    return ACCOUNT_22_MIN if (cal_year, cal_month) >= (2015, 1) else 0
+        return ACCOUNT_22_MIN_PRE_2015
+    return ACCOUNT_22_MIN if (cal_year, cal_month) >= (2015, 1) else ACCOUNT_22_MIN_PRE_2015
 
 _MONTH_NUM = {"APR": 4, "MAY": 5, "JUN": 6, "JUL": 7, "AUG": 8, "SEP": 9,
               "OCT": 10, "NOV": 11, "DEC": 12, "JAN": 1, "FEB": 2, "MAR": 3}
