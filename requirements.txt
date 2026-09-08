@@ -13,3 +13,4 @@ PyJWT>=2.8.0
 werkzeug>=2.3.0
 sentry-sdk[fastapi]>=2.0.0
 requests>=2.31.0
+itsdangerous>=2.1.0
