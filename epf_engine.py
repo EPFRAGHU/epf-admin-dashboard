@@ -1648,6 +1648,24 @@ ACCOUNT_2_MIN = 500      # minimum Rs. 500/month for A/c 2 (EPF Administrative/I
                           # whenever there's any wage data that month -- computed % alone (e.g. 0.50%
                           # of a small total) routinely falls under this floor and must be topped up to it.
 
+
+def account2_min_floor(cal_year, cal_month):
+    """Both these minimum floors were introduced by the same Ministry of Labour
+    notification effective 1 January 2015 -- before that date, A/c 2 was pure
+    percentage-of-wages with NO minimum at all (found live 2026-09-08: a
+    FY1997-98 establishment was showing Rs. 500/month for every month, because
+    the floor below was being applied unconditionally regardless of date)."""
+    if cal_year is None:
+        return 0
+    return ACCOUNT_2_MIN if (cal_year, cal_month) >= (2015, 1) else 0
+
+
+def account22_min_floor(cal_year, cal_month):
+    """Same 1 January 2015 introduction date as account2_min_floor() -- see there."""
+    if cal_year is None:
+        return 0
+    return ACCOUNT_22_MIN if (cal_year, cal_month) >= (2015, 1) else 0
+
 _MONTH_NUM = {"APR": 4, "MAY": 5, "JUN": 6, "JUL": 7, "AUG": 8, "SEP": 9,
               "OCT": 10, "NOV": 11, "DEC": 12, "JAN": 1, "FEB": 2, "MAR": 3}
 
@@ -2296,9 +2314,11 @@ class ExcelGenerator:
                 er_total = sum(rows[i][4] for rows in all_month_rows)     # A/c 1 (ER)
                 a10_total = sum(rows[i][5] for rows in all_month_rows)    # A/c 10 (Pension Fund)
                 
-                a2_amt = max(round(wages_total * a2_rate / 100), ACCOUNT_2_MIN) if wages_total > 0 else 0
+                a2_floor = account2_min_floor(cal_year, get_month_num(month_label))
+                a22_floor = account22_min_floor(cal_year, get_month_num(month_label))
+                a2_amt = max(round(wages_total * a2_rate / 100), a2_floor) if wages_total > 0 else 0
                 a21_amt = round(wages_total * ACCOUNT_21_RATE / 100)
-                a22_amt = (max(round(wages_total * a22_rate / 100), ACCOUNT_22_MIN)
+                a22_amt = (max(round(wages_total * a22_rate / 100), a22_floor)
                           if (a22_rate > 0 and wages_total > 0) else 0)
                 
                 members = sum(1 for rows in all_month_rows if rows[i][0] > 0)
