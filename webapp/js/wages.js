@@ -782,9 +782,12 @@ window.runSingleImport = async () => {
   formData.append('month_idx', monthIdx);
 
   try {
-    const res = await fetch(`/api/import/${currentYearKey}`, { method: 'POST', body: formData });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
+    // A raw fetch() here skipped App's Authorization/X-Establishment-Id headers
+    // entirely, so every import silently 401'd with "Authentication required" --
+    // App.post() attaches them (and passes FormData through untouched, letting
+    // the browser set its own multipart boundary) the same as every other
+    // authenticated request in this app.
+    const data = await App.post(`/api/import/${currentYearKey}`, formData);
 
     let msg = `Successfully imported ${data.imported} wage records.`;
     if (data.warnings && data.warnings.length) {
@@ -796,7 +799,7 @@ window.runSingleImport = async () => {
     }
     App.navigate('wages');
   } catch (e) {
-    App.toast(e.message, 'error');
+    // App.post() already toasts the error itself; nothing further to do here.
   }
 };
 
@@ -872,9 +875,9 @@ window.analyzeBulkImport = async () => {
   formData.append('file', fileInput.files[0]);
 
   try {
-    const res = await fetch('/api/wages/bulk_analyze', { method: 'POST', body: formData });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
+    // Same fix as runSingleImport() above -- App.post() attaches the auth
+    // headers a raw fetch() skips, and passes FormData through untouched.
+    const data = await App.post('/api/wages/bulk_analyze', formData);
 
     // Show step 2: sheet selection
     let sheetCheckboxes = data.sheets.map(s => `
@@ -900,7 +903,7 @@ window.analyzeBulkImport = async () => {
     `;
     App.openModal(`Select Years to Import`, body, footer);
   } catch (e) {
-    App.toast(e.message, 'error');
+    // App.post() already toasts the error itself; nothing further to do here.
   }
 };
 
@@ -912,13 +915,9 @@ window.runBulkImport = async (token) => {
   App.closeModal(); // close modal so user sees loading state if any
 
   try {
-    const res = await fetch('/api/wages/bulk_import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token, sheets: selectedSheets })
-    });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
+    // Same fix as runSingleImport() above -- App.post() attaches the auth
+    // headers a raw fetch() skipped.
+    const data = await App.post('/api/wages/bulk_import', { token, sheets: selectedSheets });
 
     let msg = `Successfully imported ${data.imported} wage records across ${selectedSheets.length} sheets.`;
     if (data.warnings && data.warnings.length) {
@@ -931,7 +930,7 @@ window.runBulkImport = async (token) => {
 
     App.navigate('years'); // Refresh list of years so user sees newly auto-created ones
   } catch (e) {
-    App.toast(e.message, 'error');
+    // App.post() already toasts the error itself; nothing further to do here.
   }
 };
 
