@@ -1670,16 +1670,25 @@ def calendar_year_for_month(month_abbr: str, year_from: str, year_to: str):
 def account2_rate_percent(cal_year, cal_month):
     """
     EPF Administrative/Inspection charges (A/c No. 2), % of that month's
-    total EPF wages:
-      Pre-2015:            1.10%
-      Jan 2015 - Mar 2017:  0.85%
-      Apr 2017 - May 2018:  0.65%
-      Jun 2018 onwards:     0.50%
+    total EPF wages (basic + DA):
+      Before Apr 1997:       1.10% -- UNVERIFIED, no confirmed source for this period;
+                              kept as the historical fallback this function already used
+                              before the Apr1997-Jul1998 period below was added. Flag if
+                              an establishment's data actually reaches back this far.
+      Apr 1997 - Jul 1998:   0.65%
+      Aug 1998 - Dec 2014:   1.10%
+      Jan 2015 - Mar 2017:   0.85%
+      Apr 2017 - May 2018:   0.65%
+      Jun 2018 onwards:      0.50%
     """
     if cal_year is None:
         return 1.10
     ym = (cal_year, cal_month)
-    if ym < (2015, 1):
+    if ym < (1997, 4):
+        return 1.10
+    elif ym < (1998, 8):
+        return 0.65
+    elif ym < (2015, 1):
         return 1.10
     elif ym < (2017, 4):
         return 0.85
