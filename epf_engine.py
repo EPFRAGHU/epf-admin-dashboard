@@ -1649,32 +1649,41 @@ ACCOUNT_2_MIN = 500      # minimum Rs. 500/month for A/c 2 (EPF Administrative/I
                           # of a small total) routinely falls under this floor and must be topped up to it.
 
 
+# Rs. 5 (A/c 2) / Rs. 2 (A/c 22) pre-2015 -- per the user's own sourcing, these are the
+# minimums for a NON-FUNCTIONAL or nil-employee/zero-contribution establishment, not a
+# floor under an active month's percentage calculation (unlike the Rs. 500/200 pair from
+# Jan 2015, which IS an active-month floor -- see account2_min_floor()/account22_min_floor()
+# below). The codebase has no concept of "non-functional establishment" at all -- a
+# zero-wage month already shows Rs. 0 for both accounts today, which is what these two
+# figures would need to override, and detecting "genuinely non-functional" vs "just a
+# blank month within an otherwise active establishment" is the exact same open question
+# as the Rs. 75 post-2015 non-functional A/c 2 floor (user chose "skip for now" for that
+# one -- see [[project_deferred_tasks]]). NOT wired into account2_min_floor()/
+# account22_min_floor() below for that reason -- both stay pure-percentage, no floor, for
+# any pre-2015 month that already has real wage data (an ACTIVE month, which is the only
+# case those two functions are used for today).
+ACCOUNT_2_MIN_NON_FUNCTIONAL_PRE_2015 = 5
+ACCOUNT_22_MIN_NON_FUNCTIONAL_PRE_2015 = 2
+
+
 def account2_min_floor(cal_year, cal_month):
-    """The Rs. 500/month A/c 2 floor took effect 1 January 2015 (found live
-    2026-09-08: a FY1997-98 establishment was showing Rs. 500/month for every
-    month, because this floor was being applied unconditionally regardless of
-    date). Currently assumed 0 (no minimum at all) before that date -- UNLIKE
-    A/c 22, which is confirmed to have had its own smaller Rs. 2 minimum
-    pre-2015 (see account22_min_floor()). A/c 2's own pre-2015 minimum, if one
-    existed, hasn't been confirmed -- ask before trusting this for an
-    establishment with pre-2015 wage data if it matters."""
+    """The Rs. 500/month A/c 2 floor (for an ACTIVE month -- real wages, not a
+    non-functional establishment) took effect 1 January 2015 (found live 2026-09-08: a
+    FY1997-98 establishment was showing Rs. 500/month for every month, because this
+    floor was being applied unconditionally regardless of date). No floor at all on an
+    active month before that date -- pure percentage of wages."""
     if cal_year is None:
         return 0
     return ACCOUNT_2_MIN if (cal_year, cal_month) >= (2015, 1) else 0
 
 
-ACCOUNT_22_MIN_PRE_2015 = 2  # A/c 22 had its own, smaller minimum before the Jan-2015 revision
-                              # raised it to Rs. 200 -- NOT zero like A/c 2 was before that date
-                              # (per user correction 2026-09-08; A/c 2's own pre-2015 minimum, if
-                              # any, hasn't been confirmed -- see account2_min_floor()).
-
-
 def account22_min_floor(cal_year, cal_month):
-    """Rs. 2/month before Jan 2015 (0.01% rate), Rs. 200/month from Jan 2015 -- unlike
-    A/c 2, this floor did NOT start at zero pre-2015."""
+    """The Rs. 200/month A/c 22 floor (for an ACTIVE month) took effect 1 January 2015,
+    same as A/c 2. No floor at all on an active month before that date -- pure 0.01% of
+    wages, same reasoning as account2_min_floor()."""
     if cal_year is None:
-        return ACCOUNT_22_MIN_PRE_2015
-    return ACCOUNT_22_MIN if (cal_year, cal_month) >= (2015, 1) else ACCOUNT_22_MIN_PRE_2015
+        return 0
+    return ACCOUNT_22_MIN if (cal_year, cal_month) >= (2015, 1) else 0
 
 _MONTH_NUM = {"APR": 4, "MAY": 5, "JUN": 6, "JUL": 7, "AUG": 8, "SEP": 9,
               "OCT": 10, "NOV": 11, "DEC": 12, "JAN": 1, "FEB": 2, "MAR": 3}
