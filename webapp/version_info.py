@@ -1,7 +1,17 @@
 """
 Derives the app's version/build identity from git metadata instead of a hand-maintained
-version string. Computed once at process startup (Render restarts the process on every
-deploy, so this is always accurate for the running build) and served via GET /api/version.
+version string. Computed once at process startup (both Render and Coolify restart the
+process on every deploy, so this is always accurate for the running build) and served
+via GET /api/version.
+
+Coolify/Nixpacks note: unlike Render, the deployed container has NO .git directory at
+all (not just a shallow clone -- `git rev-parse` fails outright with "not a git
+repository"), so every _run_git() call below returns None on this host. Falls back to
+Coolify's $SOURCE_COMMIT env var (see _commit_from_env()) -- that requires "Include
+Source Commit in Build" AND "Runtime" scope enabled for this variable in the app's
+Coolify Configuration -> Advanced settings, otherwise it's simply not set and this
+still falls through to "unknown". commit_count/history/commit_message aren't
+recoverable from a bare commit hash without git, so those stay empty in that path.
 """
 import os
 import re
@@ -58,6 +68,22 @@ _FALLBACK_REPO_URL = os.environ.get("GIT_REPO_URL", "https://github.com/EPFRAGHU
 _FALLBACK_BRANCH = os.environ.get("RENDER_GIT_BRANCH") or "main"
 
 
+def _commit_from_env():
+    """Coolify's $SOURCE_COMMIT (docs: https://coolify.io/docs/knowledge-base/environment-variables)
+    -- only present at all if "Include Source Commit in Build" is on AND the variable is
+    scoped to Runtime (not build-only) in the app's Coolify settings. A known Coolify bug
+    (coollabsio/coolify#2126) sets this to the literal string "HEAD" for preview
+    deployments instead of a real hash -- treat that the same as unset rather than
+    reporting a fake "commit" called HEAD. Kept generic (checked after Render's own
+    RENDER_GIT_COMMIT, before falling through to "unknown") so a future host that sets
+    yet another env var name just needs one more line here, not a rewrite."""
+    for var in ("SOURCE_COMMIT", "RENDER_GIT_COMMIT"):
+        val = (os.environ.get(var) or "").strip()
+        if val and val.lower() != "head":
+            return val, var
+    return None, None
+
+
 def _deepen_if_shallow():
     """Render (and most CI/deploy pipelines) clone with `--depth 1` for speed, which
     leaves the working copy able to see only its single most recent commit -- every
@@ -106,27 +132,39 @@ def _compute_version_info(deepen=True):
     if deepen:
         _deepen_if_shallow()
 
-    render_commit = os.environ.get("RENDER_GIT_COMMIT", "")
+    env_commit, env_commit_source = _commit_from_env()
 
-    short_hash = _run_git(["rev-parse", "--short", "HEAD"]) or (render_commit[:7] if render_commit else "unknown")
-    full_hash = _run_git(["rev-parse", "HEAD"]) or render_commit or short_hash
+    git_short = _run_git(["rev-parse", "--short", "HEAD"])
+    git_full = _run_git(["rev-parse", "HEAD"])
+    # True once we have a real git checkout to run history/date/message/count queries
+    # against -- an env-var-only commit hash (Coolify's $SOURCE_COMMIT) has no working
+    # tree behind it, so none of that is recoverable and must stay explicitly unknown
+    # rather than getting silently replaced with "now" or an empty guess.
+    have_git = git_full is not None
+
+    short_hash = git_short or (env_commit[:7] if env_commit else "unknown")
+    full_hash = git_full or env_commit or short_hash
     branch = (
         _run_git(["rev-parse", "--abbrev-ref", "HEAD"])
         or os.environ.get("RENDER_GIT_BRANCH", "")
         or "unknown"
     )
 
-    commit_count_raw = _run_git(["rev-list", "--count", "HEAD"])
+    commit_count_raw = _run_git(["rev-list", "--count", "HEAD"]) if have_git else None
     commit_count = int(commit_count_raw) if commit_count_raw and commit_count_raw.isdigit() else None
 
-    commit_date_iso = _run_git(["log", "-1", "--format=%cI"]) or datetime.now(timezone.utc).isoformat()
-    commit_message = _run_git(["log", "-1", "--format=%s"]) or ""
+    # Was silently falling back to datetime.now() when git was unavailable, mislabeling
+    # process-start time as the commit's own date -- that's how the "unknown hash, but a
+    # plausible-looking today's-date timestamp" reading came from originally. None here
+    # (rendered as "unknown" by _format_display) is honest about not actually knowing it.
+    commit_date_iso = _run_git(["log", "-1", "--format=%cI"]) if have_git else None
+    commit_message = (_run_git(["log", "-1", "--format=%s"]) if have_git else None) or ""
 
     version = f"v{commit_count}" if commit_count else f"v{short_hash}"
 
-    log_raw = _run_git(["log", "-30", f"--pretty=format:%h{_SEP}%cI{_SEP}%s"]) or ""
+    log_raw = _run_git(["log", "-30", f"--pretty=format:%h{_SEP}%cI{_SEP}%s"]) if have_git else ""
     history = []
-    for line in log_raw.splitlines():
+    for line in (log_raw or "").splitlines():
         parts = line.split(_SEP)
         if len(parts) != 3:
             continue
@@ -151,6 +189,11 @@ def _compute_version_info(deepen=True):
         "commit_date_display": _format_display(commit_date_iso),
         "commit_message": commit_message,
         "history": history,
+        # source: "git" (a real .git checkout, e.g. local dev or Render-style hosts),
+        # "env:<VAR_NAME>" (Coolify/similar -- no .git in the running container, hash
+        # only, see _commit_from_env()), or "none" (neither available -- check that
+        # $SOURCE_COMMIT is enabled + scoped to Runtime in Coolify's Advanced settings).
+        "commit_source": "git" if have_git else (f"env:{env_commit_source}" if env_commit_source else "none"),
         "_shallow_debug": _SHALLOW_DEBUG,  # TEMPORARY -- see _deepen_if_shallow()
     }
 
