@@ -1166,6 +1166,7 @@ const App = (() => {
             <a href="/privacy" target="_blank" rel="noopener" style="color:var(--text3); text-decoration:none;">Privacy Policy</a>
             <span style="margin:0 6px;">·</span>
             <a href="/refund" target="_blank" rel="noopener" style="color:var(--text3); text-decoration:none;">Refund Policy</a>
+            <div style="margin-top:8px; line-height:1.5;">Operated by Snehanjali Moharana (Sole Proprietor)<br><a href="mailto:snehanjali.maharana@gmail.com" style="color:var(--text3);">snehanjali.maharana@gmail.com</a> · +91 97761 04854</div>
           </div>
         </div>
       </div>
