@@ -49,6 +49,10 @@ class AuthClient:
         headers = {**self.headers, **kwargs.pop("headers", {})}
         return self.client.put(url, headers=headers, **kwargs)
 
+    def patch(self, url: str, **kwargs):
+        headers = {**self.headers, **kwargs.pop("headers", {})}
+        return self.client.patch(url, headers=headers, **kwargs)
+
     def delete(self, url: str, **kwargs):
         headers = {**self.headers, **kwargs.pop("headers", {})}
         # starlette/httpx TestClient.delete() doesn't accept a json= body; use

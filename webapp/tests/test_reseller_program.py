@@ -102,3 +102,83 @@ def test_set_password_endpoint_sets_hash(client, test_db):
 
     r2 = client.post("/api/auth/set-password", json={"token": tok, "password": "Other@123"})
     assert r2.status_code == 400   # consumed link cannot be reused
+
+
+def test_enrol_reseller_creates_user_profile_and_link(superadmin_session, test_db):
+    payload = {
+        "full_name": "SURESH PATRA", "mobile": "9776100200",
+        "email": "suresh.patra@x.com", "upi_id": "suresh@okaxis",
+        "bank_account_number": "11122233344", "bank_ifsc": "SBIN0001234",
+        "bank_name": "SBI", "bank_branch": "Cuttack", "pan": "AAAPP1234C",
+    }
+    r = superadmin_session.post("/api/admin/resellers", json=payload)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["set_password_url"].startswith("http")
+    assert "/set-password?token=" in body["set_password_url"]
+    assert len(body["reseller"]["referral_code"]) >= 4
+
+    u = test_db.query(User).filter(User.email == "suresh.patra@x.com").first()
+    assert u is not None and u.role == "reseller" and u.password_hash is None
+
+    from webapp.database import ResellerProfile
+    prof = test_db.query(ResellerProfile).filter(ResellerProfile.user_id == u.id).first()
+    assert prof is not None and prof.payout_details_verified is False
+
+
+def test_enrol_reseller_rejects_duplicate_email(superadmin_session):
+    p = {"full_name": "A", "mobile": "1", "email": "dupe-r@x.com", "upi_id": "a@ok",
+         "bank_account_number": "1", "bank_ifsc": "X", "bank_name": "X",
+         "bank_branch": "X", "pan": "X"}
+    assert superadmin_session.post("/api/admin/resellers", json=p).status_code == 200
+    assert superadmin_session.post("/api/admin/resellers", json=p).status_code == 400
+
+
+def test_verify_payout_toggle(superadmin_session, test_db):
+    p = {"full_name": "V", "mobile": "1", "email": "verify-r@x.com", "upi_id": "v@ok",
+         "bank_account_number": "1", "bank_ifsc": "X", "bank_name": "X",
+         "bank_branch": "X", "pan": "X"}
+    rid = superadmin_session.post("/api/admin/resellers", json=p).json()["reseller"]["id"]
+    assert superadmin_session.post(f"/api/admin/resellers/{rid}/verify-payout").status_code == 200
+    from webapp.database import ResellerProfile
+    prof = test_db.query(ResellerProfile).filter(ResellerProfile.user_id == rid).first()
+    test_db.refresh(prof)
+    assert prof.payout_details_verified is True
+
+    superadmin_session.patch(f"/api/admin/resellers/{rid}", json={"upi_id": "v2@ok"})
+    test_db.refresh(prof)
+    assert prof.payout_details_verified is False
+
+
+def test_enrol_reseller_forbidden_for_consultant(consultant_a):
+    p = {"full_name": "X", "mobile": "1", "email": "forbid-r@x.com", "upi_id": "x@ok",
+         "bank_account_number": "1", "bank_ifsc": "X", "bank_name": "X",
+         "bank_branch": "X", "pan": "X"}
+    assert consultant_a.post("/api/admin/resellers", json=p).status_code == 403
+
+
+def test_patch_reseller_email_syncs_user_and_blocks_dup(superadmin_session, test_db):
+    p = {"full_name": "Sync Me", "mobile": "1", "email": "sync-r@x.com", "upi_id": "s@ok",
+         "bank_account_number": "1", "bank_ifsc": "X", "bank_name": "X",
+         "bank_branch": "X", "pan": "X"}
+    rid = superadmin_session.post("/api/admin/resellers", json=p).json()["reseller"]["id"]
+
+    r = superadmin_session.patch(f"/api/admin/resellers/{rid}", json={"email": "sync2-r@x.com"})
+    assert r.status_code == 200
+    u = test_db.query(User).filter(User.id == rid).first()
+    test_db.refresh(u)
+    assert u.email == "sync2-r@x.com"
+
+    # dup against an existing account
+    dup = superadmin_session.patch(f"/api/admin/resellers/{rid}",
+                                   json={"email": "superadmin.test@epfdashboard.com"})
+    assert dup.status_code == 400
+
+
+def test_patch_reseller_rejects_bad_status(superadmin_session):
+    p = {"full_name": "St", "mobile": "1", "email": "status-r@x.com", "upi_id": "s@ok",
+         "bank_account_number": "1", "bank_ifsc": "X", "bank_name": "X",
+         "bank_branch": "X", "pan": "X"}
+    rid = superadmin_session.post("/api/admin/resellers", json=p).json()["reseller"]["id"]
+    assert superadmin_session.patch(f"/api/admin/resellers/{rid}",
+                                    json={"status": "bogus"}).status_code == 400

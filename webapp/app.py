@@ -11,6 +11,7 @@ import tempfile
 import json
 import uuid
 import calendar
+import secrets as _secrets
 import requests
 import sentry_sdk
 from pathlib import Path
@@ -31,7 +32,8 @@ from sqlalchemy.sql import func
 from .database import (
     SessionLocal, engine, get_db, Base,
     User, Establishment, Payment, SubscriptionFee, AdvanceCreditLedger, ActivityLog, ProjectData, Setting, DATABASE_URL,
-    FeatureFlag, RolePermission, UserPermissionOverride, SignupRequest, Enrollment
+    FeatureFlag, RolePermission, UserPermissionOverride, SignupRequest, Enrollment,
+    ResellerProfile, ResellerPayout
 )
 
 # Auth helpers and dependencies
@@ -95,6 +97,10 @@ def log_activity(
             db.rollback()
         except Exception:
             pass
+
+
+def _isodt(dt):
+    return dt.isoformat() if dt else None
 
 
 # ── Permission / Feature-Flag System ────────────────────────────────────────
@@ -959,6 +965,31 @@ class SignupIn(BaseModel):
 class SignupRejectIn(BaseModel):
     rejection_reason: Optional[str] = None
 
+class ResellerEnrolIn(BaseModel):
+    full_name: str
+    mobile: str
+    email: str
+    upi_id: str
+    bank_account_number: str
+    bank_ifsc: str
+    bank_name: str
+    bank_branch: str
+    pan: str
+    tds_rate: Optional[float] = 10.0
+
+class ResellerProfileUpdateIn(BaseModel):
+    full_name: Optional[str] = None
+    mobile: Optional[str] = None
+    email: Optional[str] = None
+    upi_id: Optional[str] = None
+    bank_account_number: Optional[str] = None
+    bank_ifsc: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_branch: Optional[str] = None
+    pan: Optional[str] = None
+    tds_rate: Optional[float] = None
+    status: Optional[str] = None
+
 class DefaultRateIn(BaseModel):
     default_rate: float
 
@@ -1413,6 +1444,183 @@ async def public_signup(d: SignupIn, db: Session = Depends(get_db)):
     db.commit()
 
     return {"ok": True, "message": "Your request has been submitted and is pending approval."}
+
+
+# ── Reseller helpers (Partner/Reseller Program) ───────────────────────────
+def _generate_referral_code(db: Session, name: str) -> str:
+    prefix = "".join(ch for ch in (name or "").upper() if ch.isalpha())[:2] or "RS"
+    for _ in range(50):
+        code = f"{prefix}{_secrets.randbelow(9000) + 1000}"
+        if not db.query(ResellerProfile).filter(ResellerProfile.referral_code == code).first():
+            return code
+    return f"{prefix}{_secrets.token_hex(3).upper()}"
+
+
+def _public_base_url(request: Request) -> str:
+    # Behind Traefik on Coolify the app sees the external host via forwarded headers.
+    env = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    if env:
+        return env
+    return str(request.base_url).rstrip("/")
+
+
+def _mask(s: str, keep: int = 4) -> str:
+    s = s or ""
+    return ("*" * max(0, len(s) - keep)) + s[-keep:] if s else ""
+
+
+def _reseller_rollup(db: Session, reseller_id: int) -> dict:
+    """referral_count, MRR (sum of current unpaid+paid amount_due for the latest FY),
+    lifetime_paid_net (sum of ResellerPayout.reseller_share_net where status='paid')."""
+    ref_ests = db.query(Establishment).filter(Establishment.referred_by_reseller_id == reseller_id).all()
+    ref_ids = [e.id for e in ref_ests]
+    mrr = 0.0
+    if ref_ids:
+        latest_fy = db.query(func.max(SubscriptionFee.financial_year)).filter(
+            SubscriptionFee.establishment_id.in_(ref_ids)).scalar()
+        if latest_fy:
+            mrr = db.query(func.coalesce(func.sum(SubscriptionFee.amount_due), 0.0)).filter(
+                SubscriptionFee.establishment_id.in_(ref_ids),
+                SubscriptionFee.financial_year == latest_fy).scalar() or 0.0
+    lifetime = db.query(func.coalesce(func.sum(ResellerPayout.reseller_share_net), 0.0)).filter(
+        ResellerPayout.reseller_id == reseller_id, ResellerPayout.status == "paid").scalar() or 0.0
+    return {"referral_count": len(ref_ids), "mrr": round(mrr, 2), "lifetime_paid_net": round(lifetime, 2)}
+
+
+# ── Superadmin: Enrol / manage resellers (/api/admin/resellers) ────────────
+@app.post("/api/admin/resellers")
+async def admin_enrol_reseller(d: ResellerEnrolIn, request: Request,
+                               admin: User = Depends(get_superadmin),
+                               db: Session = Depends(get_db)):
+    from webapp.reseller_tokens import make_set_password_token
+    email = d.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "A valid email is required.")
+    if db.query(User).filter(func.lower(User.email) == email).first():
+        raise HTTPException(400, f"An account with email '{email}' already exists.")
+    for label, val in (("UPI ID", d.upi_id), ("bank account number", d.bank_account_number),
+                       ("IFSC", d.bank_ifsc), ("PAN", d.pan), ("full name", d.full_name),
+                       ("mobile", d.mobile)):
+        if not (val or "").strip():
+            raise HTTPException(400, f"The reseller's {label} is required.")
+
+    max_serial = db.query(func.max(User.serial_no)).scalar() or 0
+    user = User(serial_no=max_serial + 1, name=d.full_name.strip(), mobile=d.mobile.strip(),
+                email=email, password_hash=None, role="reseller", is_active=True)
+    db.add(user); db.flush(); db.refresh(user)
+
+    code = _generate_referral_code(db, d.full_name)
+    prof = ResellerProfile(
+        user_id=user.id, full_name=d.full_name.strip(), mobile=d.mobile.strip(), email=email,
+        referral_code=code, upi_id=d.upi_id.strip(),
+        bank_account_number=d.bank_account_number.strip(), bank_ifsc=d.bank_ifsc.strip().upper(),
+        bank_name=d.bank_name.strip(), bank_branch=d.bank_branch.strip(),
+        pan=d.pan.strip().upper(), tds_rate=d.tds_rate if d.tds_rate is not None else 10.0,
+        payout_details_verified=False,
+    )
+    db.add(prof); db.flush()
+
+    jti = _secrets.token_hex(16)
+    token = make_set_password_token(user.id, jti)
+    enr = Enrollment(reseller_id=user.id, account_user_id=user.id, method="reseller_self",
+                     contact_name=d.full_name, contact_email=email, contact_mobile=d.mobile,
+                     stage="account_created", set_password_jti=jti,
+                     token_expires_at=datetime.utcnow() + timedelta(days=7))
+    db.add(enr); db.commit()  # the only commit — User + ResellerProfile + Enrollment as one transaction
+
+    set_password_url = f"{_public_base_url(request)}/set-password?token={token}"
+    log_activity(db, admin.id, None, "reseller_enrolled",
+                 f"Enrolled reseller {user.name} ({email}), code {code}",
+                 {"reseller_id": user.id, "referral_code": code})
+    return {"ok": True, "set_password_url": set_password_url,
+            "reseller": {"id": user.id, "full_name": prof.full_name, "email": email,
+                         "referral_code": code}}
+
+
+@app.get("/api/admin/resellers")
+async def admin_list_resellers(admin: User = Depends(get_superadmin), db: Session = Depends(get_db)):
+    out = []
+    for prof in db.query(ResellerProfile).order_by(ResellerProfile.joined_at.desc()).all():
+        roll = _reseller_rollup(db, prof.user_id)
+        out.append({"id": prof.user_id, "full_name": prof.full_name, "email": prof.email,
+                    "mobile": prof.mobile, "referral_code": prof.referral_code,
+                    "status": prof.status, "payout_details_verified": prof.payout_details_verified,
+                    **roll})
+    return {"resellers": out}
+
+
+@app.get("/api/admin/resellers/{reseller_id}")
+async def admin_get_reseller(reseller_id: int, admin: User = Depends(get_superadmin),
+                             db: Session = Depends(get_db)):
+    prof = db.query(ResellerProfile).filter(ResellerProfile.user_id == reseller_id).first()
+    if not prof:
+        raise HTTPException(404, "Reseller not found.")
+    roll = _reseller_rollup(db, reseller_id)
+    return {"reseller": {
+        "id": prof.user_id, "full_name": prof.full_name, "email": prof.email, "mobile": prof.mobile,
+        "referral_code": prof.referral_code, "status": prof.status, "joined_at": _isodt(prof.joined_at),
+        "upi_id": prof.upi_id, "bank_account_masked": _mask(prof.bank_account_number),
+        "bank_ifsc": prof.bank_ifsc, "bank_name": prof.bank_name, "bank_branch": prof.bank_branch,
+        "pan": prof.pan, "tds_rate": prof.tds_rate,
+        "payout_details_verified": prof.payout_details_verified,
+        "payout_verified_at": _isodt(prof.payout_verified_at), **roll}}
+
+
+@app.patch("/api/admin/resellers/{reseller_id}")
+async def admin_update_reseller(reseller_id: int, d: ResellerProfileUpdateIn,
+                                admin: User = Depends(get_superadmin), db: Session = Depends(get_db)):
+    prof = db.query(ResellerProfile).filter(ResellerProfile.user_id == reseller_id).first()
+    if not prof:
+        raise HTTPException(404, "Reseller not found.")
+    if d.status is not None and d.status not in ("active", "suspended"):
+        raise HTTPException(400, "status must be 'active' or 'suspended'.")
+
+    # Keep the linked User row (login identity) in sync with the profile edits.
+    user = db.query(User).filter(User.id == reseller_id).first()
+    if d.email is not None:
+        new_email = d.email.strip().lower()
+        if new_email and db.query(User).filter(func.lower(User.email) == new_email,
+                                               User.id != reseller_id).first():
+            raise HTTPException(400, f"Email '{new_email}' is already in use by another account.")
+        if user and new_email:
+            user.email = new_email
+    if user and d.full_name is not None:
+        user.name = d.full_name.strip()
+    if user and d.mobile is not None:
+        user.mobile = d.mobile.strip()
+
+    payout_fields = {"upi_id", "bank_account_number", "bank_ifsc", "bank_name", "bank_branch"}
+    touched_payout = False
+    for f in ("full_name", "mobile", "email", "upi_id", "bank_account_number", "bank_ifsc",
+              "bank_name", "bank_branch", "pan", "tds_rate", "status"):
+        v = getattr(d, f)
+        if v is not None:
+            setattr(prof, f, v.strip().upper() if f in ("bank_ifsc", "pan") and isinstance(v, str)
+                    else (v.strip() if isinstance(v, str) else v))
+            if f in payout_fields:
+                touched_payout = True
+    if touched_payout:
+        prof.payout_details_verified = False
+        prof.payout_verified_at = None
+    db.commit()
+    log_activity(db, admin.id, None, "reseller_updated",
+                 f"Updated reseller profile #{reseller_id}" + (" (payout details changed, re-verify)" if touched_payout else ""),
+                 {"reseller_id": reseller_id, "payout_reset": touched_payout})
+    return {"ok": True, "payout_details_verified": prof.payout_details_verified}
+
+
+@app.post("/api/admin/resellers/{reseller_id}/verify-payout")
+async def admin_verify_reseller_payout(reseller_id: int, admin: User = Depends(get_superadmin),
+                                       db: Session = Depends(get_db)):
+    prof = db.query(ResellerProfile).filter(ResellerProfile.user_id == reseller_id).first()
+    if not prof:
+        raise HTTPException(404, "Reseller not found.")
+    prof.payout_details_verified = True
+    prof.payout_verified_at = datetime.utcnow()
+    db.commit()
+    log_activity(db, admin.id, None, "reseller_payout_verified",
+                 f"Marked payout details verified for reseller #{reseller_id}", {"reseller_id": reseller_id})
+    return {"ok": True}
 
 
 # ── Superadmin Endpoints (/api/admin/...) ──────────────────────────────────
