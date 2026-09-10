@@ -672,6 +672,11 @@ def _run_startup_migrations():
                 _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN cashfree_payment_session_id TEXT;")
                 _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN IF NOT EXISTS cashfree_payment_session_id TEXT;")
                 _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN cashfree_payment_session_id TEXT;")
+
+                # ── Partner / Reseller Program ──────────────────────────────
+                _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN IF NOT EXISTS referred_by_reseller_id INTEGER REFERENCES users(id) ON DELETE SET NULL;")
+                _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN referred_by_reseller_id INTEGER;")
+                _try_ddl(conn, "CREATE INDEX IF NOT EXISTS idx_establishments_referred_by_reseller ON establishments(referred_by_reseller_id);")
         except Exception as e:
             print(f"  [WARN] DDL check error: {e}")
 
