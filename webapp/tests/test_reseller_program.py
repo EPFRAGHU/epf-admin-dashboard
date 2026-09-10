@@ -182,3 +182,57 @@ def test_patch_reseller_rejects_bad_status(superadmin_session):
     rid = superadmin_session.post("/api/admin/resellers", json=p).json()["reseller"]["id"]
     assert superadmin_session.patch(f"/api/admin/resellers/{rid}",
                                     json={"status": "bogus"}).status_code == 400
+
+
+def _create_est_payload(**over):
+    p = {"code": "ORBBS9990000000", "name": "SAMPLE UDYOG", "address": "Cuttack",
+         "coverage_date": "2020-04-01", "contact_name": "Manoj Das",
+         "contact_email": "manoj.das@sampleudyog.com", "contact_mobile": "9800012345",
+         "billing_mode": "flat_fee", "flat_fee_amount": 2000, "custom_rate_per_employee": None}
+    p.update(over)
+    return p
+
+
+def test_reseller_creates_tagged_establishment_and_user(reseller_a, test_db):
+    r = reseller_a.post("/api/reseller/establishments", json=_create_est_payload())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "/set-password?token=" in body["set_password_url"]
+
+    est = test_db.query(Establishment).filter(Establishment.code == "ORBBS9990000000").first()
+    assert est is not None
+    assert est.referred_by_reseller_id == reseller_a.user_id
+    assert est.billing_mode == "flat_fee" and est.flat_fee_amount == 2000
+
+    owner = test_db.query(User).filter(User.email == "manoj.das@sampleudyog.com").first()
+    assert owner is not None and owner.role == "employer" and owner.password_hash is None
+    assert est.user_id == owner.id
+
+
+def test_reseller_per_employee_billing(reseller_a, test_db):
+    r = reseller_a.post("/api/reseller/establishments", json=_create_est_payload(
+        code="ORBBS9990000001", contact_email="c2@x.com",
+        billing_mode="per_employee", flat_fee_amount=None, custom_rate_per_employee=30))
+    assert r.status_code == 200
+    est = test_db.query(Establishment).filter(Establishment.code == "ORBBS9990000001").first()
+    assert est.billing_mode == "per_employee" and est.custom_rate_per_employee == 30
+
+
+def test_reseller_cannot_self_refer(reseller_a):
+    r = reseller_a.post("/api/reseller/establishments",
+                        json=_create_est_payload(contact_email="reseller_a@testepf.com"))
+    assert r.status_code == 400
+
+
+def test_reseller_enrollment_pipeline_and_resend(reseller_a, test_db):
+    reseller_a.post("/api/reseller/establishments", json=_create_est_payload(
+        code="ORBBS9990000002", contact_email="pipe@x.com"))
+    lst = reseller_a.get("/api/reseller/enrollments").json()["enrollments"]
+    assert any(e["contact_email"] == "pipe@x.com" and e["stage"] == "account_created" for e in lst)
+    eid = [e["id"] for e in lst if e["contact_email"] == "pipe@x.com"][0]
+    rs = reseller_a.post(f"/api/reseller/enrollments/{eid}/resend")
+    assert rs.status_code == 200 and "/set-password?token=" in rs.json()["set_password_url"]
+
+
+def test_consultant_cannot_hit_reseller_create(consultant_a):
+    assert consultant_a.post("/api/reseller/establishments", json=_create_est_payload()).status_code == 403

@@ -39,8 +39,8 @@ from .database import (
 # Auth helpers and dependencies
 from .auth import (
     hash_password, verify_password, create_access_token, decode_access_token,
-    get_current_user, get_superadmin, get_active_establishment, save_establishment_project,
-    JWT_SECRET
+    get_current_user, get_superadmin, get_reseller, get_active_establishment,
+    save_establishment_project, JWT_SECRET
 )
 
 from . import cashfree_client
@@ -989,6 +989,18 @@ class ResellerProfileUpdateIn(BaseModel):
     pan: Optional[str] = None
     tds_rate: Optional[float] = None
     status: Optional[str] = None
+
+class ResellerCreateEstablishmentIn(BaseModel):
+    code: str
+    name: str
+    address: Optional[str] = ""
+    coverage_date: str
+    contact_name: str
+    contact_email: str
+    contact_mobile: Optional[str] = ""
+    billing_mode: str            # 'flat_fee' | 'per_employee'
+    flat_fee_amount: Optional[float] = None
+    custom_rate_per_employee: Optional[float] = None
 
 class DefaultRateIn(BaseModel):
     default_rate: float
@@ -6688,6 +6700,126 @@ async def import_master_file(
         raise HTTPException(400, str(e))
     finally:
         os.unlink(tmp.name)
+
+
+# ══ Reseller dashboard ═══════════════════════════════════════════════════════
+
+def _reseller_est_or_403(db: Session, reseller: User, est_id: int) -> Establishment:
+    est = db.query(Establishment).filter(Establishment.id == est_id).first()
+    if not est:
+        raise HTTPException(404, "Establishment not found.")
+    if est.referred_by_reseller_id != reseller.id:
+        raise HTTPException(403, "This establishment was not referred by you.")
+    return est
+
+
+@app.post("/api/reseller/establishments")
+async def reseller_create_establishment(d: ResellerCreateEstablishmentIn, request: Request,
+                                        reseller: User = Depends(get_reseller),
+                                        db: Session = Depends(get_db)):
+    from webapp.reseller_tokens import make_set_password_token
+    code = d.code.strip().upper()
+    name = d.name.strip()
+    contact_email = d.contact_email.strip().lower()
+    if not code or not name:
+        raise HTTPException(400, "Establishment code and name are required.")
+    if not contact_email or "@" not in contact_email:
+        raise HTTPException(400, "A valid contact email is required.")
+    if contact_email == (reseller.email or "").lower():
+        raise HTTPException(400, "You cannot enroll an establishment against your own email (no self-referral).")
+    if d.billing_mode not in ("flat_fee", "per_employee"):
+        raise HTTPException(400, "billing_mode must be 'flat_fee' or 'per_employee'.")
+    if d.billing_mode == "flat_fee" and not (d.flat_fee_amount and d.flat_fee_amount > 0):
+        raise HTTPException(400, "A monthly flat fee amount is required for flat_fee billing.")
+    if d.billing_mode == "per_employee" and not (d.custom_rate_per_employee and d.custom_rate_per_employee > 0):
+        raise HTTPException(400, "A per-employee rate is required for per_employee billing.")
+    try:
+        coverage_date = _normalize_coverage_date(d.coverage_date)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if db.query(Establishment).filter(func.upper(Establishment.code) == code).first():
+        raise HTTPException(409, DUPLICATE_ESTABLISHMENT_MESSAGE)
+
+    existing_user = db.query(User).filter(func.lower(User.email) == contact_email).first()
+    if existing_user:
+        raise HTTPException(400, f"An account with email '{contact_email}' already exists. "
+                                 "Enrollment must use a fresh contact email in v1.")
+
+    max_serial = db.query(func.max(User.serial_no)).scalar() or 0
+    owner = User(serial_no=max_serial + 1, name=d.contact_name.strip(),
+                 mobile=(d.contact_mobile or "").strip(), email=contact_email,
+                 password_hash=None, role="employer", max_establishments=1, is_active=True)
+    db.add(owner); db.commit(); db.refresh(owner)
+
+    p = Project()
+    p.set_establishment(code, name, (d.address or "").strip(), coverage_date)
+    est = Establishment(
+        user_id=owner.id, code=code, name=name, address=(d.address or "").strip(),
+        coverage_date=coverage_date, billing_mode=d.billing_mode,
+        flat_fee_amount=d.flat_fee_amount if d.billing_mode == "flat_fee" else None,
+        custom_rate_per_employee=d.custom_rate_per_employee if d.billing_mode == "per_employee" else None,
+        referred_by_reseller_id=reseller.id,
+        data=json.dumps(p.to_dict(), ensure_ascii=False),
+    )
+    db.add(est); db.commit(); db.refresh(est)
+
+    jti = _secrets.token_hex(16)
+    token = make_set_password_token(owner.id, jti)
+    enr = Enrollment(reseller_id=reseller.id, establishment_id=est.id, account_user_id=owner.id,
+                     method="create_handover", contact_name=d.contact_name,
+                     contact_mobile=d.contact_mobile, contact_email=contact_email,
+                     stage="account_created", set_password_jti=jti,
+                     token_expires_at=datetime.utcnow() + timedelta(days=7))
+    db.add(enr); db.commit(); db.refresh(enr)
+
+    log_activity(db, reseller.id, est.id, "reseller_created_establishment",
+                 f"Reseller {reseller.name} created {est.code} — {est.name} for {contact_email}",
+                 {"reseller_id": reseller.id, "establishment_id": est.id, "owner_user_id": owner.id})
+
+    return {"ok": True, "enrollment_id": enr.id,
+            "set_password_url": f"{_public_base_url(request)}/set-password?token={token}",
+            "establishment": {"id": est.id, "code": est.code, "name": est.name,
+                              "billing_mode": est.billing_mode, "flat_fee_amount": est.flat_fee_amount,
+                              "custom_rate_per_employee": est.custom_rate_per_employee}}
+
+
+@app.get("/api/reseller/enrollments")
+async def reseller_list_enrollments(reseller: User = Depends(get_reseller), db: Session = Depends(get_db)):
+    rows = db.query(Enrollment).filter(
+        Enrollment.reseller_id == reseller.id, Enrollment.method == "create_handover"
+    ).order_by(Enrollment.created_at.desc()).all()
+    est_names = {e.id: e.name for e in db.query(Establishment).filter(
+        Establishment.referred_by_reseller_id == reseller.id).all()}
+    return {"enrollments": [{
+        "id": r.id, "establishment_id": r.establishment_id,
+        "establishment_name": est_names.get(r.establishment_id, "—"),
+        "contact_name": r.contact_name, "contact_email": r.contact_email,
+        "stage": r.stage, "created_at": _isodt(r.created_at),
+        "token_expires_at": _isodt(r.token_expires_at),
+    } for r in rows]}
+
+
+@app.post("/api/reseller/enrollments/{enrollment_id}/resend")
+async def reseller_resend_set_password(enrollment_id: int, request: Request,
+                                       reseller: User = Depends(get_reseller),
+                                       db: Session = Depends(get_db)):
+    from webapp.reseller_tokens import make_set_password_token
+    enr = db.query(Enrollment).filter(Enrollment.id == enrollment_id,
+                                      Enrollment.reseller_id == reseller.id).first()
+    if not enr:
+        raise HTTPException(404, "Enrollment not found.")
+    if enr.stage not in ("account_created", "password_set"):
+        raise HTTPException(400, "This account has already progressed past the set-password step.")
+    if not enr.account_user_id:
+        raise HTTPException(400, "No account is linked to this enrollment.")
+    jti = _secrets.token_hex(16)
+    enr.set_password_jti = jti
+    enr.token_expires_at = datetime.utcnow() + timedelta(days=7)
+    db.commit()
+    token = make_set_password_token(enr.account_user_id, jti)
+    log_activity(db, reseller.id, enr.establishment_id, "reseller_resent_set_password",
+                 f"Reseller re-sent the set-password link for enrollment #{enr.id}", {"enrollment_id": enr.id})
+    return {"ok": True, "set_password_url": f"{_public_base_url(request)}/set-password?token={token}"}
 
 
 # ── Constants ─────────────────────────────────────────────────────────────
