@@ -37,10 +37,22 @@ convenience — in production these are role-gated views of one app.
 
 ## Data model changes
 
-1. **`User.role`** — add `'reseller'` as a valid value. Reseller users also need
-   payout fields: `upi_id` (String), and KYC fields for TDS (`pan`, name as per PAN).
-   Could live on `User` or a new `ResellerProfile` table (1:1) — the latter keeps
-   `User` clean and matches the `SignupRequest` pattern.
+1. **`User.role`** — add `'reseller'` as a valid value. Reseller-specific fields go
+   in a new **`ResellerProfile`** table (1:1 with `User` — keeps `User` clean, matches
+   the `SignupRequest` pattern):
+   - Identity: `full_name` (as per PAN — the `User.name` may be informal), `mobile`,
+     `email` (mirror of `User.email` or the payout-notification address).
+   - Referral: `referral_code` (unique, e.g. `SP4471`, generated at enrol), `joined_at`,
+     `status` (`active` | `suspended`).
+   - Payout — UPI (primary): `upi_id`, `upi_verified_at` (null until a ₹1 penny-drop
+     succeeds).
+   - Payout — bank (fallback if a UPI transfer fails): `bank_account_number`,
+     `bank_ifsc`, `bank_name`, `bank_branch`, `bank_verified_at` (penny-drop).
+   - Tax: `pan` (required — TDS is deducted from the reseller's 50%, Form 16A issued
+     quarterly), `tds_rate` (default 10%).
+   Changing `upi_id` or any bank field (by the superadmin here, or the reseller in
+   their own settings) re-triggers penny-drop verification and **holds the next payout**
+   until it clears.
 
 2. **`Establishment.referred_by_reseller_id`** — nullable FK → `users.id`, indexed.
    Set once at creation, never by the employer. This single column drives every
@@ -120,7 +132,27 @@ panel/summary, because their amounts change month to month while flat ones don't
   contributing from the month it lapses, but the reseller keeps everything already
   paid.
 
-## Enrollment flows
+## Enrolling a reseller (superadmin)
+
+Before a reseller can do anything, the **superadmin enrols them** from the "Resellers"
+screen of the admin dashboard, with a form capturing everything in `ResellerProfile`:
+name (as per PAN), mobile, email, UPI ID, bank account number + IFSC + bank name +
+branch, and PAN. On submit:
+
+1. Create the `User` (`role='reseller'`, no password) + `ResellerProfile`.
+2. Generate a unique `referral_code` and the link `epf-dashboard.xyz/r/<code>`.
+3. Send a set-password invite to the mobile + email (same mechanism as employer
+   handover). The reseller logs in at `epf-dashboard.xyz` and lands on their dashboard.
+4. Queue penny-drop verification of the UPI ID and bank account. Payouts cannot run
+   for this reseller until at least the UPI ID is verified.
+
+The "All resellers" table then tracks each one: code, whether payout details are on
+file and verified, joined date, referral count, MRR, lifetime paid. A per-reseller
+profile panel shows the full record (contact, referral link, UPI + masked bank
+details, verification status, PAN + TDS rate, lifetime paid net of TDS, current-month
+accrual).
+
+## Referral enrollment flows (a reseller bringing in an establishment)
 
 Three ways a referral is attributed to a reseller, all from the logged-in reseller's
 dashboard:
@@ -164,8 +196,10 @@ reaches `active`.
   split flat vs per-employee, owner 50%, payouts due, next run date), a resellers
   summary table (UPI, employer/consultant counts, collected, your 50 / their 50,
   payout status), this month's ECR-activity feed, and the upcoming payout run.
-- **Resellers** — full list (joined, referrals, active, MRR, paid to date) + drill
-  into one reseller's referrals.
+- **Resellers** — the "Enrol a reseller" form (contact + UPI + bank account + PAN),
+  the "All resellers" tracking table (code, payout-on-file status, joined, referrals,
+  MRR, paid to date), a per-reseller **profile panel** (full contact + payout + tax
+  record with verification status), and a drill-down into one reseller's referrals.
 - **Establishments** — every referred account (type, referred-by, billing, fee,
   status, latest ECR, joined); a dedicated **Per-employee referrals** panel isolating
   the per-employee-billed ones with rate × headcount → fee → owner 50%; and a
@@ -237,16 +271,20 @@ establishment they didn't refer, and never edit an establishment's wage data at 
 
 ## Implementation order (rough)
 
-1. `reseller` role + `get_reseller` + `Establishment.referred_by_reseller_id` column
-   & migration. No behaviour change yet — just the plumbing.
-2. Enrollment: the "create the account" backend (establishment + no-password user +
-   set-password token + email/SMS), stamped with the reseller id. Reuse existing
-   establishment-create and signup/set-password code.
-3. Reseller dashboard read views — all are `SubscriptionFee` / ECR / establishment
+1. `reseller` role + `get_reseller` + `ResellerProfile` table +
+   `Establishment.referred_by_reseller_id` column & migration. No behaviour change
+   yet — just the plumbing.
+2. Superadmin "Enrol a reseller" form + backend (create `User` + `ResellerProfile`,
+   generate referral code, send set-password invite, queue penny-drop). Reuse the
+   signup/set-password code.
+3. Referral enrollment: the "create the account" backend (establishment + no-password
+   user + set-password token + email/SMS), stamped with the reseller id. Reuse
+   existing establishment-create and signup/set-password code.
+4. Reseller dashboard read views — all are `SubscriptionFee` / ECR / establishment
    rollups filtered by `referred_by_reseller_id`. No new billing math.
-4. `ResellerPayout` table + the monthly cron that computes 50:50 and writes
+5. `ResellerPayout` table + the monthly cron that computes 50:50 and writes
    `scheduled` rows. Owner "Payouts" screen reads these.
-5. UPI payout API integration — the actual transfer + UTR capture + retry.
-6. Owner "Referral Program" admin section.
-7. Referral link + invite enrollment paths.
-8. TDS handling.
+6. UPI payout API integration — the actual transfer + UTR capture + retry.
+7. Owner "Referral Program" admin section.
+8. Referral link + invite enrollment paths.
+9. TDS handling (deduction, Form 16A / quarterly filing).
