@@ -236,3 +236,41 @@ def test_reseller_enrollment_pipeline_and_resend(reseller_a, test_db):
 
 def test_consultant_cannot_hit_reseller_create(consultant_a):
     assert consultant_a.post("/api/reseller/establishments", json=_create_est_payload()).status_code == 403
+
+
+def _seed_referred_est_with_paid_fee(test_db, reseller_id, code="ORPAY0000000001"):
+    from webapp.database import SubscriptionFee
+    owner = User(name="O", email=f"{code.lower()}@x.com", role="employer", is_active=True)
+    test_db.add(owner); test_db.commit(); test_db.refresh(owner)
+    est = Establishment(user_id=owner.id, code=code, name=f"EST {code}", data="{}",
+                        billing_mode="flat_fee", flat_fee_amount=2000,
+                        referred_by_reseller_id=reseller_id)
+    test_db.add(est); test_db.commit(); test_db.refresh(est)
+    fee = SubscriptionFee(establishment_id=est.id, financial_year="2026-27", month="Apr",
+                          employee_count=10, amount_due=2000, billing_mode="flat_fee", is_paid=True,
+                          paid_date="15-05-2026")
+    test_db.add(fee); test_db.commit()
+    return est, fee
+
+
+def test_reseller_overview_and_earnings(reseller_a, test_db):
+    _seed_referred_est_with_paid_fee(test_db, reseller_a.user_id)
+    ov = reseller_a.get("/api/reseller/overview")
+    assert ov.status_code == 200
+    assert ov.json()["stats"]["establishments"] >= 1
+
+    er = reseller_a.get("/api/reseller/earnings")
+    assert er.status_code == 200
+    total_my_share = sum(m["my_share_gross"] for m in er.json()["months"])
+    assert total_my_share == 1000.0   # 50% of the single ₹2000 paid fee
+
+
+def test_reseller_only_sees_own_referrals(reseller_a, test_db):
+    # an establishment referred by nobody must not appear
+    stray_owner = User(name="S", email="stray@x.com", role="employer", is_active=True)
+    test_db.add(stray_owner); test_db.commit(); test_db.refresh(stray_owner)
+    test_db.add(Establishment(user_id=stray_owner.id, code="ORNONE0000000000",
+                              name="STRAY", data="{}"))
+    test_db.commit()
+    ests = reseller_a.get("/api/reseller/establishments").json()["establishments"]
+    assert all(e["code"] != "ORNONE0000000000" for e in ests)

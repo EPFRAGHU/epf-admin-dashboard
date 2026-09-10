@@ -33,7 +33,7 @@ from .database import (
     SessionLocal, engine, get_db, Base,
     User, Establishment, Payment, SubscriptionFee, AdvanceCreditLedger, ActivityLog, ProjectData, Setting, DATABASE_URL,
     FeatureFlag, RolePermission, UserPermissionOverride, SignupRequest, Enrollment,
-    ResellerProfile, ResellerPayout
+    ResellerProfile, ResellerPayout, ResellerPayoutLine
 )
 
 # Auth helpers and dependencies
@@ -6820,6 +6820,157 @@ async def reseller_resend_set_password(enrollment_id: int, request: Request,
     log_activity(db, reseller.id, enr.establishment_id, "reseller_resent_set_password",
                  f"Reseller re-sent the set-password link for enrollment #{enr.id}", {"enrollment_id": enr.id})
     return {"ok": True, "set_password_url": f"{_public_base_url(request)}/set-password?token={token}"}
+
+
+# ── Reseller dashboard read views (rollups filtered by referred_by_reseller_id) ──
+
+def _reseller_paid_fees(db: Session, reseller_id: int):
+    ref_ids = [e.id for e in db.query(Establishment.id).filter(
+        Establishment.referred_by_reseller_id == reseller_id).all()]
+    if not ref_ids:
+        return []
+    return db.query(SubscriptionFee).filter(
+        SubscriptionFee.establishment_id.in_(ref_ids), SubscriptionFee.is_paid == True).all()  # noqa: E712
+
+
+def _next_payout_date_iso() -> str:
+    today = date.today()
+    first_next = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return first_next.isoformat()
+
+
+def _reseller_ecr_rows(db: Session, est_ids, scope="current", limit=None):
+    """Rows from each referred establishment's ECR/wage history. Reuses
+    count_ecr_employees_for_month over the establishment's Project years."""
+    if not est_ids:
+        return []
+    rows = []
+    ests = db.query(Establishment).filter(Establishment.id.in_(est_ids)).all()
+    for est in ests:
+        try:
+            proj = Project()
+            proj.load_from_dict(json.loads(est.data or "{}"))
+        except Exception:
+            continue
+        for yk in (proj.years or {}):
+            for m_idx in range(12):
+                cnt = count_ecr_employees_for_month(proj, yk, m_idx)
+                if cnt > 0:
+                    rows.append({"establishment": est.name, "code": est.code,
+                                 "wage_month": f"{MONTH_SHORT_NAMES[m_idx]} {yk}",
+                                 "employees": cnt, "filed_at": None})
+    rows.sort(key=lambda r: r["wage_month"], reverse=True)
+    return rows[:limit] if limit else rows
+
+
+@app.get("/api/reseller/overview")
+async def reseller_overview(reseller: User = Depends(get_reseller), db: Session = Depends(get_db)):
+    prof = db.query(ResellerProfile).filter(ResellerProfile.user_id == reseller.id).first()
+    ests = db.query(Establishment).filter(Establishment.referred_by_reseller_id == reseller.id).all()
+    est_ids = [e.id for e in ests]
+    paid_fees = _reseller_paid_fees(db, reseller.id)
+
+    # "this period" = fees not yet attached to any ResellerPayoutLine
+    paid_ids_on_lines = {l.subscription_fee_id for l in db.query(ResellerPayoutLine.subscription_fee_id).all()
+                         if l.subscription_fee_id is not None}
+    pending_fees = [f for f in paid_fees if f.id not in paid_ids_on_lines]
+    collected = round(sum(f.amount_due for f in pending_fees), 2)
+
+    lifetime_net = db.query(func.coalesce(func.sum(ResellerPayout.reseller_share_net), 0.0)).filter(
+        ResellerPayout.reseller_id == reseller.id, ResellerPayout.status == "paid").scalar() or 0.0
+
+    flat = [e for e in ests if (e.billing_mode or "per_employee") == "flat_fee"]
+    per_emp = [e for e in ests if (e.billing_mode or "per_employee") == "per_employee"]
+
+    active_ids = {f.establishment_id for f in paid_fees}
+    return {
+        "reseller": {"full_name": prof.full_name if prof else reseller.name,
+                     "referral_code": prof.referral_code if prof else "",
+                     "upi_id": prof.upi_id if prof else "",
+                     "payout_details_verified": prof.payout_details_verified if prof else False},
+        "stats": {"establishments": len(ests), "active": len(active_ids),
+                  "collected_this_period": collected,
+                  "my_share_this_period": round(collected / 2, 2),
+                  "paid_to_date_net": round(lifetime_net, 2),
+                  "next_run_date": _next_payout_date_iso()},
+        "billing_mix": {"flat_count": len(flat), "per_employee_count": len(per_emp),
+                        "flat_amount": round(sum(f.amount_due for f in pending_fees
+                                                 if f.establishment_id in {e.id for e in flat}), 2),
+                        "per_employee_amount": round(sum(f.amount_due for f in pending_fees
+                                                        if f.establishment_id in {e.id for e in per_emp}), 2)},
+        "recent_ecr": _reseller_ecr_rows(db, est_ids, limit=8),
+    }
+
+
+@app.get("/api/reseller/establishments")
+async def reseller_establishments(reseller: User = Depends(get_reseller), db: Session = Depends(get_db)):
+    ests = db.query(Establishment).filter(Establishment.referred_by_reseller_id == reseller.id).all()
+    paid_ids = {f.establishment_id for f in _reseller_paid_fees(db, reseller.id)}
+    owners = {u.id: u for u in db.query(User).filter(
+        User.id.in_([e.user_id for e in ests] or [0])).all()}
+    out = []
+    for e in ests:
+        mode = e.billing_mode or "per_employee"
+        fee_display = (f"₹{int(e.flat_fee_amount or 0)}/mo flat" if mode == "flat_fee"
+                       else f"₹{int(e.custom_rate_per_employee or 0)}/emp/mo")
+        out.append({"id": e.id, "code": e.code, "name": e.name,
+                    "type": owners.get(e.user_id).role if owners.get(e.user_id) else "employer",
+                    "billing_mode": mode, "fee_display": fee_display,
+                    "status": "active" if e.id in paid_ids else "pending",
+                    "joined": _isodt(e.created_at)})
+    return {"establishments": out}
+
+
+@app.get("/api/reseller/ecr-activity")
+async def reseller_ecr_activity(scope: str = "current", reseller: User = Depends(get_reseller),
+                                db: Session = Depends(get_db)):
+    est_ids = [e.id for e in db.query(Establishment.id).filter(
+        Establishment.referred_by_reseller_id == reseller.id).all()]
+    return {"rows": _reseller_ecr_rows(db, est_ids, scope=scope)}
+
+
+@app.get("/api/reseller/earnings")
+async def reseller_earnings(reseller: User = Depends(get_reseller), db: Session = Depends(get_db)):
+    prof = db.query(ResellerProfile).filter(ResellerProfile.user_id == reseller.id).first()
+    tds_rate = (prof.tds_rate if prof and prof.pan else 0.0) or 0.0
+
+    # settled months = ResellerPayout rows
+    months = []
+    for po in db.query(ResellerPayout).filter(ResellerPayout.reseller_id == reseller.id
+                                              ).order_by(ResellerPayout.period.desc()).all():
+        lines = db.query(ResellerPayoutLine).filter(ResellerPayoutLine.payout_id == po.id).all()
+        months.append({"period": po.period, "gross": po.gross_collected,
+                       "my_share_gross": po.reseller_share_gross, "tds": po.tds_amount,
+                       "my_share_net": po.reseller_share_net, "status": po.status,
+                       "lines": [{"establishment": l.establishment_name, "fy": l.financial_year,
+                                  "month": l.month, "fee": l.fee_amount,
+                                  "my_share": l.reseller_share} for l in lines]})
+
+    # current unsettled accrual
+    on_lines = {l.subscription_fee_id for l in db.query(ResellerPayoutLine.subscription_fee_id).all()
+                if l.subscription_fee_id is not None}
+    pending = [f for f in _reseller_paid_fees(db, reseller.id) if f.id not in on_lines]
+    if pending:
+        est_names = {e.id: e.name for e in db.query(Establishment).filter(
+            Establishment.referred_by_reseller_id == reseller.id).all()}
+        gross = round(sum(f.amount_due for f in pending), 2)
+        share_gross = round(gross / 2, 2)
+        tds = round(share_gross * tds_rate / 100, 2)
+        months.insert(0, {"period": "accruing", "gross": gross, "my_share_gross": share_gross,
+                          "tds": tds, "my_share_net": round(share_gross - tds, 2), "status": "accruing",
+                          "lines": [{"establishment": est_names.get(f.establishment_id, "—"),
+                                     "fy": f.financial_year, "month": f.month, "fee": f.amount_due,
+                                     "my_share": round(f.amount_due / 2, 2)} for f in pending]})
+    return {"months": months}
+
+
+@app.get("/api/reseller/payouts")
+async def reseller_payouts(reseller: User = Depends(get_reseller), db: Session = Depends(get_db)):
+    rows = db.query(ResellerPayout).filter(ResellerPayout.reseller_id == reseller.id
+                                           ).order_by(ResellerPayout.period.desc()).all()
+    return {"payouts": [{"period": p.period, "gross_collected": p.gross_collected,
+                         "reseller_share_net": p.reseller_share_net, "status": p.status,
+                         "upi_reference": p.upi_reference, "paid_at": _isodt(p.paid_at)} for p in rows]}
 
 
 # ── Constants ─────────────────────────────────────────────────────────────
