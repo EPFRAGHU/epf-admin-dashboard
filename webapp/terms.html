@@ -15,7 +15,10 @@
   <link rel="stylesheet" href="/css/style.css">
   <link rel="stylesheet" href="/css/epfo-app-theme.css">
   <style>
-    body { background: var(--bg); min-height: 100vh; padding: 40px 20px; }
+    /* these standalone pages load /css/style.css, which sets body{overflow:hidden;height:100vh}
+       for the SPA shell -- override it so a long document actually scrolls */
+    html, body { height: auto; overflow-y: auto; }
+    body { background: var(--bg); min-height: 100vh; padding: 40px 20px 80px; }
     .legal-wrap { max-width: 720px; margin: 0 auto; }
     .legal-wrap h1 { font-size: 24px; font-weight: 800; color: var(--text1); margin: 0 0 4px 0; }
     .legal-wrap .meta { font-size: 12px; color: var(--text3); margin-bottom: 16px; }
@@ -24,10 +27,13 @@
     .legal-wrap .legal-nav a:hover { color: var(--primary); text-decoration: underline; }
     .legal-wrap .legal-nav .current { color: var(--primary); font-weight: 600; }
     .legal-wrap h2 { font-size: 15px; font-weight: 700; color: var(--text1); margin: 24px 0 8px 0; }
-    .legal-wrap p { font-size: 13px; color: var(--text2); line-height: 1.6; margin: 0 0 10px 0; }
-    .legal-wrap ul { margin: 0 0 10px 0; padding-left: 20px; }
-    .legal-wrap li { font-size: 13px; color: var(--text2); line-height: 1.6; margin-bottom: 4px; }
+    .legal-wrap p { font-size: 13.5px; color: var(--text2); line-height: 1.7; margin: 0 0 12px 0; text-align: justify; hyphens: auto; }
+    .legal-wrap ul { margin: 0 0 12px 0; padding-left: 22px; }
+    .legal-wrap li { font-size: 13.5px; color: var(--text2); line-height: 1.7; margin-bottom: 6px; text-align: justify; hyphens: auto; }
     .legal-wrap strong { color: var(--text1); }
+    @media (max-width: 560px) {
+      .legal-wrap p, .legal-wrap li { text-align: left; hyphens: none; }
+    }
   </style>
 </head>
 <body>
