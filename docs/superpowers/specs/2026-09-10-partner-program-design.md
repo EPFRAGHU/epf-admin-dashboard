@@ -1,10 +1,10 @@
 # Partner / Reseller Program — design
 
 Date: 2026-09-10
-Status: **prototype built and reviewed; not implemented.** No code, schema, auth,
-or payout logic exists yet. This document is the spec; the interactive prototype
-(owner + reseller dashboards, sample data, no backend) is at
-`https://claude.ai/code/artifact/4c6e31e3-9fa6-4c90-8395-24302ba66157`.
+Status: **implementation started.** All blocking decisions settled 2026-09-10 (see
+"Decisions" below); v1 scope frozen to "create the account" enrollment + manual
+payouts. The interactive prototype (owner + reseller dashboards, sample data, no
+backend) is at `https://claude.ai/code/artifact/4c6e31e3-9fa6-4c90-8395-24302ba66157`.
 
 ## Why
 
@@ -247,44 +247,76 @@ establishment they didn't refer, and never edit an establishment's wage data at 
 - Multi-currency, non-UPI payouts.
 - A reseller editing establishment wage/ECR data.
 
-## Open decisions (must be settled before implementation)
+## Decisions (settled 2026-09-10)
 
-1. **Attribution** — allow all three enrollment paths, or only "create the account"?
-   Can an establishment be re-assigned to a different reseller later? Can a reseller
-   enroll their own establishment?
-2. **Split base** — 50% of gross collected, or of net after payment-gateway fees / GST
-   / TDS? Does the 50% apply to a custom/overridden price the reseller themselves set?
-3. **Price control** — can a reseller set any price, or only within a band the owner
-   fixes per plan?
-4. **Part-months & edge cases** — first-month proration, refunds, a client who pays
-   late, a client who churns mid-month — how each affects the reseller's 50%.
-5. **Multi-level** — if a reseller's referred *consultant* brings 20 establishments,
-   does the reseller earn on all 20, and at what rate?
-6. **Payout mechanics** — which UPI payout API; minimum payout threshold; failure &
-   retry policy; TDS deduction and Form 16A / quarterly filing for reseller income;
-   monthly statement to the reseller.
-7. **Reseller onboarding** — superadmin-created vs a signup+approval queue; KYC / PAN
-   collection; UPI verification (penny-drop); a signed agreement.
-8. **Employer login after reseller-create** — set-password link expiry window; whether
-   the reseller keeps temporary co-access to help enter the first ECR; whether the
-   contact email/mobile can be changed later without re-verifying.
+1. **Attribution** — v1 ships **"create the account" only**. Referral link and
+   send-invite are deferred. An establishment's `referred_by_reseller_id` is set once
+   at creation; re-assignment is superadmin-only and not in the v1 UI. A reseller
+   **cannot** enroll their own establishment (no self-referral).
+2. **Split base** — **50% of gross collected** (the full paid `SubscriptionFee`
+   amount, before gateway fee / GST / TDS). Applies to whatever price is on the
+   establishment, including a reseller-set custom/overridden price.
+3. **Price control** — **reseller sets any price** (any flat amount, any per-employee
+   rate within or, for Enterprise, outside the ₹10–100 band). No owner price-band
+   table in v1. Owner sees every price on the dashboard.
+4. **Part-months & edge cases** — v1 has **no proration logic**. The split is exactly
+   50% of whatever `SubscriptionFee` rows are marked *paid* for that establishment in
+   the payout period. A churned establishment simply stops producing paid fees; the
+   reseller keeps everything already paid. A refund issued after a payout is handled
+   as a manual adjustment on the next month's run (payouts are manual in v1 anyway).
+5. **Multi-level** — v1 attributes **only the establishment created through the
+   reseller's create-the-account flow**. If that referral is a consultant who later
+   adds more establishments themselves, those are **not** auto-attributed. Revisit if
+   it becomes common.
+6. **Payout mechanics** — **manual for v1.** A monthly cron at 00:30 on the 1st
+   computes 50:50 on the previous month's paid fees, deducts TDS (10% of the
+   reseller's 50% when a PAN is on file), and writes `ResellerPayout` rows at
+   `scheduled`. The owner pays each reseller's UPI **by hand** and records the UTR +
+   marks the row `paid` on the "Payouts" screen. No minimum threshold. No automated
+   UPI payout API, no automated retry. Form 16A / quarterly TDS filing is handled
+   off-app by the owner's accountant.
+7. **Reseller onboarding** — **superadmin-created only** (no signup queue). The
+   superadmin captures PAN + UPI + bank at enrol. **No automated penny-drop in v1** —
+   the superadmin verifies the UPI by sending ₹1 themselves and toggling a
+   "payout details verified" flag on the profile. A signed agreement is off-app.
+8. **Employer login after reseller-create** — set-password link expires in **7 days**,
+   resendable from the pending row. The reseller gets **no co-access** to the
+   established account (clean boundary — the employer enters their own first ECR).
+   Changing the contact email/mobile later is **superadmin-only**.
 
-## Implementation order (rough)
+### Still genuinely open (do not block v1, revisit post-launch)
 
-1. `reseller` role + `get_reseller` + `ResellerProfile` table +
-   `Establishment.referred_by_reseller_id` column & migration. No behaviour change
-   yet — just the plumbing.
-2. Superadmin "Enrol a reseller" form + backend (create `User` + `ResellerProfile`,
-   generate referral code, send set-password invite, queue penny-drop). Reuse the
-   signup/set-password code.
-3. Referral enrollment: the "create the account" backend (establishment + no-password
-   user + set-password token + email/SMS), stamped with the reseller id. Reuse
-   existing establishment-create and signup/set-password code.
-4. Reseller dashboard read views — all are `SubscriptionFee` / ECR / establishment
-   rollups filtered by `referred_by_reseller_id`. No new billing math.
-5. `ResellerPayout` table + the monthly cron that computes 50:50 and writes
-   `scheduled` rows. Owner "Payouts" screen reads these.
-6. UPI payout API integration — the actual transfer + UTR capture + retry.
-7. Owner "Referral Program" admin section.
-8. Referral link + invite enrollment paths.
-9. TDS handling (deduction, Form 16A / quarterly filing).
+- Automated UPI payout API (RazorpayX vs Cashfree Payouts) once a business current
+  account exists.
+- Automated penny-drop verification.
+- Net-of-fees split, if gateway/GST drag becomes material.
+- Referral-link and send-invite enrollment paths.
+- Multi-level attribution for referred consultants.
+
+## Implementation order
+
+**v1 (this build):**
+
+1. `reseller` role + `get_reseller` dependency + `ResellerProfile` table +
+   `Establishment.referred_by_reseller_id` column & `_run_startup_migrations()` entry.
+   No behaviour change yet — just the plumbing.
+2. Superadmin **"Enrol a reseller"** form + backend: create `User` (`role='reseller'`,
+   no password) + `ResellerProfile`, generate `referral_code`, send the set-password
+   invite (reuse the signup/set-password code), a manual "payout details verified"
+   toggle.
+3. **"Create the account"** enrollment: backend that makes the `Establishment`
+   (`referred_by_reseller_id` set, chosen `billing_mode` / rate / fee) + a no-password
+   `employer`/`consultant` `User` + set-password token + email/SMS, initiated from a
+   new **reseller-side form**. Reuse existing establishment-create + signup/set-password.
+   `Enrollment` row tracks the pending pipeline.
+4. **Reseller dashboard** read views — overview, my establishments, ECR activity, my
+   earnings, payout history. All are `SubscriptionFee` / ECR / establishment rollups
+   filtered by `referred_by_reseller_id`. No new billing math.
+5. **`ResellerPayout` table + monthly cron** — compute 50:50 on gross paid fees,
+   deduct TDS, write `scheduled` rows.
+6. **Owner "Referral Program" admin section** — Overview, Resellers (+ profile panel),
+   Establishments (+ per-employee panel + pending pipeline), ECR Activity, Payouts
+   (mark-paid + UTR entry).
+
+**Deferred (later builds):** automated UPI payout API + retry; referral-link & invite
+paths; automated penny-drop; multi-level attribution; Form 16A automation.
