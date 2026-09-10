@@ -901,6 +901,12 @@ const App = (() => {
       reports: 'Statutory Reports & Export',
       'subscription-history': '📜 Subscription History',
       'my-profile': '👤 My Profile',
+      'reseller-overview': '📊 My Overview',
+      'reseller-enroll': '➕ Enroll Establishment',
+      'reseller-establishments': '🏢 My Establishments',
+      'reseller-ecr': '🗂️ ECR Activity',
+      'reseller-earnings': '💰 My Earnings',
+      'reseller-payouts': '🧾 Payout History',
     };
 
     const titleEl = document.getElementById('topbar-title');
@@ -918,12 +924,32 @@ const App = (() => {
   }
 
   /* ── Sidebar Navigation Setup ─────────────────────────────────── */
+  function navItem(page, icon, label) {
+    return `<a class="nav-item ${currentPage === page ? 'active' : ''}" data-page="${page}">
+      <span class="nav-icon">${icon}</span><span>${label}</span></a>`;
+  }
+
   function renderSidebarNav() {
     const nav = document.getElementById('sidebar-nav');
     if (!nav) return;
 
     const user = getCurrentUser();
     const isSuper = isSuperadmin();
+
+    if (user && user.role === 'reseller') {
+      nav.innerHTML = [
+        navItem('reseller-overview', '📊', 'My Overview'),
+        navItem('reseller-enroll', '➕', 'Enroll Establishment'),
+        navItem('reseller-establishments', '🏢', 'My Establishments'),
+        navItem('reseller-ecr', '🗂️', 'ECR Activity'),
+        navItem('reseller-earnings', '💰', 'My Earnings'),
+        navItem('reseller-payouts', '🧾', 'Payout History'),
+      ].join('');
+      nav.querySelectorAll('.nav-item').forEach(el => el.addEventListener('click', (e) => {
+        e.preventDefault(); navigate(el.dataset.page);
+      }));
+      return;
+    }
 
     let items = [];
 
@@ -1048,7 +1074,9 @@ const App = (() => {
 
     if (!handledCashfreeReturn) {
       // Default landing page
-      if (isSuperadmin()) {
+      if (currentUser && currentUser.role === 'reseller') {
+        navigate((currentPage && String(currentPage).startsWith('reseller-')) ? currentPage : 'reseller-overview');
+      } else if (isSuperadmin()) {
         navigate(currentPage === 'admin' ? 'admin' : currentPage || 'admin');
       } else {
         // For consultants: if no active establishment set, find one
