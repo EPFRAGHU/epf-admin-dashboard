@@ -57,3 +57,48 @@ def test_require_reseller_rejects_non_reseller():
 def test_require_reseller_allows_reseller():
     r = User(name="R", email="r-grd@x.com", role="reseller", is_active=True)
     assert _require_reseller(r) is r
+
+
+from webapp.reseller_tokens import make_set_password_token, read_set_password_token
+
+
+def test_set_password_token_roundtrip():
+    tok = make_set_password_token(user_id=42, jti="abc123")
+    got = read_set_password_token(tok)
+    assert got == {"user_id": 42, "jti": "abc123"}
+
+
+def test_set_password_token_rejects_tamper():
+    tok = make_set_password_token(user_id=42, jti="abc123")
+    assert read_set_password_token(tok[:-3] + "zzz") is None
+
+
+def test_set_password_token_expires():
+    tok = make_set_password_token(user_id=42, jti="abc123")
+    assert read_set_password_token(tok, max_age_days=-1) is None
+
+
+def test_read_set_password_token_handles_garbage():
+    assert read_set_password_token("") is None
+    assert read_set_password_token("not-a-token") is None
+
+
+def test_set_password_endpoint_sets_hash(client, test_db):
+    from webapp.database import Enrollment
+    u = User(name="Invitee", email="invitee@x.com", role="employer",
+             is_active=True, password_hash=None)
+    test_db.add(u); test_db.commit(); test_db.refresh(u)
+    test_db.add(Enrollment(reseller_id=u.id, account_user_id=u.id, method="create_handover",
+                           contact_email="invitee@x.com", stage="account_created",
+                           set_password_jti="jti-1"))
+    test_db.commit()
+    tok = make_set_password_token(user_id=u.id, jti="jti-1")
+
+    r = client.post("/api/auth/set-password", json={"token": tok, "password": "NewPass@123"})
+    assert r.status_code == 200
+
+    login = client.post("/api/auth/login", json={"email": "invitee@x.com", "password": "NewPass@123"})
+    assert login.status_code == 200
+
+    r2 = client.post("/api/auth/set-password", json={"token": tok, "password": "Other@123"})
+    assert r2.status_code == 400   # consumed link cannot be reused

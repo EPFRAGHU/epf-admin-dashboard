@@ -31,7 +31,7 @@ from sqlalchemy.sql import func
 from .database import (
     SessionLocal, engine, get_db, Base,
     User, Establishment, Payment, SubscriptionFee, AdvanceCreditLedger, ActivityLog, ProjectData, Setting, DATABASE_URL,
-    FeatureFlag, RolePermission, UserPermissionOverride, SignupRequest
+    FeatureFlag, RolePermission, UserPermissionOverride, SignupRequest, Enrollment
 )
 
 # Auth helpers and dependencies
@@ -864,6 +864,11 @@ async def signup_page():
     return (WEB / "signup.html").read_text(encoding="utf-8")
 
 
+@app.get("/set-password", response_class=HTMLResponse)
+async def set_password_page():
+    return (WEB / "set_password.html").read_text(encoding="utf-8")
+
+
 @app.get("/terms", response_class=HTMLResponse)
 async def terms_page():
     return (WEB / "terms.html").read_text(encoding="utf-8")
@@ -887,6 +892,10 @@ async def pricing_page():
 # ── Schemas ────────────────────────────────────────────────────────────────
 class LoginIn(BaseModel):
     email: str
+    password: str
+
+class SetPasswordIn(BaseModel):
+    token: str
     password: str
 
 class UserCreateIn(BaseModel):
@@ -1160,6 +1169,34 @@ async def login(d: LoginIn, db: Session = Depends(get_db)):
             "max_establishments": user.max_establishments
         }
     }
+
+
+@app.post("/api/auth/set-password")
+async def set_password(d: SetPasswordIn, db: Session = Depends(get_db)):
+    from webapp.reseller_tokens import read_set_password_token
+    if not d.password or len(d.password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters.")
+    data = read_set_password_token(d.token)
+    if not data:
+        raise HTTPException(400, "This set-password link is invalid or has expired. Ask for a new one.")
+    user = db.query(User).filter(User.id == data["user_id"]).first()
+    if not user:
+        raise HTTPException(404, "Account not found.")
+
+    enr = db.query(Enrollment).filter(Enrollment.set_password_jti == data["jti"]).first()
+    if not enr:
+        # token was superseded by a resend, or already consumed
+        raise HTTPException(400, "This set-password link is no longer valid. Ask for a new one.")
+
+    user.password_hash = hash_password(d.password)
+    enr.set_password_jti = None          # consume it -- truly one-time
+    if enr.stage == "account_created":
+        enr.stage = "password_set"
+    db.commit()
+
+    log_activity(db, user.id, enr.establishment_id, "set_password",
+                 f"{user.name} set their password via handover link", {"user_id": user.id})
+    return {"ok": True}
 
 
 @app.get("/api/auth/me")
