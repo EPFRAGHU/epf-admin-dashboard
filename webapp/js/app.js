@@ -1110,27 +1110,31 @@ const App = (() => {
       if (!tr) return;
 
       let estInfo = '';
-      try {
-        const est = await get('/api/establishment');
-        currentEstablishment = est;
-        if (est && (est.name || est.code)) {
-          estInfo = `
-            <div style="text-align: right; line-height: 1.25; border-right: 1px solid var(--border); padding-right: 14px; margin-right: 14px;">
-              <div style="display:flex; align-items:center; gap:6px; justify-content:flex-end;">
-                <span style="font-weight: 700; font-size: 16px; color: var(--text1); max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(est.name)}</span>
-                <button class="btn btn-ghost btn-sm" style="font-size:10px; padding:1px 6px;" onclick="App.showProjectManager()" title="Switch Active Establishment">⇄ Switch</button>
+      if (!(user && user.role === 'reseller')) {
+        try {
+          const est = await get('/api/establishment');
+          currentEstablishment = est;
+          if (est && (est.name || est.code)) {
+            estInfo = `
+              <div style="text-align: right; line-height: 1.25; border-right: 1px solid var(--border); padding-right: 14px; margin-right: 14px;">
+                <div style="display:flex; align-items:center; gap:6px; justify-content:flex-end;">
+                  <span style="font-weight: 700; font-size: 16px; color: var(--text1); max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(est.name)}</span>
+                  <button class="btn btn-ghost btn-sm" style="font-size:10px; padding:1px 6px;" onclick="App.showProjectManager()" title="Switch Active Establishment">⇄ Switch</button>
+                </div>
+                <div style="font-size: 13px; color: var(--text2); font-family:monospace; margin-top:1px;">${esc(est.code)}</div>
               </div>
-              <div style="font-size: 13px; color: var(--text2); font-family:monospace; margin-top:1px;">${esc(est.code)}</div>
-            </div>
-          `;
-        }
-      } catch (_) {}
+            `;
+          }
+        } catch (_) {}
+      }
 
       const roleBadge = isSuperadmin()
         ? `<span class="badge" style="background:rgba(99,102,241,0.15); color:var(--primary); font-weight:700; font-size:10px;">👑 SUPERADMIN</span>`
         : (user && user.role === 'employer'
           ? `<span class="badge low" style="font-size:10px;">👤 EMPLOYER</span>`
-          : `<span class="badge low" style="font-size:10px;">👤 CONSULTANT</span>`);
+          : (user && user.role === 'reseller'
+            ? `<span class="badge low" style="font-size:10px;">🤝 RESELLER</span>`
+            : `<span class="badge low" style="font-size:10px;">👤 CONSULTANT</span>`));
 
       tr.innerHTML = `
         <div style="display:flex; align-items:center;">
