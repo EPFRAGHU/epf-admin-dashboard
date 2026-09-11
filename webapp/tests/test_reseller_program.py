@@ -10,9 +10,10 @@ import pytest
 from fastapi import HTTPException
 from webapp.database import (
     SessionLocal, User, Establishment,
-    ResellerProfile, Enrollment, ResellerPayout, ResellerPayoutLine,
+    ResellerProfile, Enrollment, ResellerPayout, ResellerPayoutLine, SubscriptionFee,
 )
 from webapp.auth import _require_reseller
+from webapp.reseller_payout import compute_payouts_for_period
 
 
 def test_reseller_profile_and_fk_exist(test_db):
@@ -274,3 +275,65 @@ def test_reseller_only_sees_own_referrals(reseller_a, test_db):
     test_db.commit()
     ests = reseller_a.get("/api/reseller/establishments").json()["establishments"]
     assert all(e["code"] != "ORNONE0000000000" for e in ests)
+
+
+def _make_reseller(test_db, suffix, pan="ABCDE9999Z"):
+    u = User(name=f"R{suffix}", email=f"payr-{suffix}@x.com", role="reseller", is_active=True)
+    test_db.add(u); test_db.commit(); test_db.refresh(u)
+    test_db.add(ResellerProfile(
+        user_id=u.id, full_name=f"R{suffix}", mobile="1", email=f"payr-{suffix}@x.com",
+        referral_code=f"PR{suffix}"[:20], upi_id=f"payr{suffix}@ok", pan=pan,
+        payout_details_verified=True))
+    test_db.commit()
+    return u
+
+
+def test_compute_payout_splits_50_50_with_tds(test_db):
+    u = _make_reseller(test_db, "t1")  # pan set -> 10% TDS
+    est, fee = _seed_referred_est_with_paid_fee(test_db, u.id, code="ORCMP0000000001")
+    summary = compute_payouts_for_period(test_db, "2026-05")
+    mine = [s for s in summary if s["reseller_id"] == u.id]
+    assert len(mine) == 1
+    po = test_db.query(ResellerPayout).filter(ResellerPayout.reseller_id == u.id).first()
+    assert po.gross_collected == 2000.0
+    assert po.reseller_share_gross == 1000.0
+    assert po.tds_amount == 100.0
+    assert po.reseller_share_net == 900.0
+    assert po.owner_share == 1000.0
+    assert po.status == "scheduled"
+    lines = test_db.query(ResellerPayoutLine).filter(ResellerPayoutLine.payout_id == po.id).all()
+    assert len(lines) == 1 and lines[0].subscription_fee_id == fee.id
+
+
+def test_compute_payout_is_idempotent(test_db):
+    u = _make_reseller(test_db, "t2")
+    _seed_referred_est_with_paid_fee(test_db, u.id, code="ORCMP0000000002")
+    compute_payouts_for_period(test_db, "2026-05")
+    n1 = test_db.query(ResellerPayoutLine).count()
+    compute_payouts_for_period(test_db, "2026-05")
+    n2 = test_db.query(ResellerPayoutLine).count()
+    assert n1 == n2
+
+
+def test_compute_payout_skips_unpaid_and_unreferred(test_db):
+    u = _make_reseller(test_db, "t3")
+    owner = User(name="U", email="unpaidcmp@x.com", role="employer", is_active=True)
+    test_db.add(owner); test_db.commit(); test_db.refresh(owner)
+    est = Establishment(user_id=owner.id, code="ORCMP0000000003", name="X", data="{}",
+                        referred_by_reseller_id=u.id)
+    test_db.add(est); test_db.commit(); test_db.refresh(est)
+    test_db.add(SubscriptionFee(establishment_id=est.id, financial_year="2026-27", month="Apr",
+                                amount_due=5000, is_paid=False, billing_mode="flat_fee"))
+    test_db.commit()
+    summary = compute_payouts_for_period(test_db, "2026-06")
+    assert not any(s["reseller_id"] == u.id for s in summary)
+    assert test_db.query(ResellerPayout).filter(ResellerPayout.reseller_id == u.id).first() is None
+
+
+def test_compute_payout_no_pan_no_tds(test_db):
+    u = _make_reseller(test_db, "t4", pan="")
+    _seed_referred_est_with_paid_fee(test_db, u.id, code="ORCMP0000000004")
+    compute_payouts_for_period(test_db, "2026-07")
+    po = test_db.query(ResellerPayout).filter(ResellerPayout.reseller_id == u.id).first()
+    assert po is not None
+    assert po.tds_amount == 0.0 and po.reseller_share_net == po.reseller_share_gross

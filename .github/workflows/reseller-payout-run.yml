@@ -1,0 +1,29 @@
+name: Monthly Reseller Payout Run
+
+on:
+  schedule:
+    # 01:00 UTC on the 1st = 06:30 IST on the 1st. Exact minute is not important --
+    # this only writes 'scheduled' rows; the owner settles them by hand.
+    - cron: '0 1 1 * *'
+  workflow_dispatch:
+    inputs:
+      period:
+        description: 'Period label YYYY-MM (blank = previous month)'
+        required: false
+
+jobs:
+  payout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r webapp/requirements.txt
+      - name: Run reseller payout computation
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          HEALTHCHECKS_PING_URL: ${{ secrets.RESELLER_PAYOUT_HEALTHCHECK_URL }}
+          PAYOUT_PERIOD: ${{ github.event.inputs.period }}
+        run: python3 scripts/run_reseller_payouts.py
