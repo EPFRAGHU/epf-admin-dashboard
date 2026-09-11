@@ -337,3 +337,42 @@ def test_compute_payout_no_pan_no_tds(test_db):
     po = test_db.query(ResellerPayout).filter(ResellerPayout.reseller_id == u.id).first()
     assert po is not None
     assert po.tds_amount == 0.0 and po.reseller_share_net == po.reseller_share_gross
+
+
+def test_admin_referral_overview_and_mark_paid(superadmin_session, test_db):
+    u = _make_reseller(test_db, "adm1")
+    _seed_referred_est_with_paid_fee(test_db, u.id, code="ORADM0000000001")
+    compute_payouts_for_period(test_db, "2026-05")
+
+    ov = superadmin_session.get("/api/admin/referral-program/overview")
+    assert ov.status_code == 200
+    assert ov.json()["stats"]["active_resellers"] >= 1
+
+    lst = superadmin_session.get("/api/admin/payouts").json()["payouts"]
+    mine = [p for p in lst if p["reseller"] == "Radm1"]
+    assert len(mine) == 1 and mine[0]["status"] == "scheduled"
+    pid = mine[0]["id"]
+
+    mp = superadmin_session.post(f"/api/admin/payouts/{pid}/mark-paid",
+                                 json={"upi_reference": "AXISU12345678"})
+    assert mp.status_code == 200
+    from webapp.database import ResellerPayout
+    po = test_db.query(ResellerPayout).filter(ResellerPayout.id == pid).first()
+    test_db.refresh(po)
+    assert po.status == "paid" and po.upi_reference == "AXISU12345678" and po.paid_at is not None
+
+    # already-paid -> 400
+    assert superadmin_session.post(f"/api/admin/payouts/{pid}/mark-paid",
+                                   json={"upi_reference": "X"}).status_code == 400
+
+
+def test_admin_referral_establishments_pending(superadmin_session, reseller_a):
+    reseller_a.post("/api/reseller/establishments", json=_create_est_payload(
+        code="ORADM0000000002", contact_email="adm2@x.com"))
+    d = superadmin_session.get("/api/admin/referral-program/establishments").json()
+    assert any(e["code"] == "ORADM0000000002" for e in d["establishments"])
+    assert any(p["contact_email"] == "adm2@x.com" for p in d["pending"])
+
+
+def test_admin_payouts_forbidden_for_reseller(reseller_a):
+    assert reseller_a.get("/api/admin/payouts").status_code == 403

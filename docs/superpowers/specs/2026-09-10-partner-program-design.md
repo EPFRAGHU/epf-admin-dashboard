@@ -1,10 +1,11 @@
 # Partner / Reseller Program — design
 
 Date: 2026-09-10
-Status: **implementation started.** All blocking decisions settled 2026-09-10 (see
-"Decisions" below); v1 scope frozen to "create the account" enrollment + manual
-payouts. The interactive prototype (owner + reseller dashboards, sample data, no
-backend) is at `https://claude.ai/code/artifact/4c6e31e3-9fa6-4c90-8395-24302ba66157`.
+Status: **v1 implemented** (2026-09-10). The create-the-account enrollment path, the
+reseller + owner dashboards, and manual monthly 50:50 payouts are built and tested.
+Deferred items (referral-link / invite paths, automated UPI payout API, automated
+penny-drop, multi-level attribution, Form 16A automation) remain per the "Still
+genuinely open" list below.
 
 ## Why
 

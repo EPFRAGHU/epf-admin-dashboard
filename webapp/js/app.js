@@ -907,6 +907,7 @@ const App = (() => {
       'reseller-ecr': '🗂️ ECR Activity',
       'reseller-earnings': '💰 My Earnings',
       'reseller-payouts': '🧾 Payout History',
+      'referral-program': '🤝 Referral Program',
     };
 
     const titleEl = document.getElementById('topbar-title');
@@ -957,6 +958,11 @@ const App = (() => {
       items.push(`
         <a class="nav-item ${currentPage === 'admin' ? 'active' : ''}" data-page="admin" style="background:rgba(99,102,241,0.08); border-left:3px solid var(--primary);">
           <span class="nav-icon">👑</span><span>Admin Dashboard</span>
+        </a>
+      `);
+      items.push(`
+        <a class="nav-item ${currentPage === 'referral-program' ? 'active' : ''}" data-page="referral-program" style="background:rgba(217,164,65,0.08); border-left:3px solid #d9a441;">
+          <span class="nav-icon">🤝</span><span>Referral Program</span>
         </a>
       `);
     } else {

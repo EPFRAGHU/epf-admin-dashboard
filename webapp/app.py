@@ -6973,6 +6973,169 @@ async def reseller_payouts(reseller: User = Depends(get_reseller), db: Session =
                          "upi_reference": p.upi_reference, "paid_at": _isodt(p.paid_at)} for p in rows]}
 
 
+# ── Referral Program (superadmin) ──────────────────────────────────────────
+class MarkPaidIn(BaseModel):
+    upi_reference: str
+
+
+class MarkFailedIn(BaseModel):
+    notes: Optional[str] = None
+
+
+@app.get("/api/admin/referral-program/overview")
+async def admin_referral_overview(admin: User = Depends(get_superadmin), db: Session = Depends(get_db)):
+    profs = db.query(ResellerProfile).all()
+    all_ref_ests = db.query(Establishment).filter(
+        Establishment.referred_by_reseller_id.isnot(None)).all()
+    est_by_reseller = {}
+    for e in all_ref_ests:
+        est_by_reseller.setdefault(e.referred_by_reseller_id, []).append(e)
+
+    on_lines = {r[0] for r in db.query(ResellerPayoutLine.subscription_fee_id).all() if r[0] is not None}
+    rows, collected, owner_share, flat_amt, pe_amt = [], 0.0, 0.0, 0.0, 0.0
+    for prof in profs:
+        ests = est_by_reseller.get(prof.user_id, [])
+        est_ids = [e.id for e in ests]
+        pending_fees = []
+        if est_ids:
+            pending_fees = [f for f in db.query(SubscriptionFee).filter(
+                SubscriptionFee.establishment_id.in_(est_ids),
+                SubscriptionFee.is_paid == True).all() if f.id not in on_lines]  # noqa: E712
+        g = round(sum(f.amount_due for f in pending_fees), 2)
+        collected += g
+        owner_share += round(g / 2, 2)
+        flat_ids = {e.id for e in ests if (e.billing_mode or "per_employee") == "flat_fee"}
+        flat_amt += sum(f.amount_due for f in pending_fees if f.establishment_id in flat_ids)
+        pe_amt += sum(f.amount_due for f in pending_fees if f.establishment_id not in flat_ids)
+        last_payout = db.query(ResellerPayout).filter(
+            ResellerPayout.reseller_id == prof.user_id).order_by(ResellerPayout.period.desc()).first()
+        rows.append({"id": prof.user_id, "full_name": prof.full_name, "referral_code": prof.referral_code,
+                     "upi_id": prof.upi_id, "payout_details_verified": prof.payout_details_verified,
+                     "referral_count": len(ests), "collected_this_period": g,
+                     "your_50": round(g / 2, 2), "their_50": round(g / 2, 2),
+                     "payout_status": last_payout.status if last_payout else "—"})
+
+    payouts_due = db.query(ResellerPayout).filter(ResellerPayout.status == "scheduled").count()
+    return {"stats": {"active_resellers": sum(1 for p in profs if p.status == "active"),
+                      "referral_count": len(all_ref_ests),
+                      "collected_this_period": round(collected, 2),
+                      "flat_vs_per_employee": {"flat": round(flat_amt, 2), "per_employee": round(pe_amt, 2)},
+                      "owner_share_this_period": round(owner_share, 2),
+                      "payouts_due": payouts_due, "next_run_date": _next_payout_date_iso()},
+            "resellers": rows,
+            "recent_ecr": _reseller_ecr_rows(db, [e.id for e in all_ref_ests], limit=10)}
+
+
+@app.get("/api/admin/referral-program/establishments")
+async def admin_referral_establishments(admin: User = Depends(get_superadmin), db: Session = Depends(get_db)):
+    ests = db.query(Establishment).filter(Establishment.referred_by_reseller_id.isnot(None)).all()
+    prof_by_id = {p.user_id: p for p in db.query(ResellerProfile).all()}
+    owners = {u.id: u for u in db.query(User).filter(
+        User.id.in_([e.user_id for e in ests] or [0])).all()}
+    paid_ids = set()
+    if ests:
+        paid_ids = {f.establishment_id for f in db.query(SubscriptionFee.establishment_id).filter(
+            SubscriptionFee.establishment_id.in_([e.id for e in ests]),
+            SubscriptionFee.is_paid == True).all()}  # noqa: E712
+
+    out, per_emp = [], []
+    for e in ests:
+        prof = prof_by_id.get(e.referred_by_reseller_id)
+        mode = e.billing_mode or "per_employee"
+        fee_display = (f"₹{int(e.flat_fee_amount or 0)}/mo" if mode == "flat_fee"
+                       else f"₹{int(e.custom_rate_per_employee or 0)}/emp")
+        row = {"id": e.id, "code": e.code, "name": e.name,
+               "type": owners[e.user_id].role if e.user_id in owners else "employer",
+               "reseller": prof.full_name if prof else "—",
+               "reseller_code": prof.referral_code if prof else "—",
+               "billing_mode": mode, "fee_display": fee_display,
+               "status": "active" if e.id in paid_ids else "pending",
+               "joined": _isodt(e.created_at)}
+        out.append(row)
+        if mode == "per_employee":
+            try:
+                proj = Project(); proj.load_from_dict(json.loads(e.data or "{}"))
+                latest_fy = max(proj.years.keys()) if proj.years else None
+                headcount = 0
+                if latest_fy:
+                    headcount = max((count_ecr_employees_for_month(proj, latest_fy, m) for m in range(12)), default=0)
+            except Exception:
+                headcount = 0
+            rate = e.custom_rate_per_employee or 0
+            per_emp.append({"name": e.name, "reseller": prof.full_name if prof else "—",
+                            "rate": rate, "headcount": headcount, "fee": rate * headcount,
+                            "owner_share": round(rate * headcount / 2, 2)})
+
+    pending = []
+    for enr in db.query(Enrollment).filter(Enrollment.method == "create_handover",
+                                           Enrollment.stage != "active").all():
+        prof = prof_by_id.get(enr.reseller_id)
+        pending.append({"reseller": prof.full_name if prof else "—",
+                        "establishment_name": next((e.name for e in ests if e.id == enr.establishment_id), "—"),
+                        "contact_email": enr.contact_email, "stage": enr.stage,
+                        "created_at": _isodt(enr.created_at)})
+    return {"establishments": out, "per_employee": per_emp, "pending": pending}
+
+
+@app.get("/api/admin/referral-program/ecr-activity")
+async def admin_referral_ecr(scope: str = "current", admin: User = Depends(get_superadmin),
+                             db: Session = Depends(get_db)):
+    est_ids = [e.id for e in db.query(Establishment.id).filter(
+        Establishment.referred_by_reseller_id.isnot(None)).all()]
+    return {"rows": _reseller_ecr_rows(db, est_ids, scope=scope)}
+
+
+@app.get("/api/admin/payouts")
+async def admin_list_payouts(status: Optional[str] = None, admin: User = Depends(get_superadmin),
+                             db: Session = Depends(get_db)):
+    q = db.query(ResellerPayout)
+    if status:
+        q = q.filter(ResellerPayout.status == status)
+    names = {p.user_id: p.full_name for p in db.query(ResellerProfile).all()}
+    rows = q.order_by(ResellerPayout.run_at.desc()).all()
+    return {"payouts": [{"id": p.id, "reseller": names.get(p.reseller_id, f"#{p.reseller_id}"),
+                         "period": p.period, "gross_collected": p.gross_collected,
+                         "reseller_share_gross": p.reseller_share_gross, "tds_amount": p.tds_amount,
+                         "reseller_share_net": p.reseller_share_net, "owner_share": p.owner_share,
+                         "status": p.status, "upi_id": p.upi_id, "upi_reference": p.upi_reference,
+                         "run_at": _isodt(p.run_at), "paid_at": _isodt(p.paid_at)} for p in rows]}
+
+
+@app.post("/api/admin/payouts/{payout_id}/mark-paid")
+async def admin_mark_payout_paid(payout_id: int, d: MarkPaidIn, admin: User = Depends(get_superadmin),
+                                 db: Session = Depends(get_db)):
+    po = db.query(ResellerPayout).filter(ResellerPayout.id == payout_id).first()
+    if not po:
+        raise HTTPException(404, "Payout not found.")
+    if po.status == "paid":
+        raise HTTPException(400, "This payout is already marked paid.")
+    if not d.upi_reference.strip():
+        raise HTTPException(400, "A UPI reference / UTR is required.")
+    po.status = "paid"
+    po.upi_reference = d.upi_reference.strip()
+    po.paid_at = datetime.utcnow()
+    db.commit()
+    log_activity(db, admin.id, None, "reseller_payout_paid",
+                 f"Marked payout #{po.id} ({po.period}) paid to reseller #{po.reseller_id}, UTR {po.upi_reference}",
+                 {"payout_id": po.id, "reseller_id": po.reseller_id, "net": po.reseller_share_net})
+    return {"ok": True}
+
+
+@app.post("/api/admin/payouts/{payout_id}/mark-failed")
+async def admin_mark_payout_failed(payout_id: int, d: MarkFailedIn, admin: User = Depends(get_superadmin),
+                                   db: Session = Depends(get_db)):
+    po = db.query(ResellerPayout).filter(ResellerPayout.id == payout_id).first()
+    if not po:
+        raise HTTPException(404, "Payout not found.")
+    po.status = "failed"
+    if d.notes:
+        po.notes = d.notes.strip()
+    db.commit()
+    log_activity(db, admin.id, None, "reseller_payout_failed",
+                 f"Marked payout #{po.id} failed", {"payout_id": po.id})
+    return {"ok": True}
+
+
 # ── Constants ─────────────────────────────────────────────────────────────
 @app.get("/api/constants")
 async def constants():
