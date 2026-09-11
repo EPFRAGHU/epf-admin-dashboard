@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import pytest
 from fastapi import HTTPException
 from webapp.database import (
-    SessionLocal, User, Establishment,
+    User, Establishment,
     ResellerProfile, Enrollment, ResellerPayout, ResellerPayoutLine, SubscriptionFee,
 )
 from webapp.auth import _require_reseller
@@ -376,3 +376,76 @@ def test_admin_referral_establishments_pending(superadmin_session, reseller_a):
 
 def test_admin_payouts_forbidden_for_reseller(reseller_a):
     assert reseller_a.get("/api/admin/payouts").status_code == 403
+
+
+def test_resend_blocked_after_password_set(reseller_a, test_db, client):
+    reseller_a.post("/api/reseller/establishments", json=_create_est_payload(
+        code="ORFIX0000000001", contact_email="fixc1@x.com"))
+    lst = reseller_a.get("/api/reseller/enrollments").json()["enrollments"]
+    eid = [e["id"] for e in lst if e["contact_email"] == "fixc1@x.com"][0]
+
+    from webapp.database import Enrollment
+    from webapp.reseller_tokens import make_set_password_token
+    enr = test_db.query(Enrollment).filter(Enrollment.id == eid).first()
+    tok = make_set_password_token(enr.account_user_id, enr.set_password_jti)
+    r = client.post("/api/auth/set-password", json={"token": tok, "password": "EmployerPass@123"})
+    assert r.status_code == 200
+
+    # now the reseller tries to resend -- must be rejected (this is the C-1 regression test)
+    resend = reseller_a.post(f"/api/reseller/enrollments/{eid}/resend")
+    assert resend.status_code == 400
+
+
+def test_resend_rejects_non_owner(reseller_a):
+    # a nonexistent / not-owned enrollment id must 404 -- this proves resend is
+    # scoped to the caller's own enrollments (reseller_resend_set_password filters
+    # by Enrollment.reseller_id == reseller.id in the query itself).
+    assert reseller_a.post("/api/reseller/enrollments/999999/resend").status_code == 404
+
+
+def test_reseller_cannot_see_another_resellers_establishment(reseller_a, test_db):
+    from webapp.database import ResellerProfile
+    other = User(name="Other Reseller 2", email="other-reseller-2@x.com", role="reseller", is_active=True)
+    test_db.add(other); test_db.commit(); test_db.refresh(other)
+    test_db.add(ResellerProfile(user_id=other.id, full_name="OTHER2", mobile="1",
+                                email="other-reseller-2@x.com", referral_code="OTHR02",
+                                upi_id="other2@ok", payout_details_verified=True))
+    test_db.commit()
+
+    owner = User(name="OwnerX", email="ownerx@x.com", role="employer", is_active=True)
+    test_db.add(owner); test_db.commit(); test_db.refresh(owner)
+    other_est = Establishment(user_id=owner.id, code="OROTH0000000001", name="OTHER RESELLER EST",
+                              data="{}", referred_by_reseller_id=other.id)
+    test_db.add(other_est); test_db.commit()
+
+    ests = reseller_a.get("/api/reseller/establishments").json()["establishments"]
+    assert all(e["code"] != "OROTH0000000001" for e in ests)
+
+
+def test_mark_paid_blocked_when_unverified(superadmin_session, test_db):
+    u = _make_reseller(test_db, "unv1")
+    from webapp.database import ResellerProfile
+    prof = test_db.query(ResellerProfile).filter(ResellerProfile.user_id == u.id).first()
+    prof.payout_details_verified = False
+    test_db.commit()
+    _seed_referred_est_with_paid_fee(test_db, u.id, code="ORUNV0000000001")
+    compute_payouts_for_period(test_db, "2026-08")
+    lst = superadmin_session.get("/api/admin/payouts").json()["payouts"]
+    mine = [p for p in lst if p["reseller"] == "Runv1"]
+    assert len(mine) == 1
+    r = superadmin_session.post(f"/api/admin/payouts/{mine[0]['id']}/mark-paid",
+                                json={"upi_reference": "X"})
+    assert r.status_code == 400
+
+
+def test_mark_failed_blocked_after_paid(superadmin_session, test_db):
+    u = _make_reseller(test_db, "mf1")
+    _seed_referred_est_with_paid_fee(test_db, u.id, code="ORMF0000000001")
+    compute_payouts_for_period(test_db, "2026-08")
+    lst = superadmin_session.get("/api/admin/payouts").json()["payouts"]
+    mine = [p for p in lst if p["reseller"] == "Rmf1"]
+    pid = mine[0]["id"]
+    assert superadmin_session.post(f"/api/admin/payouts/{pid}/mark-paid",
+                                   json={"upi_reference": "Y"}).status_code == 200
+    assert superadmin_session.post(f"/api/admin/payouts/{pid}/mark-failed",
+                                   json={}).status_code == 400

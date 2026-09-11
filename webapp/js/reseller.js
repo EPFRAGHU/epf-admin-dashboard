@@ -160,7 +160,7 @@ const Reseller = (() => {
           <td>${esc(e.establishment_name)}</td><td>${esc(e.contact_email)}</td>
           <td><span class="badge low">${esc(e.stage.replace(/_/g,' '))}</span></td>
           <td style="font-size:11px; color:var(--text3);">${e.token_expires_at ? new Date(e.token_expires_at).toLocaleDateString() : '—'}</td>
-          <td>${['account_created','password_set'].includes(e.stage)
+          <td>${e.stage === 'account_created'
             ? `<button class="btn btn-ghost btn-sm" onclick="Reseller.resend(${e.id})">Resend link</button>` : ''}</td>
         </tr>`).join('')}</tbody></table></div>`;
     } catch (_) { el.innerHTML = 'Could not load.'; }

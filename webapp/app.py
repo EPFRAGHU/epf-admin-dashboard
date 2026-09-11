@@ -1227,9 +1227,11 @@ async def set_password(d: SetPasswordIn, db: Session = Depends(get_db)):
         raise HTTPException(404, "Account not found.")
 
     enr = db.query(Enrollment).filter(Enrollment.set_password_jti == data["jti"]).first()
-    if not enr:
-        # token was superseded by a resend, or already consumed
+    if not enr or enr.account_user_id != data["user_id"]:
+        # token was superseded by a resend, already consumed, or doesn't match its enrollment
         raise HTTPException(400, "This set-password link is no longer valid. Ask for a new one.")
+    if not user.is_active:
+        raise HTTPException(403, "This account has been deactivated.")
 
     user.password_hash = hash_password(d.password)
     enr.set_password_jti = None          # consume it -- truly one-time
@@ -1884,11 +1886,15 @@ async def admin_delete_user(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(404, "User not found")
-    
+
     # Check if user has active establishments
     est_count = db.query(Establishment).filter(Establishment.user_id == user_id).count()
     if est_count > 0:
         raise HTTPException(400, f"Cannot delete user because they have {est_count} establishment(s). Delete or reassign their establishments first.")
+
+    if db.query(ResellerPayout).filter(ResellerPayout.reseller_id == user.id).first():
+        raise HTTPException(400, "This reseller has payout history and cannot be deleted. "
+                                 "Set their status to suspended in the Referral Program section instead.")
 
     db.delete(user)
     db.commit()
@@ -6718,6 +6724,9 @@ async def reseller_create_establishment(d: ResellerCreateEstablishmentIn, reques
                                         reseller: User = Depends(get_reseller),
                                         db: Session = Depends(get_db)):
     from webapp.reseller_tokens import make_set_password_token
+    prof = db.query(ResellerProfile).filter(ResellerProfile.user_id == reseller.id).first()
+    if prof and prof.status != "active":
+        raise HTTPException(403, "Your reseller account is currently suspended. Contact the administrator.")
     code = d.code.strip().upper()
     name = d.name.strip()
     contact_email = d.contact_email.strip().lower()
@@ -6749,7 +6758,7 @@ async def reseller_create_establishment(d: ResellerCreateEstablishmentIn, reques
     owner = User(serial_no=max_serial + 1, name=d.contact_name.strip(),
                  mobile=(d.contact_mobile or "").strip(), email=contact_email,
                  password_hash=None, role="employer", max_establishments=1, is_active=True)
-    db.add(owner); db.commit(); db.refresh(owner)
+    db.add(owner); db.flush(); db.refresh(owner)
 
     p = Project()
     p.set_establishment(code, name, (d.address or "").strip(), coverage_date)
@@ -6761,7 +6770,7 @@ async def reseller_create_establishment(d: ResellerCreateEstablishmentIn, reques
         referred_by_reseller_id=reseller.id,
         data=json.dumps(p.to_dict(), ensure_ascii=False),
     )
-    db.add(est); db.commit(); db.refresh(est)
+    db.add(est); db.flush(); db.refresh(est)
 
     jti = _secrets.token_hex(16)
     token = make_set_password_token(owner.id, jti)
@@ -6808,7 +6817,7 @@ async def reseller_resend_set_password(enrollment_id: int, request: Request,
                                       Enrollment.reseller_id == reseller.id).first()
     if not enr:
         raise HTTPException(404, "Enrollment not found.")
-    if enr.stage not in ("account_created", "password_set"):
+    if enr.stage != "account_created" or not enr.set_password_jti:
         raise HTTPException(400, "This account has already progressed past the set-password step.")
     if not enr.account_user_id:
         raise HTTPException(400, "No account is linked to this enrollment.")
@@ -6932,7 +6941,7 @@ async def reseller_ecr_activity(scope: str = "current", reseller: User = Depends
 @app.get("/api/reseller/earnings")
 async def reseller_earnings(reseller: User = Depends(get_reseller), db: Session = Depends(get_db)):
     prof = db.query(ResellerProfile).filter(ResellerProfile.user_id == reseller.id).first()
-    tds_rate = (prof.tds_rate if prof and prof.pan else 0.0) or 0.0
+    tds_rate = (prof.tds_rate if prof and (prof.pan or "").strip() else 0.0) or 0.0
 
     # settled months = ResellerPayout rows
     months = []
@@ -6996,6 +7005,12 @@ async def admin_referral_overview(admin: User = Depends(get_superadmin), db: Ses
     for prof in profs:
         ests = est_by_reseller.get(prof.user_id, [])
         est_ids = [e.id for e in ests]
+        if prof.status != "active":
+            rows.append({"id": prof.user_id, "full_name": prof.full_name, "referral_code": prof.referral_code,
+                        "upi_id": prof.upi_id, "payout_details_verified": prof.payout_details_verified,
+                        "referral_count": len(ests), "collected_this_period": 0.0,
+                        "your_50": 0.0, "their_50": 0.0, "payout_status": "suspended"})
+            continue
         pending_fees = []
         if est_ids:
             pending_fees = [f for f in db.query(SubscriptionFee).filter(
@@ -7068,7 +7083,7 @@ async def admin_referral_establishments(admin: User = Depends(get_superadmin), d
 
     pending = []
     for enr in db.query(Enrollment).filter(Enrollment.method == "create_handover",
-                                           Enrollment.stage != "active").all():
+                                           Enrollment.stage == "account_created").all():
         prof = prof_by_id.get(enr.reseller_id)
         pending.append({"reseller": prof.full_name if prof else "—",
                         "establishment_name": next((e.name for e in ests if e.id == enr.establishment_id), "—"),
@@ -7091,13 +7106,15 @@ async def admin_list_payouts(status: Optional[str] = None, admin: User = Depends
     q = db.query(ResellerPayout)
     if status:
         q = q.filter(ResellerPayout.status == status)
-    names = {p.user_id: p.full_name for p in db.query(ResellerProfile).all()}
+    profs_by_id = {p.user_id: p for p in db.query(ResellerProfile).all()}
     rows = q.order_by(ResellerPayout.run_at.desc()).all()
-    return {"payouts": [{"id": p.id, "reseller": names.get(p.reseller_id, f"#{p.reseller_id}"),
+    return {"payouts": [{"id": p.id,
+                         "reseller": profs_by_id[p.reseller_id].full_name if p.reseller_id in profs_by_id else f"#{p.reseller_id}",
                          "period": p.period, "gross_collected": p.gross_collected,
                          "reseller_share_gross": p.reseller_share_gross, "tds_amount": p.tds_amount,
                          "reseller_share_net": p.reseller_share_net, "owner_share": p.owner_share,
                          "status": p.status, "upi_id": p.upi_id, "upi_reference": p.upi_reference,
+                         "payout_details_verified": profs_by_id.get(p.reseller_id).payout_details_verified if profs_by_id.get(p.reseller_id) else False,
                          "run_at": _isodt(p.run_at), "paid_at": _isodt(p.paid_at)} for p in rows]}
 
 
@@ -7109,6 +7126,9 @@ async def admin_mark_payout_paid(payout_id: int, d: MarkPaidIn, admin: User = De
         raise HTTPException(404, "Payout not found.")
     if po.status == "paid":
         raise HTTPException(400, "This payout is already marked paid.")
+    prof = db.query(ResellerProfile).filter(ResellerProfile.user_id == po.reseller_id).first()
+    if not prof or not prof.payout_details_verified:
+        raise HTTPException(400, "This reseller's payout details are not verified yet. Verify their UPI/bank first, on the Resellers tab.")
     if not d.upi_reference.strip():
         raise HTTPException(400, "A UPI reference / UTR is required.")
     po.status = "paid"
@@ -7127,6 +7147,8 @@ async def admin_mark_payout_failed(payout_id: int, d: MarkFailedIn, admin: User 
     po = db.query(ResellerPayout).filter(ResellerPayout.id == payout_id).first()
     if not po:
         raise HTTPException(404, "Payout not found.")
+    if po.status == "paid":
+        raise HTTPException(400, "This payout is already marked paid and cannot be marked failed.")
     po.status = "failed"
     if d.notes:
         po.notes = d.notes.strip()

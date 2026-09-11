@@ -189,7 +189,6 @@ def consultant_b(client, test_db) -> AuthClient:
 @pytest.fixture
 def reseller_a(client, test_db) -> AuthClient:
     """Create Reseller A (role='reseller') with a verified ResellerProfile and return an authed client."""
-    from webapp.database import ResellerProfile
     email = "reseller_a@testepf.com"
     password = "ResellerA@123"
 

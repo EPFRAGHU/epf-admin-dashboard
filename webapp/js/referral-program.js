@@ -42,7 +42,7 @@ const ReferralProgram = (() => {
           <td>${r.referral_count}</td><td style="text-align:right;">${money(r.collected_this_period)}</td>
           <td style="text-align:right;">${money(r.their_50)}</td><td>${esc(r.payout_status)}</td></tr>`).join('')}</tbody></table></div></div>`;
   }
-  function tile(l,v){return `<div class="card" style="padding:14px 16px;"><div style="font-size:11px; color:var(--text3); text-transform:uppercase;">${esc(l)}</div><div style="font-size:20px; font-weight:800; margin-top:4px;">${esc(v)}</div></div>`;}
+  function tile(l,v){return `<div class="card" style="padding:14px 16px;"><div style="font-size:11px; color:var(--text3); text-transform:uppercase;">${esc(l)}</div><div style="font-size:20px; font-weight:800; margin-top:4px;">${esc(v == null ? '—' : String(v))}</div></div>`;}
 
   async function resellersHtml() {
     const d = await App.get('/api/admin/resellers');
@@ -50,7 +50,7 @@ const ReferralProgram = (() => {
       <button class="btn btn-primary btn-sm" style="margin-bottom:12px;" onclick="ReferralProgram.enrolForm()">➕ Enrol a reseller</button>
       <div id="rp-enrol"></div>
       <div style="overflow-x:auto;"><table class="data-table" style="width:100%; font-size:13px;">
-      <thead><tr><th>Name</th><th>Code</th><th>Email</th><th>Payout</th><th>Refs</th><th style="text-align:right;">MRR</th><th style="text-align:right;">Paid (net)</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Code</th><th>Email</th><th>Payout</th><th>Refs</th><th style="text-align:right;">Latest FY billed</th><th style="text-align:right;">Paid (net)</th><th></th></tr></thead>
       <tbody>${d.resellers.map(r => `<tr><td>${esc(r.full_name)}</td><td style="font-family:monospace;">${esc(r.referral_code)}</td>
         <td>${esc(r.email)}</td><td>${r.payout_details_verified?'✅ verified':'⏳ unverified'}</td>
         <td>${r.referral_count}</td><td style="text-align:right;">${money(r.mrr)}</td>
@@ -139,7 +139,8 @@ const ReferralProgram = (() => {
       <thead><tr><th>Reseller</th><th>Period</th><th style="text-align:right;">Gross</th><th style="text-align:right;">Net to reseller</th><th style="text-align:right;">Your 50%</th><th>UPI</th><th>Status</th><th></th></tr></thead>
       <tbody>${d.payouts.map(p => `<tr><td>${esc(p.reseller)}</td><td>${esc(p.period)}</td>
         <td style="text-align:right;">${money(p.gross_collected)}</td><td style="text-align:right;">${money(p.reseller_share_net)}</td>
-        <td style="text-align:right;">${money(p.owner_share)}</td><td>${esc(p.upi_id||'—')}</td>
+        <td style="text-align:right;">${money(p.owner_share)}</td>
+        <td>${esc(p.upi_id||'—')} ${p.payout_details_verified ? '' : '<span style="color:var(--red); font-size:11px;">⏳ unverified</span>'}</td>
         <td><span class="badge ${p.status==='paid'?'success':(p.status==='failed'?'danger':'low')}">${esc(p.status)}</span>${p.upi_reference?`<div style="font-size:11px; font-family:monospace; color:var(--text3);">${esc(p.upi_reference)}</div>`:''}</td>
         <td>${p.status!=='paid'?`<button class="btn btn-primary btn-sm" onclick="ReferralProgram.markPaid(${p.id})">Mark paid</button>`:''}</td></tr>`).join('') || '<tr><td colspan="8" style="color:var(--text3);">No payout runs yet.</td></tr>'}</tbody></table>
       <p style="font-size:11px; color:var(--text3); margin-top:12px;">The monthly job writes these as <b>scheduled</b>. Transfer each reseller's net to their UPI, then mark it paid with the UTR.</p></div>`;
