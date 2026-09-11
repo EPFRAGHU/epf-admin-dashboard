@@ -1554,13 +1554,48 @@ async def admin_enrol_reseller(d: ResellerEnrolIn, request: Request,
 @app.get("/api/admin/resellers")
 async def admin_list_resellers(admin: User = Depends(get_superadmin), db: Session = Depends(get_db)):
     out = []
-    for prof in db.query(ResellerProfile).order_by(ResellerProfile.joined_at.desc()).all():
+    profs = db.query(ResellerProfile).order_by(ResellerProfile.joined_at.desc()).all()
+    users_by_id = {u.id: u for u in db.query(User).filter(
+        User.id.in_([p.user_id for p in profs] or [0])).all()}
+    for prof in profs:
         roll = _reseller_rollup(db, prof.user_id)
+        u = users_by_id.get(prof.user_id)
         out.append({"id": prof.user_id, "full_name": prof.full_name, "email": prof.email,
                     "mobile": prof.mobile, "referral_code": prof.referral_code,
                     "status": prof.status, "payout_details_verified": prof.payout_details_verified,
+                    "password_set": bool(u.password_hash) if u else False,
                     **roll})
     return {"resellers": out}
+
+
+@app.post("/api/admin/resellers/{reseller_id}/resend-set-password")
+async def admin_resend_reseller_set_password(reseller_id: int, request: Request,
+                                              admin: User = Depends(get_superadmin),
+                                              db: Session = Depends(get_db)):
+    """Regenerate the set-password link for a reseller who never completed handover --
+    e.g. the superadmin lost the one-time link before copying it, or it expired. The
+    reseller themselves cannot self-serve this (they have no password yet to log in
+    with), so this is superadmin-only, mirroring reseller_resend_set_password's logic."""
+    from webapp.reseller_tokens import make_set_password_token
+    user = db.query(User).filter(User.id == reseller_id, User.role == "reseller").first()
+    if not user:
+        raise HTTPException(404, "Reseller not found.")
+    if user.password_hash:
+        raise HTTPException(400, "This reseller has already set their password.")
+    enr = db.query(Enrollment).filter(Enrollment.reseller_id == reseller_id,
+                                      Enrollment.method == "reseller_self").first()
+    if not enr:
+        raise HTTPException(404, "No enrollment record found for this reseller.")
+    jti = _secrets.token_hex(16)
+    enr.set_password_jti = jti
+    enr.token_expires_at = datetime.utcnow() + timedelta(days=7)
+    enr.stage = "account_created"
+    db.commit()
+    token = make_set_password_token(user.id, jti)
+    log_activity(db, admin.id, None, "reseller_set_password_resent",
+                 f"Superadmin re-sent the set-password link for reseller #{reseller_id} ({user.email})",
+                 {"reseller_id": reseller_id})
+    return {"ok": True, "set_password_url": f"{_public_base_url(request)}/set-password?token={token}"}
 
 
 @app.get("/api/admin/resellers/{reseller_id}")

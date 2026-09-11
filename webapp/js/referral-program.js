@@ -56,7 +56,8 @@ const ReferralProgram = (() => {
         <td>${r.referral_count}</td><td style="text-align:right;">${money(r.mrr)}</td>
         <td style="text-align:right;">${money(r.lifetime_paid_net)}</td>
         <td><button class="btn btn-ghost btn-sm" onclick="ReferralProgram.profile(${r.id})">View</button>
-        ${r.payout_details_verified?'':`<button class="btn btn-ghost btn-sm" onclick="ReferralProgram.verify(${r.id})">Verify payout</button>`}</td></tr>`).join('')}</tbody></table></div></div>`;
+        ${r.payout_details_verified?'':`<button class="btn btn-ghost btn-sm" onclick="ReferralProgram.verify(${r.id})">Verify payout</button>`}
+        ${r.password_set?'':`<button class="btn btn-ghost btn-sm" onclick="ReferralProgram.resendResellerLink(${r.id})">Resend set-password link</button>`}</td></tr>`).join('')}</tbody></table></div></div>`;
   }
   function enrolForm() {
     const el = document.getElementById('rp-enrol');
@@ -77,11 +78,13 @@ const ReferralProgram = (() => {
         full_name:g('rp-fn'), mobile:g('rp-mob'), email:g('rp-em'), upi_id:g('rp-upi'),
         bank_account_number:g('rp-acc'), bank_ifsc:g('rp-ifsc'), bank_name:g('rp-bank'),
         bank_branch:g('rp-branch'), pan:g('rp-pan'), tds_rate:Number(g('rp-tds'))||10 });
-      document.getElementById('rp-enrol-out').innerHTML =
-        `<div style="font-size:13px;">✅ Reseller created — code <b>${esc(r.reseller.referral_code)}</b>. Send them this set-password link:
-        <div style="display:flex; gap:8px; margin-top:6px;"><input class="form-input" readonly id="rp-spl" value="${esc(r.set_password_url)}" style="font-size:12px;">
-        <button class="btn btn-ghost btn-sm" onclick="navigator.clipboard.writeText(document.getElementById('rp-spl').value);App.toast('Copied','success')">Copy</button></div></div>`;
       go('resellers');
+      App.openModal('Reseller created',
+        `<p style="font-size:13px; margin-bottom:8px;">Code <b>${esc(r.reseller.referral_code)}</b>. Send them this one-time set-password link (expires in 7 days):</p>
+        <input class="form-input" readonly id="rp-spl" value="${esc(r.set_password_url)}" style="font-size:12px;">`,
+        `<button class="btn btn-primary" onclick="navigator.clipboard.writeText(document.getElementById('rp-spl').value);App.toast('Copied','success')">Copy link</button>
+        <button class="btn btn-ghost" onclick="App.closeModal()">Close</button>`,
+        true);
     } catch (_) {}
   }
   async function verify(id) {
@@ -93,6 +96,17 @@ const ReferralProgram = (() => {
     try { await App.post(`/api/admin/resellers/${id}/verify-payout`, {}); App.toast('Payout details verified','success'); } catch (_) {}
     App.closeModal();
     go('resellers');
+  }
+  async function resendResellerLink(id) {
+    try {
+      const r = await App.post(`/api/admin/resellers/${id}/resend-set-password`, {});
+      App.openModal('Set-password link',
+        `<p style="font-size:13px; margin-bottom:8px;">New one-time link (the previous one, if any, is now void):</p>
+        <input class="form-input" readonly id="rp-resend-spl" value="${esc(r.set_password_url)}" style="font-size:12px;">`,
+        `<button class="btn btn-primary" onclick="navigator.clipboard.writeText(document.getElementById('rp-resend-spl').value);App.toast('Copied','success')">Copy link</button>
+        <button class="btn btn-ghost" onclick="App.closeModal()">Close</button>`,
+        true);
+    } catch (_) {}
   }
   async function profile(id) {
     const d = (await App.get(`/api/admin/resellers/${id}`)).reseller;
@@ -159,5 +173,5 @@ const ReferralProgram = (() => {
   }
 
   if (typeof App !== 'undefined' && App.registerPage) App.registerPage('referral-program', render);
-  return { go, enrolForm, enrolSubmit, verify, profile, markPaid, _doVerify, _doMarkPaid };
+  return { go, enrolForm, enrolSubmit, verify, profile, markPaid, _doVerify, _doMarkPaid, resendResellerLink };
 })();
