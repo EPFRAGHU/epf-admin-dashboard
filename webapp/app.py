@@ -11,6 +11,7 @@ import tempfile
 import json
 import uuid
 import calendar
+import secrets as _secrets
 import requests
 import sentry_sdk
 from pathlib import Path
@@ -31,14 +32,15 @@ from sqlalchemy.sql import func
 from .database import (
     SessionLocal, engine, get_db, Base,
     User, Establishment, Payment, SubscriptionFee, AdvanceCreditLedger, ActivityLog, ProjectData, Setting, DATABASE_URL,
-    FeatureFlag, RolePermission, UserPermissionOverride, SignupRequest
+    FeatureFlag, RolePermission, UserPermissionOverride, SignupRequest, Enrollment,
+    ResellerProfile, ResellerPayout, ResellerPayoutLine
 )
 
 # Auth helpers and dependencies
 from .auth import (
     hash_password, verify_password, create_access_token, decode_access_token,
-    get_current_user, get_superadmin, get_active_establishment, save_establishment_project,
-    JWT_SECRET
+    get_current_user, get_superadmin, get_reseller, get_active_establishment,
+    save_establishment_project, JWT_SECRET
 )
 
 from . import cashfree_client
@@ -95,6 +97,10 @@ def log_activity(
             db.rollback()
         except Exception:
             pass
+
+
+def _isodt(dt):
+    return dt.isoformat() if dt else None
 
 
 # ── Permission / Feature-Flag System ────────────────────────────────────────
@@ -672,6 +678,11 @@ def _run_startup_migrations():
                 _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN cashfree_payment_session_id TEXT;")
                 _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN IF NOT EXISTS cashfree_payment_session_id TEXT;")
                 _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN cashfree_payment_session_id TEXT;")
+
+                # ── Partner / Reseller Program ──────────────────────────────
+                _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN IF NOT EXISTS referred_by_reseller_id INTEGER REFERENCES users(id) ON DELETE SET NULL;")
+                _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN referred_by_reseller_id INTEGER;")
+                _try_ddl(conn, "CREATE INDEX IF NOT EXISTS idx_establishments_referred_by_reseller ON establishments(referred_by_reseller_id);")
         except Exception as e:
             print(f"  [WARN] DDL check error: {e}")
 
@@ -859,6 +870,11 @@ async def signup_page():
     return (WEB / "signup.html").read_text(encoding="utf-8")
 
 
+@app.get("/set-password", response_class=HTMLResponse)
+async def set_password_page():
+    return (WEB / "set_password.html").read_text(encoding="utf-8")
+
+
 @app.get("/terms", response_class=HTMLResponse)
 async def terms_page():
     return (WEB / "terms.html").read_text(encoding="utf-8")
@@ -882,6 +898,10 @@ async def pricing_page():
 # ── Schemas ────────────────────────────────────────────────────────────────
 class LoginIn(BaseModel):
     email: str
+    password: str
+
+class SetPasswordIn(BaseModel):
+    token: str
     password: str
 
 class UserCreateIn(BaseModel):
@@ -944,6 +964,43 @@ class SignupIn(BaseModel):
 
 class SignupRejectIn(BaseModel):
     rejection_reason: Optional[str] = None
+
+class ResellerEnrolIn(BaseModel):
+    full_name: str
+    mobile: str
+    email: str
+    upi_id: str
+    bank_account_number: str
+    bank_ifsc: str
+    bank_name: str
+    bank_branch: str
+    pan: str
+    tds_rate: Optional[float] = 10.0
+
+class ResellerProfileUpdateIn(BaseModel):
+    full_name: Optional[str] = None
+    mobile: Optional[str] = None
+    email: Optional[str] = None
+    upi_id: Optional[str] = None
+    bank_account_number: Optional[str] = None
+    bank_ifsc: Optional[str] = None
+    bank_name: Optional[str] = None
+    bank_branch: Optional[str] = None
+    pan: Optional[str] = None
+    tds_rate: Optional[float] = None
+    status: Optional[str] = None
+
+class ResellerCreateEstablishmentIn(BaseModel):
+    code: str
+    name: str
+    address: Optional[str] = ""
+    coverage_date: str
+    contact_name: str
+    contact_email: str
+    contact_mobile: Optional[str] = ""
+    billing_mode: str            # 'flat_fee' | 'per_employee'
+    flat_fee_amount: Optional[float] = None
+    custom_rate_per_employee: Optional[float] = None
 
 class DefaultRateIn(BaseModel):
     default_rate: float
@@ -1155,6 +1212,36 @@ async def login(d: LoginIn, db: Session = Depends(get_db)):
             "max_establishments": user.max_establishments
         }
     }
+
+
+@app.post("/api/auth/set-password")
+async def set_password(d: SetPasswordIn, db: Session = Depends(get_db)):
+    from webapp.reseller_tokens import read_set_password_token
+    if not d.password or len(d.password) < 8:
+        raise HTTPException(400, "Password must be at least 8 characters.")
+    data = read_set_password_token(d.token)
+    if not data:
+        raise HTTPException(400, "This set-password link is invalid or has expired. Ask for a new one.")
+    user = db.query(User).filter(User.id == data["user_id"]).first()
+    if not user:
+        raise HTTPException(404, "Account not found.")
+
+    enr = db.query(Enrollment).filter(Enrollment.set_password_jti == data["jti"]).first()
+    if not enr or enr.account_user_id != data["user_id"]:
+        # token was superseded by a resend, already consumed, or doesn't match its enrollment
+        raise HTTPException(400, "This set-password link is no longer valid. Ask for a new one.")
+    if not user.is_active:
+        raise HTTPException(403, "This account has been deactivated.")
+
+    user.password_hash = hash_password(d.password)
+    enr.set_password_jti = None          # consume it -- truly one-time
+    if enr.stage == "account_created":
+        enr.stage = "password_set"
+    db.commit()
+
+    log_activity(db, user.id, enr.establishment_id, "set_password",
+                 f"{user.name} set their password via handover link", {"user_id": user.id})
+    return {"ok": True}
 
 
 @app.get("/api/auth/me")
@@ -1371,6 +1458,183 @@ async def public_signup(d: SignupIn, db: Session = Depends(get_db)):
     db.commit()
 
     return {"ok": True, "message": "Your request has been submitted and is pending approval."}
+
+
+# ── Reseller helpers (Partner/Reseller Program) ───────────────────────────
+def _generate_referral_code(db: Session, name: str) -> str:
+    prefix = "".join(ch for ch in (name or "").upper() if ch.isalpha())[:2] or "RS"
+    for _ in range(50):
+        code = f"{prefix}{_secrets.randbelow(9000) + 1000}"
+        if not db.query(ResellerProfile).filter(ResellerProfile.referral_code == code).first():
+            return code
+    return f"{prefix}{_secrets.token_hex(3).upper()}"
+
+
+def _public_base_url(request: Request) -> str:
+    # Behind Traefik on Coolify the app sees the external host via forwarded headers.
+    env = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    if env:
+        return env
+    return str(request.base_url).rstrip("/")
+
+
+def _mask(s: str, keep: int = 4) -> str:
+    s = s or ""
+    return ("*" * max(0, len(s) - keep)) + s[-keep:] if s else ""
+
+
+def _reseller_rollup(db: Session, reseller_id: int) -> dict:
+    """referral_count, MRR (sum of current unpaid+paid amount_due for the latest FY),
+    lifetime_paid_net (sum of ResellerPayout.reseller_share_net where status='paid')."""
+    ref_ests = db.query(Establishment).filter(Establishment.referred_by_reseller_id == reseller_id).all()
+    ref_ids = [e.id for e in ref_ests]
+    mrr = 0.0
+    if ref_ids:
+        latest_fy = db.query(func.max(SubscriptionFee.financial_year)).filter(
+            SubscriptionFee.establishment_id.in_(ref_ids)).scalar()
+        if latest_fy:
+            mrr = db.query(func.coalesce(func.sum(SubscriptionFee.amount_due), 0.0)).filter(
+                SubscriptionFee.establishment_id.in_(ref_ids),
+                SubscriptionFee.financial_year == latest_fy).scalar() or 0.0
+    lifetime = db.query(func.coalesce(func.sum(ResellerPayout.reseller_share_net), 0.0)).filter(
+        ResellerPayout.reseller_id == reseller_id, ResellerPayout.status == "paid").scalar() or 0.0
+    return {"referral_count": len(ref_ids), "mrr": round(mrr, 2), "lifetime_paid_net": round(lifetime, 2)}
+
+
+# ── Superadmin: Enrol / manage resellers (/api/admin/resellers) ────────────
+@app.post("/api/admin/resellers")
+async def admin_enrol_reseller(d: ResellerEnrolIn, request: Request,
+                               admin: User = Depends(get_superadmin),
+                               db: Session = Depends(get_db)):
+    from webapp.reseller_tokens import make_set_password_token
+    email = d.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "A valid email is required.")
+    if db.query(User).filter(func.lower(User.email) == email).first():
+        raise HTTPException(400, f"An account with email '{email}' already exists.")
+    for label, val in (("UPI ID", d.upi_id), ("bank account number", d.bank_account_number),
+                       ("IFSC", d.bank_ifsc), ("PAN", d.pan), ("full name", d.full_name),
+                       ("mobile", d.mobile)):
+        if not (val or "").strip():
+            raise HTTPException(400, f"The reseller's {label} is required.")
+
+    max_serial = db.query(func.max(User.serial_no)).scalar() or 0
+    user = User(serial_no=max_serial + 1, name=d.full_name.strip(), mobile=d.mobile.strip(),
+                email=email, password_hash=None, role="reseller", is_active=True)
+    db.add(user); db.flush(); db.refresh(user)
+
+    code = _generate_referral_code(db, d.full_name)
+    prof = ResellerProfile(
+        user_id=user.id, full_name=d.full_name.strip(), mobile=d.mobile.strip(), email=email,
+        referral_code=code, upi_id=d.upi_id.strip(),
+        bank_account_number=d.bank_account_number.strip(), bank_ifsc=d.bank_ifsc.strip().upper(),
+        bank_name=d.bank_name.strip(), bank_branch=d.bank_branch.strip(),
+        pan=d.pan.strip().upper(), tds_rate=d.tds_rate if d.tds_rate is not None else 10.0,
+        payout_details_verified=False,
+    )
+    db.add(prof); db.flush()
+
+    jti = _secrets.token_hex(16)
+    token = make_set_password_token(user.id, jti)
+    enr = Enrollment(reseller_id=user.id, account_user_id=user.id, method="reseller_self",
+                     contact_name=d.full_name, contact_email=email, contact_mobile=d.mobile,
+                     stage="account_created", set_password_jti=jti,
+                     token_expires_at=datetime.utcnow() + timedelta(days=7))
+    db.add(enr); db.commit()  # the only commit — User + ResellerProfile + Enrollment as one transaction
+
+    set_password_url = f"{_public_base_url(request)}/set-password?token={token}"
+    log_activity(db, admin.id, None, "reseller_enrolled",
+                 f"Enrolled reseller {user.name} ({email}), code {code}",
+                 {"reseller_id": user.id, "referral_code": code})
+    return {"ok": True, "set_password_url": set_password_url,
+            "reseller": {"id": user.id, "full_name": prof.full_name, "email": email,
+                         "referral_code": code}}
+
+
+@app.get("/api/admin/resellers")
+async def admin_list_resellers(admin: User = Depends(get_superadmin), db: Session = Depends(get_db)):
+    out = []
+    for prof in db.query(ResellerProfile).order_by(ResellerProfile.joined_at.desc()).all():
+        roll = _reseller_rollup(db, prof.user_id)
+        out.append({"id": prof.user_id, "full_name": prof.full_name, "email": prof.email,
+                    "mobile": prof.mobile, "referral_code": prof.referral_code,
+                    "status": prof.status, "payout_details_verified": prof.payout_details_verified,
+                    **roll})
+    return {"resellers": out}
+
+
+@app.get("/api/admin/resellers/{reseller_id}")
+async def admin_get_reseller(reseller_id: int, admin: User = Depends(get_superadmin),
+                             db: Session = Depends(get_db)):
+    prof = db.query(ResellerProfile).filter(ResellerProfile.user_id == reseller_id).first()
+    if not prof:
+        raise HTTPException(404, "Reseller not found.")
+    roll = _reseller_rollup(db, reseller_id)
+    return {"reseller": {
+        "id": prof.user_id, "full_name": prof.full_name, "email": prof.email, "mobile": prof.mobile,
+        "referral_code": prof.referral_code, "status": prof.status, "joined_at": _isodt(prof.joined_at),
+        "upi_id": prof.upi_id, "bank_account_masked": _mask(prof.bank_account_number),
+        "bank_ifsc": prof.bank_ifsc, "bank_name": prof.bank_name, "bank_branch": prof.bank_branch,
+        "pan": prof.pan, "tds_rate": prof.tds_rate,
+        "payout_details_verified": prof.payout_details_verified,
+        "payout_verified_at": _isodt(prof.payout_verified_at), **roll}}
+
+
+@app.patch("/api/admin/resellers/{reseller_id}")
+async def admin_update_reseller(reseller_id: int, d: ResellerProfileUpdateIn,
+                                admin: User = Depends(get_superadmin), db: Session = Depends(get_db)):
+    prof = db.query(ResellerProfile).filter(ResellerProfile.user_id == reseller_id).first()
+    if not prof:
+        raise HTTPException(404, "Reseller not found.")
+    if d.status is not None and d.status not in ("active", "suspended"):
+        raise HTTPException(400, "status must be 'active' or 'suspended'.")
+
+    # Keep the linked User row (login identity) in sync with the profile edits.
+    user = db.query(User).filter(User.id == reseller_id).first()
+    if d.email is not None:
+        new_email = d.email.strip().lower()
+        if new_email and db.query(User).filter(func.lower(User.email) == new_email,
+                                               User.id != reseller_id).first():
+            raise HTTPException(400, f"Email '{new_email}' is already in use by another account.")
+        if user and new_email:
+            user.email = new_email
+    if user and d.full_name is not None:
+        user.name = d.full_name.strip()
+    if user and d.mobile is not None:
+        user.mobile = d.mobile.strip()
+
+    payout_fields = {"upi_id", "bank_account_number", "bank_ifsc", "bank_name", "bank_branch"}
+    touched_payout = False
+    for f in ("full_name", "mobile", "email", "upi_id", "bank_account_number", "bank_ifsc",
+              "bank_name", "bank_branch", "pan", "tds_rate", "status"):
+        v = getattr(d, f)
+        if v is not None:
+            setattr(prof, f, v.strip().upper() if f in ("bank_ifsc", "pan") and isinstance(v, str)
+                    else (v.strip() if isinstance(v, str) else v))
+            if f in payout_fields:
+                touched_payout = True
+    if touched_payout:
+        prof.payout_details_verified = False
+        prof.payout_verified_at = None
+    db.commit()
+    log_activity(db, admin.id, None, "reseller_updated",
+                 f"Updated reseller profile #{reseller_id}" + (" (payout details changed, re-verify)" if touched_payout else ""),
+                 {"reseller_id": reseller_id, "payout_reset": touched_payout})
+    return {"ok": True, "payout_details_verified": prof.payout_details_verified}
+
+
+@app.post("/api/admin/resellers/{reseller_id}/verify-payout")
+async def admin_verify_reseller_payout(reseller_id: int, admin: User = Depends(get_superadmin),
+                                       db: Session = Depends(get_db)):
+    prof = db.query(ResellerProfile).filter(ResellerProfile.user_id == reseller_id).first()
+    if not prof:
+        raise HTTPException(404, "Reseller not found.")
+    prof.payout_details_verified = True
+    prof.payout_verified_at = datetime.utcnow()
+    db.commit()
+    log_activity(db, admin.id, None, "reseller_payout_verified",
+                 f"Marked payout details verified for reseller #{reseller_id}", {"reseller_id": reseller_id})
+    return {"ok": True}
 
 
 # ── Superadmin Endpoints (/api/admin/...) ──────────────────────────────────
@@ -1622,11 +1886,15 @@ async def admin_delete_user(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(404, "User not found")
-    
+
     # Check if user has active establishments
     est_count = db.query(Establishment).filter(Establishment.user_id == user_id).count()
     if est_count > 0:
         raise HTTPException(400, f"Cannot delete user because they have {est_count} establishment(s). Delete or reassign their establishments first.")
+
+    if db.query(ResellerPayout).filter(ResellerPayout.reseller_id == user.id).first():
+        raise HTTPException(400, "This reseller has payout history and cannot be deleted. "
+                                 "Set their status to suspended in the Referral Program section instead.")
 
     db.delete(user)
     db.commit()
@@ -6438,6 +6706,456 @@ async def import_master_file(
         raise HTTPException(400, str(e))
     finally:
         os.unlink(tmp.name)
+
+
+# ══ Reseller dashboard ═══════════════════════════════════════════════════════
+
+def _reseller_est_or_403(db: Session, reseller: User, est_id: int) -> Establishment:
+    est = db.query(Establishment).filter(Establishment.id == est_id).first()
+    if not est:
+        raise HTTPException(404, "Establishment not found.")
+    if est.referred_by_reseller_id != reseller.id:
+        raise HTTPException(403, "This establishment was not referred by you.")
+    return est
+
+
+@app.post("/api/reseller/establishments")
+async def reseller_create_establishment(d: ResellerCreateEstablishmentIn, request: Request,
+                                        reseller: User = Depends(get_reseller),
+                                        db: Session = Depends(get_db)):
+    from webapp.reseller_tokens import make_set_password_token
+    prof = db.query(ResellerProfile).filter(ResellerProfile.user_id == reseller.id).first()
+    if prof and prof.status != "active":
+        raise HTTPException(403, "Your reseller account is currently suspended. Contact the administrator.")
+    code = d.code.strip().upper()
+    name = d.name.strip()
+    contact_email = d.contact_email.strip().lower()
+    if not code or not name:
+        raise HTTPException(400, "Establishment code and name are required.")
+    if not contact_email or "@" not in contact_email:
+        raise HTTPException(400, "A valid contact email is required.")
+    if contact_email == (reseller.email or "").lower():
+        raise HTTPException(400, "You cannot enroll an establishment against your own email (no self-referral).")
+    if d.billing_mode not in ("flat_fee", "per_employee"):
+        raise HTTPException(400, "billing_mode must be 'flat_fee' or 'per_employee'.")
+    if d.billing_mode == "flat_fee" and not (d.flat_fee_amount and d.flat_fee_amount > 0):
+        raise HTTPException(400, "A monthly flat fee amount is required for flat_fee billing.")
+    if d.billing_mode == "per_employee" and not (d.custom_rate_per_employee and d.custom_rate_per_employee > 0):
+        raise HTTPException(400, "A per-employee rate is required for per_employee billing.")
+    try:
+        coverage_date = _normalize_coverage_date(d.coverage_date)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if db.query(Establishment).filter(func.upper(Establishment.code) == code).first():
+        raise HTTPException(409, DUPLICATE_ESTABLISHMENT_MESSAGE)
+
+    existing_user = db.query(User).filter(func.lower(User.email) == contact_email).first()
+    if existing_user:
+        raise HTTPException(400, f"An account with email '{contact_email}' already exists. "
+                                 "Enrollment must use a fresh contact email in v1.")
+
+    max_serial = db.query(func.max(User.serial_no)).scalar() or 0
+    owner = User(serial_no=max_serial + 1, name=d.contact_name.strip(),
+                 mobile=(d.contact_mobile or "").strip(), email=contact_email,
+                 password_hash=None, role="employer", max_establishments=1, is_active=True)
+    db.add(owner); db.flush(); db.refresh(owner)
+
+    p = Project()
+    p.set_establishment(code, name, (d.address or "").strip(), coverage_date)
+    est = Establishment(
+        user_id=owner.id, code=code, name=name, address=(d.address or "").strip(),
+        coverage_date=coverage_date, billing_mode=d.billing_mode,
+        flat_fee_amount=d.flat_fee_amount if d.billing_mode == "flat_fee" else None,
+        custom_rate_per_employee=d.custom_rate_per_employee if d.billing_mode == "per_employee" else None,
+        referred_by_reseller_id=reseller.id,
+        data=json.dumps(p.to_dict(), ensure_ascii=False),
+    )
+    db.add(est); db.flush(); db.refresh(est)
+
+    jti = _secrets.token_hex(16)
+    token = make_set_password_token(owner.id, jti)
+    enr = Enrollment(reseller_id=reseller.id, establishment_id=est.id, account_user_id=owner.id,
+                     method="create_handover", contact_name=d.contact_name,
+                     contact_mobile=d.contact_mobile, contact_email=contact_email,
+                     stage="account_created", set_password_jti=jti,
+                     token_expires_at=datetime.utcnow() + timedelta(days=7))
+    db.add(enr); db.commit(); db.refresh(enr)
+
+    log_activity(db, reseller.id, est.id, "reseller_created_establishment",
+                 f"Reseller {reseller.name} created {est.code} — {est.name} for {contact_email}",
+                 {"reseller_id": reseller.id, "establishment_id": est.id, "owner_user_id": owner.id})
+
+    return {"ok": True, "enrollment_id": enr.id,
+            "set_password_url": f"{_public_base_url(request)}/set-password?token={token}",
+            "establishment": {"id": est.id, "code": est.code, "name": est.name,
+                              "billing_mode": est.billing_mode, "flat_fee_amount": est.flat_fee_amount,
+                              "custom_rate_per_employee": est.custom_rate_per_employee}}
+
+
+@app.get("/api/reseller/enrollments")
+async def reseller_list_enrollments(reseller: User = Depends(get_reseller), db: Session = Depends(get_db)):
+    rows = db.query(Enrollment).filter(
+        Enrollment.reseller_id == reseller.id, Enrollment.method == "create_handover"
+    ).order_by(Enrollment.created_at.desc()).all()
+    est_names = {e.id: e.name for e in db.query(Establishment).filter(
+        Establishment.referred_by_reseller_id == reseller.id).all()}
+    return {"enrollments": [{
+        "id": r.id, "establishment_id": r.establishment_id,
+        "establishment_name": est_names.get(r.establishment_id, "—"),
+        "contact_name": r.contact_name, "contact_email": r.contact_email,
+        "stage": r.stage, "created_at": _isodt(r.created_at),
+        "token_expires_at": _isodt(r.token_expires_at),
+    } for r in rows]}
+
+
+@app.post("/api/reseller/enrollments/{enrollment_id}/resend")
+async def reseller_resend_set_password(enrollment_id: int, request: Request,
+                                       reseller: User = Depends(get_reseller),
+                                       db: Session = Depends(get_db)):
+    from webapp.reseller_tokens import make_set_password_token
+    enr = db.query(Enrollment).filter(Enrollment.id == enrollment_id,
+                                      Enrollment.reseller_id == reseller.id).first()
+    if not enr:
+        raise HTTPException(404, "Enrollment not found.")
+    if enr.stage != "account_created" or not enr.set_password_jti:
+        raise HTTPException(400, "This account has already progressed past the set-password step.")
+    if not enr.account_user_id:
+        raise HTTPException(400, "No account is linked to this enrollment.")
+    jti = _secrets.token_hex(16)
+    enr.set_password_jti = jti
+    enr.token_expires_at = datetime.utcnow() + timedelta(days=7)
+    db.commit()
+    token = make_set_password_token(enr.account_user_id, jti)
+    log_activity(db, reseller.id, enr.establishment_id, "reseller_resent_set_password",
+                 f"Reseller re-sent the set-password link for enrollment #{enr.id}", {"enrollment_id": enr.id})
+    return {"ok": True, "set_password_url": f"{_public_base_url(request)}/set-password?token={token}"}
+
+
+# ── Reseller dashboard read views (rollups filtered by referred_by_reseller_id) ──
+
+def _reseller_paid_fees(db: Session, reseller_id: int):
+    ref_ids = [e.id for e in db.query(Establishment.id).filter(
+        Establishment.referred_by_reseller_id == reseller_id).all()]
+    if not ref_ids:
+        return []
+    return db.query(SubscriptionFee).filter(
+        SubscriptionFee.establishment_id.in_(ref_ids), SubscriptionFee.is_paid == True).all()  # noqa: E712
+
+
+def _next_payout_date_iso() -> str:
+    today = date.today()
+    first_next = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return first_next.isoformat()
+
+
+def _reseller_ecr_rows(db: Session, est_ids, scope="current", limit=None):
+    """Rows from each referred establishment's ECR/wage history. Reuses
+    count_ecr_employees_for_month over the establishment's Project years."""
+    if not est_ids:
+        return []
+    rows = []
+    ests = db.query(Establishment).filter(Establishment.id.in_(est_ids)).all()
+    for est in ests:
+        try:
+            proj = Project()
+            proj.load_from_dict(json.loads(est.data or "{}"))
+        except Exception:
+            continue
+        for yk in (proj.years or {}):
+            for m_idx in range(12):
+                cnt = count_ecr_employees_for_month(proj, yk, m_idx)
+                if cnt > 0:
+                    rows.append({"establishment": est.name, "code": est.code,
+                                 "wage_month": f"{MONTH_SHORT_NAMES[m_idx]} {yk}",
+                                 "employees": cnt, "filed_at": None})
+    rows.sort(key=lambda r: r["wage_month"], reverse=True)
+    return rows[:limit] if limit else rows
+
+
+@app.get("/api/reseller/overview")
+async def reseller_overview(reseller: User = Depends(get_reseller), db: Session = Depends(get_db)):
+    prof = db.query(ResellerProfile).filter(ResellerProfile.user_id == reseller.id).first()
+    ests = db.query(Establishment).filter(Establishment.referred_by_reseller_id == reseller.id).all()
+    est_ids = [e.id for e in ests]
+    paid_fees = _reseller_paid_fees(db, reseller.id)
+
+    # "this period" = fees not yet attached to any ResellerPayoutLine
+    paid_ids_on_lines = {l.subscription_fee_id for l in db.query(ResellerPayoutLine.subscription_fee_id).all()
+                         if l.subscription_fee_id is not None}
+    pending_fees = [f for f in paid_fees if f.id not in paid_ids_on_lines]
+    collected = round(sum(f.amount_due for f in pending_fees), 2)
+
+    lifetime_net = db.query(func.coalesce(func.sum(ResellerPayout.reseller_share_net), 0.0)).filter(
+        ResellerPayout.reseller_id == reseller.id, ResellerPayout.status == "paid").scalar() or 0.0
+
+    flat = [e for e in ests if (e.billing_mode or "per_employee") == "flat_fee"]
+    per_emp = [e for e in ests if (e.billing_mode or "per_employee") == "per_employee"]
+
+    active_ids = {f.establishment_id for f in paid_fees}
+    return {
+        "reseller": {"full_name": prof.full_name if prof else reseller.name,
+                     "referral_code": prof.referral_code if prof else "",
+                     "upi_id": prof.upi_id if prof else "",
+                     "payout_details_verified": prof.payout_details_verified if prof else False},
+        "stats": {"establishments": len(ests), "active": len(active_ids),
+                  "collected_this_period": collected,
+                  "my_share_this_period": round(collected / 2, 2),
+                  "paid_to_date_net": round(lifetime_net, 2),
+                  "next_run_date": _next_payout_date_iso()},
+        "billing_mix": {"flat_count": len(flat), "per_employee_count": len(per_emp),
+                        "flat_amount": round(sum(f.amount_due for f in pending_fees
+                                                 if f.establishment_id in {e.id for e in flat}), 2),
+                        "per_employee_amount": round(sum(f.amount_due for f in pending_fees
+                                                        if f.establishment_id in {e.id for e in per_emp}), 2)},
+        "recent_ecr": _reseller_ecr_rows(db, est_ids, limit=8),
+    }
+
+
+@app.get("/api/reseller/establishments")
+async def reseller_establishments(reseller: User = Depends(get_reseller), db: Session = Depends(get_db)):
+    ests = db.query(Establishment).filter(Establishment.referred_by_reseller_id == reseller.id).all()
+    paid_ids = {f.establishment_id for f in _reseller_paid_fees(db, reseller.id)}
+    owners = {u.id: u for u in db.query(User).filter(
+        User.id.in_([e.user_id for e in ests] or [0])).all()}
+    out = []
+    for e in ests:
+        mode = e.billing_mode or "per_employee"
+        fee_display = (f"₹{int(e.flat_fee_amount or 0)}/mo flat" if mode == "flat_fee"
+                       else f"₹{int(e.custom_rate_per_employee or 0)}/emp/mo")
+        out.append({"id": e.id, "code": e.code, "name": e.name,
+                    "type": owners.get(e.user_id).role if owners.get(e.user_id) else "employer",
+                    "billing_mode": mode, "fee_display": fee_display,
+                    "status": "active" if e.id in paid_ids else "pending",
+                    "joined": _isodt(e.created_at)})
+    return {"establishments": out}
+
+
+@app.get("/api/reseller/ecr-activity")
+async def reseller_ecr_activity(scope: str = "current", reseller: User = Depends(get_reseller),
+                                db: Session = Depends(get_db)):
+    est_ids = [e.id for e in db.query(Establishment.id).filter(
+        Establishment.referred_by_reseller_id == reseller.id).all()]
+    return {"rows": _reseller_ecr_rows(db, est_ids, scope=scope)}
+
+
+@app.get("/api/reseller/earnings")
+async def reseller_earnings(reseller: User = Depends(get_reseller), db: Session = Depends(get_db)):
+    prof = db.query(ResellerProfile).filter(ResellerProfile.user_id == reseller.id).first()
+    tds_rate = (prof.tds_rate if prof and (prof.pan or "").strip() else 0.0) or 0.0
+
+    # settled months = ResellerPayout rows
+    months = []
+    for po in db.query(ResellerPayout).filter(ResellerPayout.reseller_id == reseller.id
+                                              ).order_by(ResellerPayout.period.desc()).all():
+        lines = db.query(ResellerPayoutLine).filter(ResellerPayoutLine.payout_id == po.id).all()
+        months.append({"period": po.period, "gross": po.gross_collected,
+                       "my_share_gross": po.reseller_share_gross, "tds": po.tds_amount,
+                       "my_share_net": po.reseller_share_net, "status": po.status,
+                       "lines": [{"establishment": l.establishment_name, "fy": l.financial_year,
+                                  "month": l.month, "fee": l.fee_amount,
+                                  "my_share": l.reseller_share} for l in lines]})
+
+    # current unsettled accrual
+    on_lines = {l.subscription_fee_id for l in db.query(ResellerPayoutLine.subscription_fee_id).all()
+                if l.subscription_fee_id is not None}
+    pending = [f for f in _reseller_paid_fees(db, reseller.id) if f.id not in on_lines]
+    if pending:
+        est_names = {e.id: e.name for e in db.query(Establishment).filter(
+            Establishment.referred_by_reseller_id == reseller.id).all()}
+        gross = round(sum(f.amount_due for f in pending), 2)
+        share_gross = round(gross / 2, 2)
+        tds = round(share_gross * tds_rate / 100, 2)
+        months.insert(0, {"period": "accruing", "gross": gross, "my_share_gross": share_gross,
+                          "tds": tds, "my_share_net": round(share_gross - tds, 2), "status": "accruing",
+                          "lines": [{"establishment": est_names.get(f.establishment_id, "—"),
+                                     "fy": f.financial_year, "month": f.month, "fee": f.amount_due,
+                                     "my_share": round(f.amount_due / 2, 2)} for f in pending]})
+    return {"months": months}
+
+
+@app.get("/api/reseller/payouts")
+async def reseller_payouts(reseller: User = Depends(get_reseller), db: Session = Depends(get_db)):
+    rows = db.query(ResellerPayout).filter(ResellerPayout.reseller_id == reseller.id
+                                           ).order_by(ResellerPayout.period.desc()).all()
+    return {"payouts": [{"period": p.period, "gross_collected": p.gross_collected,
+                         "reseller_share_net": p.reseller_share_net, "status": p.status,
+                         "upi_reference": p.upi_reference, "paid_at": _isodt(p.paid_at)} for p in rows]}
+
+
+# ── Referral Program (superadmin) ──────────────────────────────────────────
+class MarkPaidIn(BaseModel):
+    upi_reference: str
+
+
+class MarkFailedIn(BaseModel):
+    notes: Optional[str] = None
+
+
+@app.get("/api/admin/referral-program/overview")
+async def admin_referral_overview(admin: User = Depends(get_superadmin), db: Session = Depends(get_db)):
+    profs = db.query(ResellerProfile).all()
+    all_ref_ests = db.query(Establishment).filter(
+        Establishment.referred_by_reseller_id.isnot(None)).all()
+    est_by_reseller = {}
+    for e in all_ref_ests:
+        est_by_reseller.setdefault(e.referred_by_reseller_id, []).append(e)
+
+    on_lines = {r[0] for r in db.query(ResellerPayoutLine.subscription_fee_id).all() if r[0] is not None}
+    rows, collected, owner_share, flat_amt, pe_amt = [], 0.0, 0.0, 0.0, 0.0
+    for prof in profs:
+        ests = est_by_reseller.get(prof.user_id, [])
+        est_ids = [e.id for e in ests]
+        if prof.status != "active":
+            rows.append({"id": prof.user_id, "full_name": prof.full_name, "referral_code": prof.referral_code,
+                        "upi_id": prof.upi_id, "payout_details_verified": prof.payout_details_verified,
+                        "referral_count": len(ests), "collected_this_period": 0.0,
+                        "your_50": 0.0, "their_50": 0.0, "payout_status": "suspended"})
+            continue
+        pending_fees = []
+        if est_ids:
+            pending_fees = [f for f in db.query(SubscriptionFee).filter(
+                SubscriptionFee.establishment_id.in_(est_ids),
+                SubscriptionFee.is_paid == True).all() if f.id not in on_lines]  # noqa: E712
+        g = round(sum(f.amount_due for f in pending_fees), 2)
+        collected += g
+        owner_share += round(g / 2, 2)
+        flat_ids = {e.id for e in ests if (e.billing_mode or "per_employee") == "flat_fee"}
+        flat_amt += sum(f.amount_due for f in pending_fees if f.establishment_id in flat_ids)
+        pe_amt += sum(f.amount_due for f in pending_fees if f.establishment_id not in flat_ids)
+        last_payout = db.query(ResellerPayout).filter(
+            ResellerPayout.reseller_id == prof.user_id).order_by(ResellerPayout.period.desc()).first()
+        rows.append({"id": prof.user_id, "full_name": prof.full_name, "referral_code": prof.referral_code,
+                     "upi_id": prof.upi_id, "payout_details_verified": prof.payout_details_verified,
+                     "referral_count": len(ests), "collected_this_period": g,
+                     "your_50": round(g / 2, 2), "their_50": round(g / 2, 2),
+                     "payout_status": last_payout.status if last_payout else "—"})
+
+    payouts_due = db.query(ResellerPayout).filter(ResellerPayout.status == "scheduled").count()
+    return {"stats": {"active_resellers": sum(1 for p in profs if p.status == "active"),
+                      "referral_count": len(all_ref_ests),
+                      "collected_this_period": round(collected, 2),
+                      "flat_vs_per_employee": {"flat": round(flat_amt, 2), "per_employee": round(pe_amt, 2)},
+                      "owner_share_this_period": round(owner_share, 2),
+                      "payouts_due": payouts_due, "next_run_date": _next_payout_date_iso()},
+            "resellers": rows,
+            "recent_ecr": _reseller_ecr_rows(db, [e.id for e in all_ref_ests], limit=10)}
+
+
+@app.get("/api/admin/referral-program/establishments")
+async def admin_referral_establishments(admin: User = Depends(get_superadmin), db: Session = Depends(get_db)):
+    ests = db.query(Establishment).filter(Establishment.referred_by_reseller_id.isnot(None)).all()
+    prof_by_id = {p.user_id: p for p in db.query(ResellerProfile).all()}
+    owners = {u.id: u for u in db.query(User).filter(
+        User.id.in_([e.user_id for e in ests] or [0])).all()}
+    paid_ids = set()
+    if ests:
+        paid_ids = {f.establishment_id for f in db.query(SubscriptionFee.establishment_id).filter(
+            SubscriptionFee.establishment_id.in_([e.id for e in ests]),
+            SubscriptionFee.is_paid == True).all()}  # noqa: E712
+
+    out, per_emp = [], []
+    for e in ests:
+        prof = prof_by_id.get(e.referred_by_reseller_id)
+        mode = e.billing_mode or "per_employee"
+        fee_display = (f"₹{int(e.flat_fee_amount or 0)}/mo" if mode == "flat_fee"
+                       else f"₹{int(e.custom_rate_per_employee or 0)}/emp")
+        row = {"id": e.id, "code": e.code, "name": e.name,
+               "type": owners[e.user_id].role if e.user_id in owners else "employer",
+               "reseller": prof.full_name if prof else "—",
+               "reseller_code": prof.referral_code if prof else "—",
+               "billing_mode": mode, "fee_display": fee_display,
+               "status": "active" if e.id in paid_ids else "pending",
+               "joined": _isodt(e.created_at)}
+        out.append(row)
+        if mode == "per_employee":
+            try:
+                proj = Project(); proj.load_from_dict(json.loads(e.data or "{}"))
+                latest_fy = max(proj.years.keys()) if proj.years else None
+                headcount = 0
+                if latest_fy:
+                    headcount = max((count_ecr_employees_for_month(proj, latest_fy, m) for m in range(12)), default=0)
+            except Exception:
+                headcount = 0
+            rate = e.custom_rate_per_employee or 0
+            per_emp.append({"name": e.name, "reseller": prof.full_name if prof else "—",
+                            "rate": rate, "headcount": headcount, "fee": rate * headcount,
+                            "owner_share": round(rate * headcount / 2, 2)})
+
+    pending = []
+    for enr in db.query(Enrollment).filter(Enrollment.method == "create_handover",
+                                           Enrollment.stage == "account_created").all():
+        prof = prof_by_id.get(enr.reseller_id)
+        pending.append({"reseller": prof.full_name if prof else "—",
+                        "establishment_name": next((e.name for e in ests if e.id == enr.establishment_id), "—"),
+                        "contact_email": enr.contact_email, "stage": enr.stage,
+                        "created_at": _isodt(enr.created_at)})
+    return {"establishments": out, "per_employee": per_emp, "pending": pending}
+
+
+@app.get("/api/admin/referral-program/ecr-activity")
+async def admin_referral_ecr(scope: str = "current", admin: User = Depends(get_superadmin),
+                             db: Session = Depends(get_db)):
+    est_ids = [e.id for e in db.query(Establishment.id).filter(
+        Establishment.referred_by_reseller_id.isnot(None)).all()]
+    return {"rows": _reseller_ecr_rows(db, est_ids, scope=scope)}
+
+
+@app.get("/api/admin/payouts")
+async def admin_list_payouts(status: Optional[str] = None, admin: User = Depends(get_superadmin),
+                             db: Session = Depends(get_db)):
+    q = db.query(ResellerPayout)
+    if status:
+        q = q.filter(ResellerPayout.status == status)
+    profs_by_id = {p.user_id: p for p in db.query(ResellerProfile).all()}
+    rows = q.order_by(ResellerPayout.run_at.desc()).all()
+    return {"payouts": [{"id": p.id,
+                         "reseller": profs_by_id[p.reseller_id].full_name if p.reseller_id in profs_by_id else f"#{p.reseller_id}",
+                         "period": p.period, "gross_collected": p.gross_collected,
+                         "reseller_share_gross": p.reseller_share_gross, "tds_amount": p.tds_amount,
+                         "reseller_share_net": p.reseller_share_net, "owner_share": p.owner_share,
+                         "status": p.status, "upi_id": p.upi_id, "upi_reference": p.upi_reference,
+                         "payout_details_verified": profs_by_id.get(p.reseller_id).payout_details_verified if profs_by_id.get(p.reseller_id) else False,
+                         "run_at": _isodt(p.run_at), "paid_at": _isodt(p.paid_at)} for p in rows]}
+
+
+@app.post("/api/admin/payouts/{payout_id}/mark-paid")
+async def admin_mark_payout_paid(payout_id: int, d: MarkPaidIn, admin: User = Depends(get_superadmin),
+                                 db: Session = Depends(get_db)):
+    po = db.query(ResellerPayout).filter(ResellerPayout.id == payout_id).first()
+    if not po:
+        raise HTTPException(404, "Payout not found.")
+    if po.status == "paid":
+        raise HTTPException(400, "This payout is already marked paid.")
+    prof = db.query(ResellerProfile).filter(ResellerProfile.user_id == po.reseller_id).first()
+    if not prof or not prof.payout_details_verified:
+        raise HTTPException(400, "This reseller's payout details are not verified yet. Verify their UPI/bank first, on the Resellers tab.")
+    if not d.upi_reference.strip():
+        raise HTTPException(400, "A UPI reference / UTR is required.")
+    po.status = "paid"
+    po.upi_reference = d.upi_reference.strip()
+    po.paid_at = datetime.utcnow()
+    db.commit()
+    log_activity(db, admin.id, None, "reseller_payout_paid",
+                 f"Marked payout #{po.id} ({po.period}) paid to reseller #{po.reseller_id}, UTR {po.upi_reference}",
+                 {"payout_id": po.id, "reseller_id": po.reseller_id, "net": po.reseller_share_net})
+    return {"ok": True}
+
+
+@app.post("/api/admin/payouts/{payout_id}/mark-failed")
+async def admin_mark_payout_failed(payout_id: int, d: MarkFailedIn, admin: User = Depends(get_superadmin),
+                                   db: Session = Depends(get_db)):
+    po = db.query(ResellerPayout).filter(ResellerPayout.id == payout_id).first()
+    if not po:
+        raise HTTPException(404, "Payout not found.")
+    if po.status == "paid":
+        raise HTTPException(400, "This payout is already marked paid and cannot be marked failed.")
+    po.status = "failed"
+    if d.notes:
+        po.notes = d.notes.strip()
+    db.commit()
+    log_activity(db, admin.id, None, "reseller_payout_failed",
+                 f"Marked payout #{po.id} failed", {"payout_id": po.id})
+    return {"ok": True}
 
 
 # ── Constants ─────────────────────────────────────────────────────────────

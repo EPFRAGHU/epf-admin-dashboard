@@ -12,7 +12,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import pytest
 from fastapi.testclient import TestClient
-from webapp.database import Base, engine, SessionLocal, User, Establishment, Payment, ActivityLog
+from webapp.database import (
+    Base, engine, SessionLocal, User, Establishment, Payment, ActivityLog,
+    ResellerProfile, Enrollment, ResellerPayout, ResellerPayoutLine,
+)
 from webapp.auth import hash_password
 from webapp.app import app
 
@@ -45,6 +48,10 @@ class AuthClient:
     def put(self, url: str, **kwargs):
         headers = {**self.headers, **kwargs.pop("headers", {})}
         return self.client.put(url, headers=headers, **kwargs)
+
+    def patch(self, url: str, **kwargs):
+        headers = {**self.headers, **kwargs.pop("headers", {})}
+        return self.client.patch(url, headers=headers, **kwargs)
 
     def delete(self, url: str, **kwargs):
         headers = {**self.headers, **kwargs.pop("headers", {})}
@@ -177,3 +184,31 @@ def consultant_b(client, test_db) -> AuthClient:
     user_dict = res.json()["user"]
 
     return AuthClient(client, token, user_dict)
+
+
+@pytest.fixture
+def reseller_a(client, test_db) -> AuthClient:
+    """Create Reseller A (role='reseller') with a verified ResellerProfile and return an authed client."""
+    email = "reseller_a@testepf.com"
+    password = "ResellerA@123"
+
+    user = test_db.query(User).filter(User.email == email).first()
+    if not user:
+        user = User(serial_no=201, name="Reseller Alpha", email=email,
+                    mobile="9876511001", password_hash=hash_password(password),
+                    role="reseller", is_active=True)
+        test_db.add(user)
+        test_db.commit()
+        test_db.refresh(user)
+        test_db.add(ResellerProfile(
+            user_id=user.id, full_name="RESELLER ALPHA", mobile="9876511001",
+            email=email, referral_code="RA2001", upi_id="resellera@okhdfc",
+            bank_account_number="00011122233", bank_ifsc="HDFC0000123",
+            bank_name="HDFC Bank", bank_branch="Bhubaneswar", pan="ABCDE1111F",
+            payout_details_verified=True,
+        ))
+        test_db.commit()
+
+    res = client.post("/api/auth/login", json={"email": email, "password": password})
+    assert res.status_code == 200, f"Reseller A login failed: {res.text}"
+    return AuthClient(client, res.json()["token"], res.json()["user"])

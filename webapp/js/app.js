@@ -901,6 +901,13 @@ const App = (() => {
       reports: 'Statutory Reports & Export',
       'subscription-history': '📜 Subscription History',
       'my-profile': '👤 My Profile',
+      'reseller-overview': '📊 My Overview',
+      'reseller-enroll': '➕ Enroll Establishment',
+      'reseller-establishments': '🏢 My Establishments',
+      'reseller-ecr': '🗂️ ECR Activity',
+      'reseller-earnings': '💰 My Earnings',
+      'reseller-payouts': '🧾 Payout History',
+      'referral-program': '🤝 Referral Program',
     };
 
     const titleEl = document.getElementById('topbar-title');
@@ -918,6 +925,11 @@ const App = (() => {
   }
 
   /* ── Sidebar Navigation Setup ─────────────────────────────────── */
+  function navItem(page, icon, label) {
+    return `<a class="nav-item ${currentPage === page ? 'active' : ''}" data-page="${page}">
+      <span class="nav-icon">${icon}</span><span>${label}</span></a>`;
+  }
+
   function renderSidebarNav() {
     const nav = document.getElementById('sidebar-nav');
     if (!nav) return;
@@ -925,12 +937,32 @@ const App = (() => {
     const user = getCurrentUser();
     const isSuper = isSuperadmin();
 
+    if (user && user.role === 'reseller') {
+      nav.innerHTML = [
+        navItem('reseller-overview', '📊', 'My Overview'),
+        navItem('reseller-enroll', '➕', 'Enroll Establishment'),
+        navItem('reseller-establishments', '🏢', 'My Establishments'),
+        navItem('reseller-ecr', '🗂️', 'ECR Activity'),
+        navItem('reseller-earnings', '💰', 'My Earnings'),
+        navItem('reseller-payouts', '🧾', 'Payout History'),
+      ].join('');
+      nav.querySelectorAll('.nav-item').forEach(el => el.addEventListener('click', (e) => {
+        e.preventDefault(); navigate(el.dataset.page);
+      }));
+      return;
+    }
+
     let items = [];
 
     if (isSuper) {
       items.push(`
         <a class="nav-item ${currentPage === 'admin' ? 'active' : ''}" data-page="admin" style="background:rgba(99,102,241,0.08); border-left:3px solid var(--primary);">
           <span class="nav-icon">👑</span><span>Admin Dashboard</span>
+        </a>
+      `);
+      items.push(`
+        <a class="nav-item ${currentPage === 'referral-program' ? 'active' : ''}" data-page="referral-program" style="background:rgba(217,164,65,0.08); border-left:3px solid #d9a441;">
+          <span class="nav-icon">🤝</span><span>Referral Program</span>
         </a>
       `);
     } else {
@@ -1048,7 +1080,9 @@ const App = (() => {
 
     if (!handledCashfreeReturn) {
       // Default landing page
-      if (isSuperadmin()) {
+      if (currentUser && currentUser.role === 'reseller') {
+        navigate((currentPage && String(currentPage).startsWith('reseller-')) ? currentPage : 'reseller-overview');
+      } else if (isSuperadmin()) {
         navigate(currentPage === 'admin' ? 'admin' : currentPage || 'admin');
       } else {
         // For consultants: if no active establishment set, find one
@@ -1082,27 +1116,31 @@ const App = (() => {
       if (!tr) return;
 
       let estInfo = '';
-      try {
-        const est = await get('/api/establishment');
-        currentEstablishment = est;
-        if (est && (est.name || est.code)) {
-          estInfo = `
-            <div style="text-align: right; line-height: 1.25; border-right: 1px solid var(--border); padding-right: 14px; margin-right: 14px;">
-              <div style="display:flex; align-items:center; gap:6px; justify-content:flex-end;">
-                <span style="font-weight: 700; font-size: 16px; color: var(--text1); max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(est.name)}</span>
-                <button class="btn btn-ghost btn-sm" style="font-size:10px; padding:1px 6px;" onclick="App.showProjectManager()" title="Switch Active Establishment">⇄ Switch</button>
+      if (!(user && user.role === 'reseller')) {
+        try {
+          const est = await get('/api/establishment');
+          currentEstablishment = est;
+          if (est && (est.name || est.code)) {
+            estInfo = `
+              <div style="text-align: right; line-height: 1.25; border-right: 1px solid var(--border); padding-right: 14px; margin-right: 14px;">
+                <div style="display:flex; align-items:center; gap:6px; justify-content:flex-end;">
+                  <span style="font-weight: 700; font-size: 16px; color: var(--text1); max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(est.name)}</span>
+                  <button class="btn btn-ghost btn-sm" style="font-size:10px; padding:1px 6px;" onclick="App.showProjectManager()" title="Switch Active Establishment">⇄ Switch</button>
+                </div>
+                <div style="font-size: 13px; color: var(--text2); font-family:monospace; margin-top:1px;">${esc(est.code)}</div>
               </div>
-              <div style="font-size: 13px; color: var(--text2); font-family:monospace; margin-top:1px;">${esc(est.code)}</div>
-            </div>
-          `;
-        }
-      } catch (_) {}
+            `;
+          }
+        } catch (_) {}
+      }
 
       const roleBadge = isSuperadmin()
         ? `<span class="badge" style="background:rgba(99,102,241,0.15); color:var(--primary); font-weight:700; font-size:10px;">👑 SUPERADMIN</span>`
         : (user && user.role === 'employer'
           ? `<span class="badge low" style="font-size:10px;">👤 EMPLOYER</span>`
-          : `<span class="badge low" style="font-size:10px;">👤 CONSULTANT</span>`);
+          : (user && user.role === 'reseller'
+            ? `<span class="badge low" style="font-size:10px;">🤝 RESELLER</span>`
+            : `<span class="badge low" style="font-size:10px;">👤 CONSULTANT</span>`));
 
       tr.innerHTML = `
         <div style="display:flex; align-items:center;">

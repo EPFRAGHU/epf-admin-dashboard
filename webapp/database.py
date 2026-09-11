@@ -40,7 +40,8 @@ class User(Base):
     # much larger token-blacklist/refresh-token subsystem.
     token_valid_after = Column(DateTime(timezone=True), nullable=True)
 
-    establishments = relationship("Establishment", back_populates="user", cascade="all, delete-orphan")
+    establishments = relationship("Establishment", back_populates="user", cascade="all, delete-orphan",
+                                  foreign_keys="Establishment.user_id")
 
 
 class Establishment(Base):
@@ -57,10 +58,11 @@ class Establishment(Base):
     trial_ends_on = Column(Date, nullable=True)  # Null = no trial (normal enforcement). Superadmin-set only.
     billing_mode = Column(String(20), nullable=True)  # 'per_employee' | 'flat_fee' | null. Null means "inherit consultant's default_billing_mode, or global default if consultant has none set." Superadmin-set only. See resolve_billing_mode().
     flat_fee_amount = Column(Float, nullable=True)  # ₹/month, only meaningful when billing_mode='flat_fee'. Null when inheriting.
+    referred_by_reseller_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     data = Column(Text, nullable=False, default="{}")  # Serialized Project JSON
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    user = relationship("User", back_populates="establishments")
+    user = relationship("User", back_populates="establishments", foreign_keys=[user_id])
     payments = relationship("Payment", back_populates="establishment", cascade="all, delete-orphan")
     subscription_fees = relationship("SubscriptionFee", back_populates="establishment", cascade="all, delete-orphan")
 
@@ -227,6 +229,89 @@ class SignupRequest(Base):
     rejection_reason = Column(Text, nullable=True)
 
     reviewer = relationship("User")
+
+
+class ResellerProfile(Base):
+    __tablename__ = "reseller_profiles"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    full_name = Column(String(255), nullable=False)          # as per PAN
+    mobile = Column(String(50), nullable=False)
+    email = Column(String(255), nullable=False)              # payout-notification address
+    referral_code = Column(String(20), nullable=False, unique=True, index=True)
+    status = Column(String(20), nullable=False, default="active")   # 'active' | 'suspended'
+    joined_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    upi_id = Column(String(120), nullable=True)
+    bank_account_number = Column(String(50), nullable=True)
+    bank_ifsc = Column(String(20), nullable=True)
+    bank_name = Column(String(120), nullable=True)
+    bank_branch = Column(String(120), nullable=True)
+    # v1: no automated penny-drop. Superadmin sends Re.1 by hand and toggles this.
+    payout_details_verified = Column(Boolean, nullable=False, default=False)
+    payout_verified_at = Column(DateTime(timezone=True), nullable=True)
+
+    pan = Column(String(15), nullable=True)
+    tds_rate = Column(Float, nullable=False, default=10.0)
+
+    user = relationship("User")
+
+
+class Enrollment(Base):
+    __tablename__ = "reseller_enrollments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    reseller_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    establishment_id = Column(Integer, ForeignKey("establishments.id", ondelete="SET NULL"), nullable=True, index=True)
+    account_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)  # the employer/consultant user created
+    method = Column(String(30), nullable=False, default="create_handover")   # v1 always 'create_handover'
+    contact_name = Column(String(255), nullable=True)
+    contact_mobile = Column(String(50), nullable=True)
+    contact_email = Column(String(255), nullable=True)
+    stage = Column(String(40), nullable=False, default="account_created")
+    # stage: account_created -> password_set -> awaiting_first_payment -> active
+    set_password_jti = Column(String(64), nullable=True)   # opaque id embedded in the current token; rotated on resend
+    token_expires_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    activated_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class ResellerPayout(Base):
+    __tablename__ = "reseller_payouts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    reseller_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    period = Column(String(7), nullable=False, index=True)   # 'YYYY-MM' label of the run
+    gross_collected = Column(Float, nullable=False, default=0.0)   # sum of fee.amount_due on this payout's lines
+    reseller_share_gross = Column(Float, nullable=False, default=0.0)   # 50% of gross_collected
+    tds_amount = Column(Float, nullable=False, default=0.0)
+    reseller_share_net = Column(Float, nullable=False, default=0.0)     # gross share - TDS
+    owner_share = Column(Float, nullable=False, default=0.0)            # the other 50%
+    status = Column(String(20), nullable=False, default="scheduled")   # 'scheduled' | 'paid' | 'failed'
+    upi_id = Column(String(120), nullable=True)   # snapshot of the reseller's UPI at run time
+    upi_reference = Column(String(255), nullable=True)   # UTR, entered by the owner on mark-paid
+    notes = Column(Text, nullable=True)
+    run_at = Column(DateTime(timezone=True), server_default=func.now())
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (UniqueConstraint("reseller_id", "period", name="uq_reseller_payouts_reseller_period"),)
+
+
+class ResellerPayoutLine(Base):
+    __tablename__ = "reseller_payout_lines"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    payout_id = Column(Integer, ForeignKey("reseller_payouts.id", ondelete="CASCADE"), nullable=False, index=True)
+    subscription_fee_id = Column(Integer, ForeignKey("subscription_fees.id", ondelete="SET NULL"), nullable=True, unique=True, index=True)
+    establishment_id = Column(Integer, ForeignKey("establishments.id", ondelete="SET NULL"), nullable=True, index=True)
+    establishment_name = Column(String(255), nullable=True)   # snapshot for display if the est is later deleted
+    financial_year = Column(String(50), nullable=True)
+    month = Column(String(20), nullable=True)
+    fee_amount = Column(Float, nullable=False, default=0.0)         # the gross fee for this line
+    reseller_share = Column(Float, nullable=False, default=0.0)     # 50% of fee_amount
+
+    payout = relationship("ResellerPayout")
 
 
 SessionLocal = None

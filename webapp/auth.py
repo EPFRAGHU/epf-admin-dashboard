@@ -103,6 +103,16 @@ async def get_superadmin(current_user: User = Depends(get_current_user)) -> User
     return current_user
 
 
+def _require_reseller(user: User) -> User:
+    if user.role != "reseller":
+        raise HTTPException(status_code=403, detail="Access denied. This area is for reseller accounts.")
+    return user
+
+
+async def get_reseller(current_user: User = Depends(get_current_user)) -> User:
+    return _require_reseller(current_user)
+
+
 async def get_active_establishment(
     request: Request,
     establishment_id: Optional[int] = Query(None),
