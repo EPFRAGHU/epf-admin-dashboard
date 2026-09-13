@@ -219,8 +219,13 @@ function webCalcLive(wage, ncp) {
   const workDays = Math.max(0, days - (ncp || 0));
   const epsWage = Math.min(wage || 0, ceiling);
   const ee = Math.round((wage || 0) * (r.w_epf / 100));
-  const er = Math.round((wage || 0) * (r.e_epf / 100));
   const pension = Math.round(epsWage * (r.e_eps / 100));
+  // ER PF is the REMAINDER of the employer's total contribution (same rate as EE,
+  // r.w_epf) after Pension is taken out -- not an independently-rounded 3.67%.
+  // Matches epf_engine.py's month_rows() exactly (e_epf = total_er_contrib - e_eps);
+  // rounding e_epf on its own can land on a .5 boundary Pension already claimed
+  // (e.g. wage 15000: 15000*3.67%=550.5 rounds to 551, but EE 1800 - Pension 1250 = 550).
+  const er = Math.max(0, ee - pension);
   return { days, workDays, epsWage, ee, er, pension };
 }
 
