@@ -37,6 +37,8 @@ let webDraftMembers = [];  // member_ids added this session, not yet saved
 let webEditingIds = new Set(); // member_ids of saved rows reopened for correction IN PLACE (stays in its original batch)
 let webSelected = new Set();   // checked rows, for "Generate ECR for Selected"
 let webEdits = {};         // member_id -> {g, w, n} -- in-progress numbers for draft/editing rows
+let webPageSize = 10;      // rows per page -- user-selectable 10/20/50/100
+let webCurrentPage = 1;    // 1-based, resets to 1 on every month/year switch
 
 App.registerPage('wage-entry-batch', async (container) => {
   const { years } = await App.get('/api/years');
@@ -79,6 +81,7 @@ async function webLoadMonth(yearKey, monthIdx) {
   webEditingIds = new Set();
   webSelected = new Set();
   webEdits = {};
+  webCurrentPage = 1;
 }
 
 function webPageHtml(years) {
@@ -122,6 +125,7 @@ function webPageHtml(years) {
         <table>
           <thead>
             <tr>
+              <th style="width:40px; text-align:center;">Sl No.</th>
               <th style="width:32px"><input type="checkbox" onchange="webToggleSelectAll(this)"></th>
               <th style="width:32px"></th>
               <th>UAN</th><th>Name</th>
@@ -134,6 +138,14 @@ function webPageHtml(years) {
           <tbody id="web-table-body"></tbody>
         </table>
       </div>
+      <div style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text2); padding:12px; border-top:1px solid var(--border);">
+        <label for="web-page-size">Show</label>
+        <select class="form-select" id="web-page-size" style="width:80px" onchange="webSetPageSize(this.value)">
+          ${[10, 20, 50, 100].map(n => `<option value="${n}" ${n === webPageSize ? 'selected' : ''}>${n}</option>`).join('')}
+        </select>
+        <span>records per page</span>
+      </div>
+      <div id="web-pagination"></div>
     </div>
   </div>`;
 }
@@ -246,7 +258,7 @@ function webPrevMonthData(memberId) {
 // mode: 'draft' (new, unsaved, editable) | 'readonly' (saved, part of a batch) |
 // 'editing' (a saved row reopened for correction -- stays in its ORIGINAL batch;
 // "Done" persists the numbers but never touches batch membership).
-function webRowHtml(memberId, mode) {
+function webRowHtml(memberId, mode, serial) {
   const row = webRow(memberId);
   if (!row) return '';
   const editable = mode !== 'readonly';
@@ -282,6 +294,7 @@ function webRowHtml(memberId, mode) {
     : `<button class="btn btn-glass btn-sm" style="padding:4px 8px; font-size:11px;" onclick="webStartEditRow('${memberId}')">✏️ Edit</button>`;
 
   return `<tr id="web-row-${memberId}" style="${isSel ? 'background:var(--accent-glow, rgba(108,92,231,.08));' : ''}${mode === 'editing' ? 'background:rgba(222,154,31,.08);' : ''}">
+    <td style="text-align:center; color:var(--text3);">${serial}</td>
     <td style="text-align:center"><input type="checkbox" ${isSel ? 'checked' : ''} onchange="webToggleRow('${memberId}', this.checked)"></td>
     <td style="text-align:center">${statusCell}</td>
     <td style="font-family:monospace; font-size:12px; cursor:pointer; color:var(--accent2);" onclick="webOpenHistory('${memberId}')" title="View this employee's Mar-Feb wage history">${App.esc(row.uan || '—')}</td>
@@ -298,37 +311,87 @@ function webRowHtml(memberId, mode) {
   </tr>`;
 }
 
+// Ordered sections matching display order: unsaved draft first, then each batch
+// lowest-numbered first. Each section carries its own member_id list so serial
+// numbers and pagination can be computed across all of them as one flat sequence,
+// while headers ("Unsaved draft", "Batch N") stay attached to their own rows.
+function webBuildSections() {
+  const sections = [];
+  if (webDraftMembers.length > 0) {
+    sections.push({ kind: 'draft', ids: webDraftMembers });
+  }
+  [...webBatches].sort((a, b) => a.num - b.num).forEach(b => {
+    sections.push({ kind: 'batch', batch: b, ids: b.members || [] });
+  });
+  return sections;
+}
+
+function webDraftHeaderHtml() {
+  return `<tr><td colspan="15" style="background:var(--bg2); font-size:12px; font-weight:700; padding:8px 10px;">📝 Unsaved draft — ${webDraftMembers.length} employee${webDraftMembers.length === 1 ? '' : 's'} <span style="font-weight:500; color:var(--text3); margin-left:8px;">not saved yet</span></td></tr>`;
+}
+function webBatchHeaderHtml(b) {
+  const isOpen = !b.closed;
+  const icon = isOpen ? '🟡' : '✅';
+  const stateLabel = isOpen ? 'open — still adding' : 'closed';
+  const closeBtn = isOpen ? `<button class="btn btn-glass btn-sm" style="margin-left:10px; padding:4px 8px; font-size:11px;" onclick="webCloseBatch(${b.num})">✅ Close Batch ${b.num}</button>` : '';
+  const ecrBtn = `<button class="btn btn-glass btn-sm" style="margin-left:8px; padding:4px 8px; font-size:11px;" onclick="webGenerateEcrForBatch(${b.num})">🧾 ECR for Batch ${b.num}</button>`;
+  return `<tr><td colspan="15" style="background:var(--bg2); font-size:12px; font-weight:700; padding:8px 10px;">${icon} Batch ${b.num} — ${(b.members || []).length} employee${(b.members || []).length === 1 ? '' : 's'} <span style="font-weight:500; color:var(--text3); margin-left:8px;">${stateLabel}</span>${closeBtn}${ecrBtn}</td></tr>`;
+}
+
 function webRenderTable() {
   const body = document.getElementById('web-table-body');
   if (!body) return;
-  const totalShown = webAllVisibleIds().length;
+  const sections = webBuildSections();
+  const totalShown = sections.reduce((sum, sec) => sum + sec.ids.length, 0);
   document.getElementById('web-search-count').textContent = `${totalShown} of ${webMaster.length} employees shown`;
 
   if (totalShown === 0) {
-    body.innerHTML = `<tr><td colspan="14"><div style="padding:40px 20px; text-align:center; color:var(--text3); font-size:13px;">
+    body.innerHTML = `<tr><td colspan="15"><div style="padding:40px 20px; text-align:center; color:var(--text3); font-size:13px;">
       <div style="font-size:28px; margin-bottom:8px;">🔍</div>
       Blank by default — search a UAN or name above, or use Fast Entry, to enter wages for ${WEB_MONTH_ABBR[webMonthIdx]}.
     </div></td></tr>`;
+    document.getElementById('web-pagination').innerHTML = '';
     webUpdateSelectionBar();
     return;
   }
 
+  const totalPages = Math.max(1, Math.ceil(totalShown / webPageSize));
+  if (webCurrentPage > totalPages) webCurrentPage = totalPages;
+  if (webCurrentPage < 1) webCurrentPage = 1;
+  const windowStart = (webCurrentPage - 1) * webPageSize; // 0-based serial index, inclusive
+  const windowEnd = windowStart + webPageSize;            // exclusive
+
   let html = '';
-  if (webDraftMembers.length > 0) {
-    html += `<tr><td colspan="14" style="background:var(--bg2); font-size:12px; font-weight:700; padding:8px 10px;">📝 Unsaved draft — ${webDraftMembers.length} employee${webDraftMembers.length === 1 ? '' : 's'} <span style="font-weight:500; color:var(--text3); margin-left:8px;">not saved yet</span></td></tr>`;
-    html += webDraftMembers.map(id => webRowHtml(id, 'draft')).join('');
-  }
-  [...webBatches].sort((a, b) => a.num - b.num).forEach(b => {
-    const isOpen = !b.closed;
-    const icon = isOpen ? '🟡' : '✅';
-    const stateLabel = isOpen ? 'open — still adding' : 'closed';
-    const closeBtn = isOpen ? `<button class="btn btn-glass btn-sm" style="margin-left:10px; padding:4px 8px; font-size:11px;" onclick="webCloseBatch(${b.num})">✅ Close Batch ${b.num}</button>` : '';
-    const ecrBtn = `<button class="btn btn-glass btn-sm" style="margin-left:8px; padding:4px 8px; font-size:11px;" onclick="webGenerateEcrForBatch(${b.num})">🧾 ECR for Batch ${b.num}</button>`;
-    html += `<tr><td colspan="14" style="background:var(--bg2); font-size:12px; font-weight:700; padding:8px 10px;">${icon} Batch ${b.num} — ${(b.members || []).length} employee${(b.members || []).length === 1 ? '' : 's'} <span style="font-weight:500; color:var(--text3); margin-left:8px;">${stateLabel}</span>${closeBtn}${ecrBtn}</td></tr>`;
-    html += (b.members || []).map(id => webRowHtml(id, webEditingIds.has(id) ? 'editing' : 'readonly')).join('');
+  let serial = 0; // running 0-based count across ALL sections, real rows only
+  sections.forEach(sec => {
+    const secStart = serial;
+    const secEnd = serial + sec.ids.length;
+    serial = secEnd;
+    if (secEnd <= windowStart || secStart >= windowEnd) return; // section entirely off this page
+
+    html += sec.kind === 'draft' ? webDraftHeaderHtml() : webBatchHeaderHtml(sec.batch);
+    const localStart = Math.max(0, windowStart - secStart);
+    const localEnd = Math.min(sec.ids.length, windowEnd - secStart);
+    const mode = sec.kind === 'draft' ? 'draft' : null;
+    for (let i = localStart; i < localEnd; i++) {
+      const id = sec.ids[i];
+      const rowMode = mode || (webEditingIds.has(id) ? 'editing' : 'readonly');
+      html += webRowHtml(id, rowMode, secStart + i + 1);
+    }
   });
   body.innerHTML = html;
+  document.getElementById('web-pagination').innerHTML = App.renderPagination(totalShown, webCurrentPage, webPageSize, 'webSetPage');
   webUpdateSelectionBar();
+}
+
+function webSetPage(page) {
+  webCurrentPage = page;
+  webRenderTable();
+}
+function webSetPageSize(val) {
+  webPageSize = parseInt(val, 10) || 10;
+  webCurrentPage = 1;
+  webRenderTable();
 }
 
 // Updates the model + the computed cells in place, WITHOUT re-rendering the row's
