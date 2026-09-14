@@ -34,6 +34,22 @@ Investigation (code-reading only, no production data touched) found:
    condition — EPFO's UAN master can mark a member as EPS-excluded independent of age
    (e.g. certain international workers, or members who opted out at a pre-Sept-2014
    enrollment). The app has no way to represent this at all today.
+4. **A confirmed, currently-live, unrelated bug that blocks this whole design**:
+   `calc_age_years()` (`epf_engine.py:79`) parses DOB with
+   `datetime.strptime(dob_text, "%d/%m/%Y")` — **slash**-separated. But every real DOB
+   in this app is stored **hyphen**-separated (`DD-MM-YYYY`): the Employee Master UI's
+   own `parseDMY()` in `employees.js` splits on `-`, and the Excel-import path's
+   `format_date()` helper in `epf_engine.py` explicitly does
+   `val.replace("/", "-")` before storing. No code path ever produces slash-format DOB.
+   Result: `calc_age_years()` returns `None` for every real employee, always —
+   `is_due_superannuation`/the Employee Master "58+" badge has never actually fired for
+   anyone. The identical bug exists in `employees_joined_in_month`/
+   `employees_left_in_month` (`epf_engine.py:2545`/`2564`), which parse DOJ/DOE the same
+   slash-format way — and those two functions feed **Form 5 (new joiners) and Form 10
+   (employees left)** generation in both Excel and PDF. Confirmed live/shipping, found
+   while investigating this design, unrelated to the ECR errors that prompted it — user
+   confirmed (2026-09-14) to fold the fix into this same pass since it's the identical
+   one-line format-string fix in three places.
 
 ## What changes
 
@@ -46,9 +62,18 @@ Investigation (code-reading only, no production data touched) found:
 2. **New `eps_member` flag** on `MasterEmployee`, default `True`, independent of age.
    When `False`, EPS wages and EPS contribution are always zero for that employee, every
    month, regardless of age — this is the RFE-21 fix.
+3. **`calc_age_years()` and `employees_joined_in_month`/`employees_left_in_month` fixed**
+   to parse `DD-MM-YYYY` (matching what's actually stored), not `DD/MM/YYYY`. This is a
+   prerequisite for #1 above (the whole age-58 design is built on `calc_age_years()`
+   actually working) and also fixes Form 5/Form 10 generation as a side effect.
+4. **`dob` becomes a required field** in Employee Master — add form, edit form, and the
+   Excel bulk-import path, backend validation included — matching how Member ID/Name are
+   already required. (Existing employees already saved without a DOB are not
+   retroactively touched by this alone; see Migration/rollout.)
 
 Confirmed with the user (2026-09-14): pure DOB-driven automation, no manual override
-checkbox retained (see "What is explicitly NOT changing" for why).
+checkbox retained (see "What is explicitly NOT changing" for why); DOB required, not
+optional-with-a-warning; both pre-existing date-format bugs folded into this same pass.
 
 ## Business rule: the exact month boundary
 
@@ -79,17 +104,25 @@ age-58 cutover rule satisfies both EPFO checks without separate logic.
   `worker_eps_rate != 0`) — EPS/Pension Fund as a concept didn't exist before 1995;
   this branch has no age-58 logic today and none is being added.
 - The ECR/Excel/PDF generators themselves (`epf_engine.py`'s `ExcelGenerator`,
-  `pdf_engine.py`, `generate_ecr_month`) — no direct changes. They already consume
-  `month_rows()`/`annual_totals()` exclusively (confirmed by code trace), which is the
-  entire point of fixing this at the one shared calc function.
-- `MasterEmployee.dob`'s *format* and parsing (`calc_age_years`'s `DD/MM/YYYY` via
-  `strptime`) — unchanged; only its required-ness changes (see below).
+  `pdf_engine.py`, `generate_ecr_month`) — no direct changes beyond the date-format fix
+  below. They already consume `month_rows()`/`annual_totals()` exclusively (confirmed
+  by code trace), which is the entire point of fixing this at the one shared calc
+  function.
+- The *storage* format of `dob`/`doj`/`doe` (`DD-MM-YYYY`, hyphen-separated) — already
+  correct and already what every entry path produces. Only the buggy *parser* changes
+  to match it (see "Prerequisite bug fix" above) — this is not a data migration, no
+  stored date string needs to change.
 
 ## Data model changes
 
 `epf_engine.py`:
 
-- `MasterEmployee`: add `eps_member: bool = True`.
+- `calc_age_years()`: fix `strptime` format from `"%d/%m/%Y"` to `"%d-%m-%Y"`.
+- `employees_joined_in_month()`/`employees_left_in_month()`: same fix, same reason —
+  these feed Form 5/Form 10.
+- `MasterEmployee`: add `eps_member: bool = True`; `dob` becomes required (no default
+  empty string accepted by the create/update path — enforced in `webapp/app.py`'s
+  Pydantic request models, matching how `member_id`/`name` are already required there).
 - `YearEntry`: remove `age_crosses_58` (no longer meaningful — the calc no longer
   reads a per-year flag).
 - Calc-engine `Employee` dataclass: remove `age_crosses_58`; add `eps_member: bool`,
@@ -128,7 +161,10 @@ age-58 cutover rule satisfies both EPFO checks without separate logic.
 
 - **Employee Master** (`employees.js`): new "EPS Member" checkbox in the add/edit
   forms, default checked. A small badge (matching the existing "58+" badge pattern) on
-  any employee row where it's unchecked.
+  any employee row where it's unchecked. `Date of Birth` moves into the same required-
+  field validation as Member ID/Name (add form, edit form, and the Excel-import
+  row-level validation — a row with no parseable DOB is rejected with a warning, same
+  pattern as the existing invalid-UAN rejection).
 - **Monthly Wage Entry** (`wages.js`): remove the "Age > 58 (EPS = 0)" checkbox from
   both the single-employee modal and the bulk-table row, and its `age_crosses_58` /
   `age58` state plumbing (`bulkTableState`, save payload, the read-side flag badge).
@@ -172,7 +208,11 @@ real regression for a live-filing client.
 Required before merge: a one-off read-only audit across all establishments for any
 `YearEntry.age_crosses_58 == True`, cross-checked against that member's
 `MasterEmployee.dob` — flag (to the user, not auto-fixed) any such member with a
-missing or clearly-wrong DOB so it can be corrected in Employee Master first.
+missing or clearly-wrong DOB so it can be corrected in Employee Master first. Making
+`dob` required going forward (see "Resolved during design review") stops the problem
+from growing, but doesn't retroactively backfill anyone already saved without one —
+this audit is still the only thing that catches the existing at-risk employees before
+they silently lose their EPS-zero status.
 
 No SQL/database migration is needed — establishment data is one JSON blob
 (`Establishment.data`), and old `age_crosses_58` values simply become inert once the
@@ -180,29 +220,30 @@ code stops reading them.
 
 ## Testing
 
+- Regression tests for the date-format fix itself: `calc_age_years("15-06-1965")`
+  (hyphen input, the only real format) returns the correct age;
+  `employees_joined_in_month`/`employees_left_in_month` correctly match a hyphen-format
+  DOJ/DOE — plus a live-verified Form 5/Form 10 generation against a scratch employee
+  with a DOJ/DOE in this financial year, confirming they now actually appear (they
+  would not have, before this fix).
 - New `pytest` cases in the calc-engine test file: an employee whose DOB puts their
   58th birthday in each of several different wage months (including across the
   Mar-start financial-year wrap, e.g. a January or February birthday), asserting EPS
   is present through the birthday month and zero from the next month on.
 - `eps_member=False` zeroes EPS every month regardless of age.
-- Missing/unparseable DOB with `eps_member=True` never auto-zeroes (documented
-  fallback, not a bug — see Open Items).
 - Full existing suite (205 tests as of this design) must still pass; any test
   asserting the old `age_crosses_58` behavior is migrated to the new fields.
 - Live verification on a throwaway scratch-DB copy via the Claude_Browser tool, per
-  this project's established pattern — Employee Master's new EPS Member checkbox,
-  both wage-entry pages with the old checkbox gone, and a generated ECR/Excel/PDF
-  correctly zeroing EPS for both a DOB-58+ employee and an `eps_member=False` employee.
+  this project's established pattern — Employee Master's new EPS Member checkbox and
+  required-DOB validation, both wage-entry pages with the old checkbox gone, and a
+  generated ECR/Excel/PDF correctly zeroing EPS for both a DOB-58+ employee and an
+  `eps_member=False` employee.
 
-## Open items
+## Resolved during design review
 
-- **Missing DOB**: `dob` is not a required field today (only Member ID and Name are).
-  This design makes it load-bearing for a compliance-critical calculation for the
-  first time — an employee with no DOB on file simply never gets the age-58 cutover
-  applied automatically (same as "not yet 58"), which is the same failure mode as
-  today, not a new one, but is worth being visible about rather than silent.
-  Recommendation: keep `dob` optional (don't force a breaking mandatory-field change
-  onto existing employees or bulk Excel imports), but surface a non-blocking warning
-  — in the Employee Master list and/or at wage-entry time — for any employee with no
-  DOB on file, so a consultant filing near someone's 58th birthday notices before it
-  becomes an ECR rejection instead of after.
+- **DOB required-ness**: originally proposed keeping `dob` optional with a warning;
+  user confirmed (2026-09-14) to make it required instead, matching Member ID/Name.
+  Existing employees saved before this change without a DOB are not retroactively
+  edited by this alone — they simply can't be re-saved without adding one going
+  forward. Combined with the migration audit below, this closes the missing-DOB risk
+  for any employee currently depended on for EPS-zero correctness.
