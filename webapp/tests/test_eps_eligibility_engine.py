@@ -90,3 +90,56 @@ def test_build_employees_for_year_carries_eps_member_and_year_from():
     assert len(emps) == 1
     assert emps[0].eps_member is False
     assert emps[0].year_from == "2026"
+
+
+from epf_engine import wage_month_start_date, is_eps_zero_for_month, Employee
+
+
+def test_wage_month_start_date_mar_to_dec_falls_in_year_from():
+    assert wage_month_start_date(0, "2026") == date(2026, 3, 1)   # month_idx 0 = March
+    assert wage_month_start_date(9, "2026") == date(2026, 12, 1)  # month_idx 9 = December
+
+
+def test_wage_month_start_date_jan_feb_falls_in_year_from_plus_one():
+    assert wage_month_start_date(10, "2026") == date(2027, 1, 1)  # January
+    assert wage_month_start_date(11, "2026") == date(2027, 2, 1)  # February
+
+
+def test_is_eps_zero_for_month_birthday_month_still_gets_eps():
+    """DOB 15-06-1968 turns 58 on 15-06-2026. FY 2026-27: month_idx 3 = June 2026.
+    As of June 1 2026 (month start) they're still 57 -- EPS still applies that month."""
+    assert is_eps_zero_for_month("15-06-1968", 3, "2026") is False
+
+
+def test_is_eps_zero_for_month_zero_from_the_following_month():
+    """Same employee: month_idx 4 = July 2026. As of July 1 2026 they're already 58."""
+    assert is_eps_zero_for_month("15-06-1968", 4, "2026") is True
+
+
+def test_is_eps_zero_for_month_missing_dob_never_auto_zeroes():
+    assert is_eps_zero_for_month("", 4, "2026") is False
+
+
+def test_month_rows_zeroes_eps_from_the_month_after_the_58th_birthday():
+    """End-to-end through month_rows() itself, not just the helper -- confirms the
+    wiring, not just the date math."""
+    emp = Employee(member_id="M1", dob="15-06-1968", eps_member=True, year_from="2026",
+                    wages=[75000] * 12, gross_wages=[75000] * 12)
+    rows = emp.month_rows(worker_epf_rate=12.0, worker_eps_rate=0.0,
+                           employer_epf_rate=3.67, employer_eps_rate=8.33)
+    june = rows[3]   # w, w_epf, w_eps, w_total, e_epf, e_eps, e_total
+    july = rows[4]
+    assert june[5] > 0     # e_eps (EPS contribution) still present in June
+    assert july[5] == 0    # zero from July
+    assert july[4] == june[1]  # July's e_epf equals the full employer contribution (== w_epf, the EE 12% amount)
+
+
+def test_month_rows_eps_member_false_zeroes_every_month_regardless_of_age():
+    """RFE-21 fix: a 30-year-old (nowhere near 58) with eps_member=False must still
+    get EPS=0 every month."""
+    emp = Employee(member_id="M1", dob="01-01-1996", eps_member=False, year_from="2026",
+                    wages=[75000] * 12, gross_wages=[75000] * 12)
+    rows = emp.month_rows(worker_epf_rate=12.0, worker_eps_rate=0.0,
+                           employer_epf_rate=3.67, employer_eps_rate=8.33)
+    for r in rows:
+        assert r[5] == 0

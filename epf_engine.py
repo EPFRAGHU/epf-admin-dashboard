@@ -83,6 +83,37 @@ def calc_age_years(dob_text: str, as_of: date = None):
     years = as_of.year - dob.year - ((as_of.month, as_of.day) < (dob.month, dob.day))
     return years
 
+
+def wage_month_start_date(month_idx: int, year_from: str) -> Optional[date]:
+    """First calendar day of wage-month `month_idx` within the financial year
+    starting `year_from`. month_idx 0 = March (of year_from) .. 9 = December (of
+    year_from), 10 = January .. 11 = February (of year_from + 1) -- the same Mar-Feb
+    convention as MONTHS/calendar_year_for_month(). Returns None if year_from isn't a
+    parseable year or month_idx is out of range."""
+    try:
+        y_from = int(str(year_from)[:4])
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= month_idx <= 11):
+        return None
+    if month_idx <= 9:
+        return date(y_from, month_idx + 3, 1)
+    return date(y_from + 1, month_idx - 9, 1)
+
+
+def is_eps_zero_for_month(dob: str, month_idx: int, year_from: str) -> bool:
+    """True if EPS/Pension contribution should be zero for this wage month because
+    the employee had already turned 58 as of the FIRST day of that month. An
+    employee whose 58th birthday falls inside the month still gets EPS for that
+    month -- the cutover starts the following month (confirmed EPFO practice).
+    A missing/unparseable DOB returns False (never auto-zeroed) rather than raising,
+    matching calc_age_years()'s own None-safe convention."""
+    month_start = wage_month_start_date(month_idx, year_from)
+    if month_start is None:
+        return False
+    age = calc_age_years(dob, as_of=month_start)
+    return age is not None and age >= SUPERANNUATION_AGE
+
 MONTHS = [
     "Mar Paid in Apr", "Apr Paid in May", "May Paid in Jun", 
     "Jun Paid in Jul", "Jul Paid in Aug", "Aug Paid in Sep", 
@@ -675,7 +706,8 @@ class Employee:
         for i, w in enumerate(self.wages):
             w = int(round(float(w))) if w else 0
             ceiling = wage_ceilings[i]
-            
+            eps_zero = (not self.eps_member) or is_eps_zero_for_month(self.dob, i, self.year_from)
+
             # Post-1997 calculation restrictions:
             if worker_eps_rate == 0:
                 if self.pohw:
@@ -686,11 +718,11 @@ class Employee:
                     # Higher EPF (EE)/(ER) checkboxes say.
                     worker_wage_base = w
                     er_total_wage_base = w
-                    eps_wage = 0 if self.age_crosses_58 else w
+                    eps_wage = 0 if eps_zero else w
                 else:
                     worker_wage_base = w if self.higher_epf_ee else min(w, ceiling)
                     er_total_wage_base = w if self.higher_epf_er else min(w, ceiling)
-                    eps_wage = 0 if self.age_crosses_58 else min(w, ceiling)
+                    eps_wage = 0 if eps_zero else min(w, ceiling)
 
                 w_epf = round(worker_wage_base * worker_epf_rate / 100)
                 w_eps = round(w * worker_eps_rate / 100)  # Will be 0 anyway
@@ -699,7 +731,7 @@ class Employee:
                 total_er_contrib = round(er_total_wage_base * worker_epf_rate / 100)
                 e_epf = max(0, total_er_contrib - e_eps)
 
-                if self.pohw and self.pohw_additional_1_16 and not self.age_crosses_58 and w > ceiling:
+                if self.pohw and self.pohw_additional_1_16 and not eps_zero and w > ceiling:
                     # Additional 1.16% "contribution" on the wage portion above the
                     # ceiling, from the 2014 EPS amendment. The Supreme Court struck
                     # this down as ultra vires in Nov 2022 (EPFO v. Sunil Kumar B) and
@@ -3060,7 +3092,8 @@ def generate_ecr_month(est, employees: List[Employee], year_record: YearRecord, 
             gross = round(w)
             
         epf_w = round(w)
-        eps_w = 0 if emp.age_crosses_58 else round(min(w, wage_ceilings[month_idx]))
+        eps_zero = (not emp.eps_member) or is_eps_zero_for_month(emp.dob, month_idx, year_record.year_from)
+        eps_w = 0 if eps_zero else round(min(w, wage_ceilings[month_idx]))
         edli_w = round(min(w, wage_ceilings[month_idx]))
         
         # UAN#~#Member Name#~#Gross Wages#~#EPF Wages#~#EPS Wages#~#EDLI Wages#~#EE Share Remitted#~#EPS Contribution Remitted#~#ER EPF Contribution Remitted#~#NCP Days#~#Refund of Advances
