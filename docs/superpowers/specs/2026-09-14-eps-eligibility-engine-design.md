@@ -82,8 +82,8 @@ age-58 cutover rule satisfies both EPFO checks without separate logic.
   `pdf_engine.py`, `generate_ecr_month`) — no direct changes. They already consume
   `month_rows()`/`annual_totals()` exclusively (confirmed by code trace), which is the
   entire point of fixing this at the one shared calc function.
-- Making `dob` a required field at employee creation (see "Open items" below for why,
-  and the mitigation).
+- `MasterEmployee.dob`'s *format* and parsing (`calc_age_years`'s `DD/MM/YYYY` via
+  `strptime`) — unchanged; only its required-ness changes (see below).
 
 ## Data model changes
 
