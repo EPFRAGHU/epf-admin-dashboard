@@ -95,20 +95,20 @@ def test_pohw_is_standalone_and_does_not_need_higher_epf_flags_ticked(consultant
     assert april["es"] == 6248   # still uncapped EPS
 
 
-def test_pohw_age_crosses_58_still_zeroes_eps(consultant_a):
-    """PoHW doesn't override the existing age>=58 rule -- EPS still goes to zero and
-    every rupee of the employer's 12% flows to EPF instead."""
-    _setup_year_and_employee(consultant_a, "POHW0000004", "PH0004", pohw=True)
+def test_pohw_age_58_plus_still_zeroes_eps(consultant_a):
+    """PoHW doesn't override the DOB-driven age>=58 rule -- EPS still goes to zero
+    and every rupee of the employer's 12% flows to EPF instead."""
+    _setup_year_and_employee(consultant_a, "POHW0000004", "PH0004", pohw=True, dob="01-01-1950")
 
     res = consultant_a.post("/api/years/2026-27/wages", json={
         "member_id": "PH0004", "wages": [75000.0] + [0.0] * 11,
-        "pohw": True, "age_crosses_58": True,
+        "pohw": True,
     })
     assert res.status_code == 200, res.text
 
     data = consultant_a.get("/api/years/2026-27/wages").json()
     emp = next(e for e in data["employees"] if e["member_id"] == "PH0004")
-    assert emp["age_crosses_58"] is True
+    assert emp["eps_zero_months"][0] is True
 
     april = emp["months"][0]
     assert april["es"] == 0
