@@ -32,9 +32,10 @@ scratch DB copy for local verification (never the production Neon DB directly).
   the user, or enter production credentials anywhere. All local verification runs
   against a scratch copy of `local_dev.db` with `DATABASE_URL` overridden, per this
   project's established workflow.
-- `dob` stays `str = ""` (optional) at the data model / backend API level everywhere
-  except the manual Employee Master Add/Edit **form**'s client-side validation. Do not
-  make any Pydantic model field required for `dob`.
+- `dob` stays `str = ""` (optional) everywhere — data model, backend API, and the
+  Employee Master UI forms. Do not add required-field validation for `dob` anywhere,
+  and do not add any "no DOB on file" warning at wage-entry or ECR-generation time
+  (round-2 design decision — see the spec).
 - Excel bulk import (`import_master_from_excel`, `POST /api/master/import`) must keep
   accepting a blank DOB — do not add any validation there.
 - The wage-month index convention throughout this codebase is **0 = March, 11 =
@@ -1581,7 +1582,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 7: Employee Master UI — EPS Member checkbox, badges, required-DOB form validation
+### Task 7: Employee Master UI — EPS Member checkbox + badges (no DOB validation)
 
 No JS test runner exists in this codebase — UI tasks are verified live in-browser
 against a scratch DB copy (see Task 13), matching this project's established pattern
@@ -1602,13 +1603,8 @@ current state, and line numbers may have drifted slightly since this plan was wr
 
 - [ ] **Step 2: Add the "EPS Member" checkbox to the add form**
 
-Near the existing `Date of Birth` field (`<input class="form-input" id="ae-dob" placeholder="DD-MM-YYYY">`),
-add a `required` attribute to that input, plus a visible `*` in its label to match
-whatever convention this file already uses for Member ID/Name (check how those two
-required fields are marked up and mirror it exactly — do not invent a new required-
-field convention for this one input).
-
-Add a new checkbox near the existing Higher EPF EE/ER checkboxes (search for
+`Date of Birth` stays exactly as it is today — no `required` attribute, no validation
+change. Add a new checkbox near the existing Higher EPF EE/ER checkboxes (search for
 `higher_epf_ee`/`ae-higher-epf-ee`-style ids in the add form to find the right spot):
 ```html
 <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px;">
@@ -1616,29 +1612,25 @@ Add a new checkbox near the existing Higher EPF EE/ER checkboxes (search for
 </label>
 ```
 
-- [ ] **Step 3: Add client-side required-DOB validation to the add-employee save handler**
+- [ ] **Step 3: Add `eps_member` to the add-employee save handler**
 
-Find the function that reads `#ae-dob` and posts to `POST /api/employees` (search for
-`document.getElementById('ae-dob')`). Add a check before the request fires:
-```javascript
-  const dob = document.getElementById('ae-dob').value.trim();
-  if (!dob) { App.toast('Date of Birth is required', 'error'); return; }
-```
-placed alongside the existing `if (!d.member_id || !d.name) { App.toast('Member ID and Name are required', 'error'); return; }`
-check (same function, same style). Add `eps_member: document.getElementById('ae-eps-member').checked`
-to the JSON body being posted.
+Find the function that posts to `POST /api/employees` (search for
+`document.getElementById('ae-higher-epf-ee')` or similar, to locate where the other
+checkbox values are read into the JSON body). Add
+`eps_member: document.getElementById('ae-eps-member').checked` to that JSON body —
+no other change to this handler; DOB is not validated here.
 
 - [ ] **Step 4: Repeat Steps 2-3 for the edit form**
 
-Same checkbox (`id="m-eps-member"`, pre-checked to `${e.eps_member !== false ? 'checked' : ''}`
-matching how the existing `m-dob` input pre-fills with `value="${App.esc(e.dob || '')}"`),
-same required-DOB validation in the edit-save handler, same `eps_member` field added
-to that handler's JSON body.
+Same checkbox (`id="m-eps-member"`, pre-checked to `${e.eps_member !== false ? 'checked' : ''}`),
+same `eps_member` field added to the edit-save handler's JSON body. No DOB validation
+change on this form either.
 
 - [ ] **Step 5: Add badges to the Employee Master table row**
 
 Find the table row rendering (`<td>${App.esc(e.dob)}${e.superannuation ? ...}</td>`
-pattern, ~line 409) and add, alongside the existing "58+" badge:
+pattern, ~line 409) and add, alongside the existing "58+" badge, a purely passive
+(no toast, no blocking) indicator:
 ```javascript
 ${!e.dob ? '<br><span class="badge" style="background:var(--border); color:var(--text2); margin-top:2px; display:inline-block;">No DOB</span>' : ''}
 ```
@@ -1651,36 +1643,39 @@ ${e.eps_member === false ? '<span class="badge high" style="font-size:10px;">Not
 - [ ] **Step 6: Live-verify** (see Task 13 for the full scratch-DB workflow)
 
 Start the scratch-DB server, open Employee Master in the Browser tool:
-1. Try to add an employee with DOB left blank — confirm the toast blocks submission.
+1. Add an employee with DOB left blank — confirm it saves without any block or toast
+   (unchanged from today's behavior).
 2. Add an employee with DOB filled and "EPS Member" unchecked — confirm it saves,
    confirm the "Not EPS Member" badge shows in the table.
-3. Edit an existing employee that has no DOB — confirm the "No DOB" badge was showing
-   before the edit, and that saving now requires filling DOB in.
+3. Confirm an existing employee with no DOB shows the passive "No DOB" badge in the
+   table, with no other friction anywhere.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add webapp/js/employees.js
-git commit -m "feat(employees): EPS Member checkbox + required DOB on manual add/edit
+git commit -m "feat(employees): add EPS Member checkbox to Employee Master
 
-Add/Edit Employee forms now require DOB (client-side only -- the
-backend API contract is unchanged, see the design spec's Resolved
-section for why) and expose a new EPS Member checkbox (default
-checked). Employee Master table rows show a 'Not EPS Member' badge
-and a 'No DOB' badge where relevant.
+Add/Edit Employee forms gain a new EPS Member checkbox (default
+checked); Employee Master table rows show a 'Not EPS Member' badge
+where relevant, plus a passive 'No DOB' indicator on rows missing
+one. DOB stays fully optional -- no required-field validation added,
+per the design spec's round-2 resolution (Aadhaar/Excel-import data
+already reliably carries DOB in practice; the auto age-58 engine
+itself needs no friction added around it).
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 8: Monthly Wage Entry UI — remove the manual Age > 58 checkbox, add the no-DOB warning
+### Task 8: Monthly Wage Entry UI — remove the manual Age > 58 checkbox
 
 **Files:**
 - Modify: `webapp/js/wages.js` — single-employee modal (lines ~256-261, ~335, ~384, ~639, ~672, ~677), bulk table (lines ~1369, ~1461, ~1473, ~1512, ~1537, ~1614, ~1645-1646, ~1668, ~1712, ~1723, ~1769, ~1783, ~1791, ~1844)
 
 **Interfaces:**
-- Consumes: nothing new — this is a pure removal + one new warning, no new backend data needed (the warning is driven by `emp.dob`/`matchedMaster.dob`, already present in every response this file already reads).
+- Consumes: nothing new — this is a pure removal, no new backend data needed. No DOB warning is added here (see the spec's round-2 resolution — DOB stays friction-free everywhere).
 
 - [ ] **Step 1: Remove the single-employee modal's Age > 58 checkbox and its badge**
 
@@ -1722,19 +1717,7 @@ Change (~line 384):
 ```
 Delete this whole `<label>` block.
 
-- [ ] **Step 3: Add the no-DOB warning in the employee-details panel**
-
-In the employee-details block that shows `<span><strong>DOB:</strong> ${App.esc(emp.dob || '-')}</span>`
-(~line 356, and its mirror at ~line 622 in the search-matched-employee handler),
-change both to:
-```javascript
-<span><strong>DOB:</strong> ${App.esc(emp.dob || '-')}</span>${!emp.dob ? ' <span class="badge" style="background:var(--border); color:var(--text2); font-size:10px;">No DOB on file — EPS age-58 cutover can\'t be auto-checked</span>' : ''}
-```
-(Apply the same change to both the `emp.dob`-based version around line 356 and the
-`matchedMaster.dob`-based version around line 622, substituting `matchedMaster` for
-`emp` in the second location.)
-
-- [ ] **Step 4: Remove the checkbox's read/write plumbing in the modal search handler**
+- [ ] **Step 3: Remove the checkbox's read/write plumbing in the modal search handler**
 
 Change (~line 639):
 ```javascript
@@ -1748,7 +1731,7 @@ Change (~line 643):
 ```
 Delete this line.
 
-- [ ] **Step 5: Remove `age_crosses_58` from the save payload**
+- [ ] **Step 4: Remove `age_crosses_58` from the save payload**
 
 Change (~lines 670-677):
 ```javascript
@@ -1772,7 +1755,7 @@ to:
     await App.post(`/api/years/${currentYearKey}/wages`, { member_id: acc, wages, gross_wages, ncp_days, higher_epf_ee, higher_epf_er, pohw, pohw_additional_1_16 });
 ```
 
-- [ ] **Step 6: Remove `age58`/`age_crosses_58` from the bulk table's state and rendering**
+- [ ] **Step 5: Remove `age58`/`age_crosses_58` from the bulk table's state and rendering**
 
 This is the same mechanical removal repeated across the bulk table's state object,
 init, recalc, checkbox render, and save-payload code — read each of the following
@@ -1818,31 +1801,30 @@ editing, since Task 7/earlier tasks don't touch this file so drift should be min
 12. Line ~1844: `age_crosses_58: state.age58` → delete this line from the save
     payload object.
 
-- [ ] **Step 7: Live-verify**
+- [ ] **Step 6: Live-verify**
 
 Start the scratch-DB server. Open Monthly Wage Entry:
-1. Single-employee modal: confirm no "Age > 58" checkbox appears anywhere, confirm an
-   employee with no DOB shows the "No DOB on file" note, confirm saving wages still
-   works and the saved EPS figure is correct for a DOB-58+ employee after reload.
+1. Single-employee modal: confirm no "Age > 58" checkbox appears anywhere, confirm
+   saving wages still works and the saved EPS figure is correct for a DOB-58+
+   employee after reload.
 2. Bulk table: confirm no "Age > 58" checkbox appears in any row, confirm saving
    still works, confirm reloading the page after save shows the correct EPS=0 for a
    58+ employee (proving the server-side number is right even though the live
    pre-save preview no longer estimates it).
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add webapp/js/wages.js
-git commit -m "feat(wages): remove manual Age > 58 checkbox, add no-DOB warning
+git commit -m "feat(wages): remove manual Age > 58 checkbox
 
 Age-58 EPS cutover is DOB-driven now (see epf_engine.py), so the
 manual per-year checkbox in both the single-employee modal and the
-bulk table is gone, along with all its state plumbing. Added a
-non-blocking 'No DOB on file' note in the employee-details panel.
-The bulk table's live pre-save preview no longer estimates age-58
-zeroing client-side (would be a third reimplementation of the
-month-boundary rule) -- the real number is still correct once saved
-and the page reloads, which is what actually matters.
+bulk table is gone, along with all its state plumbing. The bulk
+table's live pre-save preview no longer estimates age-58 zeroing
+client-side (would be a third reimplementation of the month-boundary
+rule) -- the real number is still correct once saved and the page
+reloads, which is what actually matters.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 ```
@@ -2008,16 +1990,16 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 
 ---
 
-### Task 10: Reports UI cleanup + ECR-generation pre-flight no-DOB warning
+### Task 10: Reports UI cleanup — drop the dead `age_crosses_58` flag display
+
+No pre-flight ECR warning is added (see the spec's round-2 resolution — DOB stays
+friction-free everywhere, including at ECR-generation time).
 
 **Files:**
-- Modify: `webapp/js/reports.js` (~line 104, and the ECR text file generation trigger)
-- Modify: `webapp/app.py` (the ECR generation endpoint(s) reached from `reports.js`)
+- Modify: `webapp/js/reports.js` (~line 104)
 
 **Interfaces:**
-- Consumes: `eps_zero_months`/no-DOB detection is not needed here — this task adds a
-  simple pre-flight check reading `MasterEmployee.dob` directly for the employees
-  about to be included in the ECR file.
+- Consumes: nothing new.
 
 - [ ] **Step 1: Remove the dead flag line in `reports.js`**
 
@@ -2028,93 +2010,24 @@ Change (~line 104):
 Delete this line (the `age_crosses_58` key no longer exists in the wage-history
 response as of Task 5 Step 7).
 
-- [ ] **Step 2: Investigate the exact ECR-generation call path in `reports.js`**
+- [ ] **Step 2: Live-verify**
 
-Grep `reports.js` for `/ecr` and for the function that runs when the "Generate ECR"
-button is clicked. Determine: (a) does the UI call any endpoint *before* the actual
-file-download request (a preview/confirm step), or does clicking the button go
-straight to a file download? (b) what is the exact URL and HTTP method of the file-
-download endpoint itself (already seen once in Task 4's test as
-`GET /api/reports/{year_key}/ecr/{month_idx}`, confirm this is still accurate). Write
-down both answers before Step 3 — they determine whether Step 3 adds a new endpoint
-or extends an existing one.
+Start the scratch-DB server. Open Reports → an employee's wage-history popup for a
+year that previously had `age_crosses_58` set. Confirm the popup renders correctly
+with no leftover blank flag text or JS error.
 
-- [ ] **Step 3: Write the failing test for the ECR no-DOB pre-flight warning**
-
-Using Step 2's findings, target the actual pre-flight/preview endpoint (existing or
-new). Append to `webapp/tests/test_eps_eligibility_engine.py`:
-
-```python
-def test_ecr_generation_response_lists_employees_with_no_dob(consultant_a):
-    """Pre-flight visibility: the ECR generation response should surface which
-    employees in this month have no DOB on file, since that's exactly the gap that
-    produced the original RFE errors -- catching it here is higher-value than only
-    discovering it after an EPFO portal rejection."""
-    res = consultant_a.post("/api/establishments", json={
-        "coverage_date": "01-04-2020", "code": "ECRWARN1", "name": "ECR Warn Test Co",
-    })
-    assert res.status_code == 200, res.text
-    consultant_a.set_establishment(res.json()["establishment"]["id"])
-    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
-    consultant_a.post("/api/employees", json={
-        "member_id": "ECRW001", "name": "No DOB Employee", "uan": "100900000006",
-    })
-    res = consultant_a.post("/api/years/2026-27/wages", json={
-        "member_id": "ECRW001", "wages": [20000.0] + [0.0] * 11,
-    })
-    assert res.status_code == 200, res.text
-
-    res = consultant_a.get("/api/reports/2026-27/ecr/0?format=json")
-    if res.status_code == 404:
-        pytest.skip("Adjust to the actual pre-flight-metadata endpoint reports.js calls before generating the ECR download -- read reports.js to find it.")
-```
-
-This test is intentionally a starting scaffold, not a finished assertion — before
-implementing, read `webapp/js/reports.js`'s ECR-generation code path to find exactly
-which endpoint (if any) is called *before* the actual file download to show a
-confirmation/preview step, since that's the natural place for a pre-flight warning
-(a raw file-download endpoint has no good place to surface a warning banner). If no
-such pre-flight endpoint currently exists, this step becomes: add one (a small
-`GET .../ecr/{month_idx}/preflight`-style JSON endpoint returning
-`{"no_dob_members": [{"member_id", "name"}]}`), call it from `reports.js` right
-before the actual download link is triggered, and render its result as a dismissible
-warning banner above the download button when the list is non-empty. Rewrite this
-test to assert against whatever endpoint/shape is actually implemented.
-
-- [ ] **Step 4: Implement the pre-flight check and banner**
-
-Using Step 2's findings — implement the JSON pre-flight endpoint if none exists,
-following the existing RBAC/establishment-scoping pattern every other
-`/api/reports/...` endpoint in `webapp/app.py` already uses, i.e.
-`Depends(get_active_establishment)` + `require_permission(db, current_user, "forms.download")`.
-
-- [ ] **Step 5: Run the test, iterate until it passes**
-
-Run: `pytest webapp/tests/test_eps_eligibility_engine.py::test_ecr_generation_response_lists_employees_with_no_dob -v`
-
-- [ ] **Step 6: Live-verify**
-
-Start the scratch-DB server. Open Reports → ECR Text File Generator for a month that
-includes an employee with no DOB. Confirm the warning banner appears before/during
-generation, listing that employee, and that generation still succeeds (this is a
-warning, not a block).
-
-- [ ] **Step 7: Run the full suite**
+- [ ] **Step 3: Run the full suite**
 
 Run: `pytest webapp/tests/ -v`
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add webapp/js/reports.js webapp/app.py webapp/tests/test_eps_eligibility_engine.py
-git commit -m "feat(reports): ECR generation warns about employees with no DOB on file
+git add webapp/js/reports.js
+git commit -m "chore(reports): drop the dead age_crosses_58 flag display
 
-Pre-flight check surfaces any employee in the month/batch about to
-be exported with no DOB -- the exact gap that produced the original
-RFE-21/28/29/30/31 EPFO portal errors -- as a non-blocking banner
-before/during ECR text generation, catching it before a portal
-rejection instead of after. Also dropped the dead '(Age 58+ applied)'
-flag from the wage-history popup (the field it read no longer exists).
+The wage-history popup's '(Age 58+ applied)' flag read a field that
+no longer exists as of the eps-eligibility-engine backend changes.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>"
 ```
@@ -2381,13 +2294,14 @@ free local port — never the real `.env` `DATABASE_URL` (production Neon), per
 
 - [ ] **Step 3: Walk through every UI change from Tasks 7-10 in the Browser tool**
 
-1. Employee Master: add an employee with DOB required, EPS Member checkbox, no-DOB
-   badge on an existing employee.
-2. Monthly Wage Entry: no Age > 58 checkbox anywhere, no-DOB note shows, saved EPS
-   figures correct on reload for a 58+ employee.
+1. Employee Master: add an employee with DOB left blank (confirm no block/toast),
+   confirm the EPS Member checkbox saves correctly, confirm the passive "No DOB"
+   badge shows on an employee with none.
+2. Monthly Wage Entry: no Age > 58 checkbox anywhere, saved EPS figures correct on
+   reload for a 58+ employee.
 3. Monthly Wage Entry Batch: live preview correctly shows EPS = 0 for a 58+ employee
    without saving first (proves server-computed `eps_zero_months` is wired through).
-4. Reports → ECR generation: no-DOB pre-flight warning appears for an affected month.
+4. Reports: wage-history popup renders cleanly with no leftover age-flag text.
 5. Download an actual ECR text file for a 58+ employee and a `eps_member=False`
    employee, open the raw file, confirm EPS Wages/EPS Contribution fields are `0` in
    both cases (matches the original RFE-21/28/29/30/31 failure fields exactly).
