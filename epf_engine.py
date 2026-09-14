@@ -76,7 +76,7 @@ def calc_age_years(dob_text: str, as_of: date = None):
     if not dob_text:
         return None
     try:
-        dob = datetime.strptime(dob_text, "%d/%m/%Y").date()
+        dob = datetime.strptime(dob_text, "%d-%m-%Y").date()
     except ValueError:
         return None
     as_of = as_of or date.today()
@@ -805,10 +805,10 @@ class MasterEmployee:
     name: str = ""
     father_name: str = ""
     uan: str = ""         # Universal Account Number
-    dob: str = ""        # Date of Birth, DD/MM/YYYY
+    dob: str = ""        # Date of Birth, DD-MM-YYYY
     sex: str = ""         # "Male" or "Female"
-    doj: str = ""         # Date of Joining, DD/MM/YYYY
-    doe: str = ""         # Date of Exit, DD/MM/YYYY
+    doj: str = ""         # Date of Joining, DD-MM-YYYY
+    doe: str = ""         # Date of Exit, DD-MM-YYYY
     reason_leaving: str = ""  # one of REASONS_FOR_LEAVING
     serial_no: int = 0    # SL No. -- the employee list sorts by THIS, not by member_id
     relationship: str = "" # Relationship to Father/Husband
@@ -2542,7 +2542,7 @@ def employees_joined_in_month(project: "Project", cal_year: int, cal_month: int,
         if not m.doj:
             continue
         try:
-            d = datetime.strptime(m.doj, "%d/%m/%Y").date()
+            d = datetime.strptime(m.doj, "%d-%m-%Y").date()
         except ValueError:
             continue
         if d.year == cal_year and d.month == cal_month:
@@ -2561,7 +2561,7 @@ def employees_left_in_month(project: "Project", cal_year: int, cal_month: int, m
         if not m.doe:
             continue
         try:
-            d = datetime.strptime(m.doe, "%d/%m/%Y").date()
+            d = datetime.strptime(m.doe, "%d-%m-%Y").date()
         except ValueError:
             continue
         if d.year == cal_year and d.month == cal_month:
