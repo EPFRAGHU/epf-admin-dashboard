@@ -56,3 +56,37 @@ def test_employees_left_in_month_parses_hyphen_doe():
     matches = employees_left_in_month(project, 2026, 9)
     assert len(matches) == 1
     assert matches[0].member_id == "M2"
+
+
+from epf_engine import MasterEmployee, Project
+
+
+def test_master_employee_eps_member_defaults_true():
+    m = MasterEmployee(member_id="M1", name="Test")
+    assert m.eps_member is True
+
+
+def test_upsert_master_sets_eps_member_false():
+    p = Project()
+    p.set_establishment("EST1", "Test Co", "Addr")
+    p.upsert_master("M1", "Test Employee", eps_member=False)
+    assert p.master["M1"].eps_member is False
+
+
+def test_upsert_master_eps_member_defaults_true_when_not_passed():
+    p = Project()
+    p.set_establishment("EST1", "Test Co", "Addr")
+    p.upsert_master("M1", "Test Employee")
+    assert p.master["M1"].eps_member is True
+
+
+def test_build_employees_for_year_carries_eps_member_and_year_from():
+    p = Project()
+    p.set_establishment("EST1", "Test Co", "Addr")
+    p.upsert_master("M1", "Test Employee", eps_member=False)
+    p.years["2026-2027"] = __import__("epf_engine").YearRecord(year_from="2026", year_to="2027")
+    p.upsert_entry("2026-2027", "M1", [1000.0] * 12)
+    emps = p.build_employees_for_year("2026-2027")
+    assert len(emps) == 1
+    assert emps[0].eps_member is False
+    assert emps[0].year_from == "2026"

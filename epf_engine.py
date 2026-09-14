@@ -647,7 +647,10 @@ class Employee:
     higher_epf_er: bool = False
     pohw: bool = False                    # Pension on Higher Wages -- see month_rows()
     pohw_additional_1_16: bool = False    # optional add-on within PoHW, off by default -- see month_rows()
-    age_crosses_58: bool = False
+    eps_member: bool = True               # False = never contributes to EPS, independent of age (RFE-21)
+    year_from: str = ''                   # set once at construction -- lets month_rows() resolve each
+                                           # wage-month index to a real calendar date for the age-58 check
+                                           # without every caller having to pass it in separately
     dob: str = ''
     sex: str = ''
     doj: str = ''
@@ -822,6 +825,7 @@ class MasterEmployee:
     higher_epf_er: bool = False
     pohw: bool = False
     pohw_additional_1_16: bool = False
+    eps_member: bool = True  # False = never contributes to EPS/Pension, independent of age (RFE-21)
     branch_id: int = 0
     division_id: Optional[int] = None
     unit_id: Optional[int] = None
@@ -846,6 +850,7 @@ class MasterEmployee:
             higher_epf_er=d.get("higher_epf_er", False),
             pohw=d.get("pohw", False),
             pohw_additional_1_16=d.get("pohw_additional_1_16", False),
+            eps_member=d.get("eps_member", True),
             branch_id=d.get("branch_id", 0) or 0,
             division_id=d.get("division_id"),
             unit_id=d.get("unit_id"))
@@ -867,7 +872,6 @@ class YearEntry:
     wages: List[int] = field(default_factory=lambda: [0] * 12)  # APR..MAR
     gross_wages: List[int] = field(default_factory=lambda: [0] * 12)
     ncp_days: List[int] = field(default_factory=lambda: [0] * 12)
-    age_crosses_58: bool = False
 
     def to_dict(self):
         return asdict(self)
@@ -875,6 +879,7 @@ class YearEntry:
     @staticmethod
     def from_dict(d):
         d.pop("higher_epf", None)  # Safe cleanup
+        d.pop("age_crosses_58", None)  # Removed -- EPS-58 cutover is now DOB-driven, see is_eps_zero_for_month()
         if "account_no" in d and "member_id" not in d:
             d["member_id"] = normalize_member_id(d.pop("account_no"))
         d["member_id"] = normalize_member_id(d.get("member_id", ""))
@@ -995,7 +1000,7 @@ class Project:
                        doe="", reason_leaving="", serial_no=None, relationship="", marital_status="",
                        mobile="", email="", aadhaar="", bank_account="", ifsc="",
                        higher_epf_ee=False, higher_epf_er=False,
-                       pohw=False, pohw_additional_1_16=False,
+                       pohw=False, pohw_additional_1_16=False, eps_member=True,
                        branch_id=None, division_id=None, unit_id=None):
         member_id = normalize_member_id(member_id)
 
@@ -1033,6 +1038,7 @@ class Project:
             m.higher_epf_er = higher_epf_er
             m.pohw = pohw
             m.pohw_additional_1_16 = pohw_additional_1_16
+            m.eps_member = eps_member
             m.branch_id = branch_id
             m.division_id = division_id
             m.unit_id = unit_id
@@ -1047,6 +1053,7 @@ class Project:
                                                        bank_account=bank_account, ifsc=ifsc,
                                                        higher_epf_ee=higher_epf_ee, higher_epf_er=higher_epf_er,
                                                        pohw=pohw, pohw_additional_1_16=pohw_additional_1_16,
+                                                       eps_member=eps_member,
                                                        branch_id=branch_id, division_id=division_id, unit_id=unit_id)
 
     # ---- org structure: Branch -> Division -> Unit ----
@@ -1229,7 +1236,7 @@ class Project:
         return None
 
 
-    def upsert_entry(self, year_key, member_id, wages, gross_wages=None, ncp_days=None, age_crosses_58=False,
+    def upsert_entry(self, year_key, member_id, wages, gross_wages=None, ncp_days=None,
                       higher_epf_ee=None, higher_epf_er=None, pohw=None, pohw_additional_1_16=None):
         yr = self.years[year_key]
         member_id = normalize_member_id(member_id)
@@ -1254,9 +1261,8 @@ class Project:
                 e.wages = wages
                 e.gross_wages = gross_wages
                 e.ncp_days = ncp_days
-                e.age_crosses_58 = age_crosses_58
                 return
-        yr.entries.append(YearEntry(member_id=member_id, wages=wages, gross_wages=gross_wages, ncp_days=ncp_days, age_crosses_58=age_crosses_58))
+        yr.entries.append(YearEntry(member_id=member_id, wages=wages, gross_wages=gross_wages, ncp_days=ncp_days))
 
     def remove_entry(self, year_key, index):
         del self.years[year_key].entries[index]
@@ -1297,7 +1303,8 @@ class Project:
                                     higher_epf_er=m.higher_epf_er if m else False,
                                     pohw=m.pohw if m else False,
                                     pohw_additional_1_16=m.pohw_additional_1_16 if m else False,
-                                    age_crosses_58=getattr(e, 'age_crosses_58', False),
+                                    eps_member=m.eps_member if m else True,
+                                    year_from=yr.year_from,
                                     dob=dob, sex=sex, doj=doj, doe=doe, reason_leaving=reason_leaving,
                                     branch_id=branch_id, division_id=division_id, unit_id=unit_id))
         return result
