@@ -1,3 +1,4 @@
+import os
 from datetime import date
 
 from epf_engine import (
@@ -194,3 +195,175 @@ def test_ecr_generation_respects_dob_driven_eps_cutover(consultant_a, superadmin
     # UAN#~#Name#~#Gross#~#EPF#~#EPS#~#EDLI#~#EE_Share#~#EPS_Share#~#ER_EPF#~#NCP#~#Refund
     assert fields[4] == "0"   # EPS Wages must be 0
     assert fields[7] == "0"   # EPS Contribution Remitted must be 0
+
+
+def _save_58plus_employee_wages(test_db, est_id, member_id, year_key="2026-27",
+                                 wages=None):
+    """Shared setup for the display-recomputation tests below: loads the
+    establishment's Project, writes one month of wages directly via
+    Project.upsert_entry(), and saves it back -- the same workaround
+    test_ecr_generation_respects_dob_driven_eps_cutover uses to bypass the
+    pre-existing (Task 6) bug in POST /api/years/{key}/wages."""
+    import json
+    from epf_engine import Project
+    from webapp.database import Establishment
+    from webapp.auth import save_establishment_project
+
+    est_obj = test_db.query(Establishment).filter(Establishment.id == est_id).first()
+    assert est_obj is not None
+    project = Project()
+    if est_obj.data:
+        project.load_from_dict(json.loads(est_obj.data))
+    project.upsert_entry(year_key, member_id, wages or ([15000.0] + [0.0] * 11))
+    save_establishment_project(test_db, est_obj, project)
+
+
+def test_dashboard_monthly_stats_eps_wage_respects_dob_cutover(consultant_a, test_db):
+    """The Dashboard's monthly_stats independently recomputes an eps_wages total for
+    display -- must also zero for a 58+ employee, not just month_rows()'s own
+    contribution figures. Response shape confirmed by reading the real endpoint:
+    year_stats[i]["monthly_stats"][i]["eps_wages"] (plural), month label like "Mar 2026"."""
+    res = consultant_a.post("/api/establishments", json={
+        "coverage_date": "01-04-2020", "code": "DASHDOB01", "name": "Dash DOB Test Co",
+    })
+    assert res.status_code == 200, res.text
+    est_id = res.json()["establishment"]["id"]
+    consultant_a.set_establishment(est_id)
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    res = consultant_a.post("/api/employees", json={
+        "member_id": "DASHD001", "name": "Dash DOB Test Employee", "uan": "100900000002",
+        "dob": "01-01-1950",
+    })
+    assert res.status_code == 200, res.text
+
+    _save_58plus_employee_wages(test_db, est_id, "DASHD001")
+
+    res = consultant_a.get("/api/dashboard")
+    assert res.status_code == 200, res.text
+    year_stats = next(y for y in res.json()["year_stats"] if y["key"] == "2026-27")
+    stats = next(m for m in year_stats["monthly_stats"] if m["month"].startswith("Mar"))
+    assert stats["eps_wages"] == 0
+
+
+def test_dashboard_month_employees_eps_wage_respects_dob_cutover(consultant_a, test_db):
+    """The per-month employee-detail listing (GET /api/dashboard/month_employees/...)
+    independently recomputes eps_wages the same way the dashboard totals do -- must
+    also zero for a 58+ employee."""
+    res = consultant_a.post("/api/establishments", json={
+        "coverage_date": "01-04-2020", "code": "MEMPDOB01", "name": "Month Employees DOB Test Co",
+    })
+    assert res.status_code == 200, res.text
+    est_id = res.json()["establishment"]["id"]
+    consultant_a.set_establishment(est_id)
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    res = consultant_a.post("/api/employees", json={
+        "member_id": "MEMPD001", "name": "Month Employees DOB Test Employee", "uan": "100900000003",
+        "dob": "01-01-1950",
+    })
+    assert res.status_code == 200, res.text
+
+    _save_58plus_employee_wages(test_db, est_id, "MEMPD001")
+
+    res = consultant_a.get("/api/dashboard/month_employees/2026-27/0")  # month_idx 0 = March
+    assert res.status_code == 200, res.text
+    rows = res.json()["employees"]
+    assert len(rows) == 1
+    assert rows[0]["eps_wages"] == 0
+
+
+def test_remittances_year_totals_eps_wage_respects_dob_cutover(consultant_a, test_db):
+    """The year-totals loop backing GET /api/years/{key}/remittances independently
+    recomputes an eps_wages_total for display -- must also zero for a 58+ employee."""
+    res = consultant_a.post("/api/establishments", json={
+        "coverage_date": "01-04-2020", "code": "REMITDOB01", "name": "Remittances DOB Test Co",
+    })
+    assert res.status_code == 200, res.text
+    est_id = res.json()["establishment"]["id"]
+    consultant_a.set_establishment(est_id)
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    res = consultant_a.post("/api/employees", json={
+        "member_id": "REMITD01", "name": "Remittances DOB Test Employee", "uan": "100900000004",
+        "dob": "01-01-1950",
+    })
+    assert res.status_code == 200, res.text
+
+    _save_58plus_employee_wages(test_db, est_id, "REMITD01")
+
+    res = consultant_a.get("/api/years/2026-27/remittances")
+    assert res.status_code == 200, res.text
+    march_row = res.json()["remittances"][0]  # index 0 = March
+    assert march_row["eps_wages"] == 0
+
+
+def test_wage_history_report_no_longer_exposes_age_crosses_58(consultant_a, test_db):
+    """The wage-history report builder (_build_employee_wage_history_data, used by both
+    the on-screen JSON and PDF endpoints) must not raise AttributeError on the removed
+    emp.age_crosses_58, and must no longer expose an "age_crosses_58" key in its output
+    now that the flag is gone."""
+    res = consultant_a.post("/api/establishments", json={
+        "coverage_date": "01-04-2020", "code": "WHISTDOB01", "name": "Wage History DOB Test Co",
+    })
+    assert res.status_code == 200, res.text
+    est_id = res.json()["establishment"]["id"]
+    consultant_a.set_establishment(est_id)
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    res = consultant_a.post("/api/employees", json={
+        "member_id": "WHISTD01", "name": "Wage History DOB Test Employee", "uan": "100900000005",
+        "dob": "01-01-1950",
+    })
+    assert res.status_code == 200, res.text
+
+    _save_58plus_employee_wages(test_db, est_id, "WHISTD01")
+
+    res = consultant_a.get("/api/reports/employee_wage_history/WHISTD01")
+    assert res.status_code == 200, res.text
+    year_data = res.json()["years"][0]
+    assert "age_crosses_58" not in year_data
+    assert year_data["er_eps_total"] == 0
+
+
+def test_monthly_wage_entry_pdf_eps_zero_for_58_plus_employee(tmp_path):
+    """Direct regression test for pdf_engine.generate_monthly_wage_entry_pdf (Step 8):
+    must not raise AttributeError on the removed emp.age_crosses_58, and must produce
+    a real, non-empty PDF for a 58+ employee whose EPS wage base should be zeroed."""
+    from epf_engine import Project, SCHEME_POST_1997
+    from pdf_engine import generate_monthly_wage_entry_pdf
+
+    p = Project()
+    p.set_establishment("EST1", "PDF Monthly Test Co", "Addr")
+    p.add_year("2026", "2027", scheme=SCHEME_POST_1997)
+    p.upsert_master("M1", "PDF Test Employee", uan="100900000006", dob="01-01-1950")
+    p.upsert_entry("2026-27", "M1", [15000.0] + [0.0] * 11)
+
+    est = p.build_establishment_for_year("2026-27")
+    emps = p.build_employees_for_year("2026-27")
+
+    out_path = str(tmp_path / "monthly_wage_entry.pdf")
+    result_path = generate_monthly_wage_entry_pdf(
+        p, est, emps, out_path, month_idx=0, month_abbr="Mar",
+        cal_year=2026, cal_month=3, days_in_month=31,
+    )
+    assert os.path.exists(result_path)
+    assert os.path.getsize(result_path) > 0
+
+
+def test_yearly_wage_checklist_pdf_eps_zero_for_58_plus_employee(tmp_path):
+    """Direct regression test for pdf_engine.generate_yearly_wage_checklist_pdf (Step 9):
+    must not raise AttributeError on the removed emp.age_crosses_58, and must produce
+    a real, non-empty PDF for a 58+ employee whose EPS wage base should be zeroed."""
+    from epf_engine import Project, SCHEME_POST_1997
+    from pdf_engine import generate_yearly_wage_checklist_pdf
+
+    p = Project()
+    p.set_establishment("EST1", "PDF Yearly Test Co", "Addr")
+    p.add_year("2026", "2027", scheme=SCHEME_POST_1997)
+    p.upsert_master("M1", "PDF Test Employee", uan="100900000007", dob="01-01-1950")
+    p.upsert_entry("2026-27", "M1", [15000.0] * 12)
+
+    est = p.build_establishment_for_year("2026-27")
+    emps = p.build_employees_for_year("2026-27")
+
+    out_path = str(tmp_path / "yearly_wage_checklist.pdf")
+    result_path = generate_yearly_wage_checklist_pdf(p, est, emps, out_path)
+    assert os.path.exists(result_path)
+    assert os.path.getsize(result_path) > 0
