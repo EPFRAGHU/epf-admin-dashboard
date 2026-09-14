@@ -143,3 +143,54 @@ def test_month_rows_eps_member_false_zeroes_every_month_regardless_of_age():
                            employer_epf_rate=3.67, employer_eps_rate=8.33)
     for r in rows:
         assert r[5] == 0
+
+
+def test_ecr_generation_respects_dob_driven_eps_cutover(consultant_a, superadmin_session, test_db):
+    """End-to-end: an employee whose DOB makes them 58+ this financial year must show
+    EPS=0 in the actual ECR text file, not just in month_rows() directly. This is the
+    test that would have caught _build_ecr_employees_for_scope() never copying dob
+    over from MasterEmployee.
+
+    Note: wages are set directly via Project.upsert_entry(), not through the PUT /wages
+    API endpoint, to work around a pre-existing bug in that endpoint (Task 6 fix).
+    Superadmin is used for ECR download to bypass subscription fee gating."""
+    import json
+    from epf_engine import Project
+    from webapp.database import Establishment
+    from webapp.auth import save_establishment_project
+
+    # Create establishment through API
+    res = consultant_a.post("/api/establishments", json={
+        "coverage_date": "01-04-2020", "code": "ECRDOB01", "name": "ECR DOB Test Co",
+    })
+    assert res.status_code == 200, res.text
+    est_id = res.json()["establishment"]["id"]
+    consultant_a.set_establishment(est_id)
+
+    # Create year and employee through API
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    res = consultant_a.post("/api/employees", json={
+        "member_id": "ECRD001", "name": "ECR DOB Test Employee", "uan": "100900000001",
+        "dob": "01-01-1950",
+    })
+    assert res.status_code == 200, res.text
+
+    # Add wage data directly to the project (bypassing the broken PUT /wages endpoint)
+    est_obj = test_db.query(Establishment).filter(Establishment.id == est_id).first()
+    assert est_obj is not None
+    project = Project()
+    if est_obj.data:
+        data_dict = json.loads(est_obj.data)
+        project.load_from_dict(data_dict)
+    project.upsert_entry("2026-27", "ECRD001", [30000.0] + [0.0] * 11)
+    save_establishment_project(test_db, est_obj, project)
+
+    # Test ECR generation through API (use superadmin to bypass subscription fee gating)
+    superadmin_session.set_establishment(est_id)
+    res = superadmin_session.get("/api/reports/2026-27/ecr/0")
+    assert res.status_code == 200, res.text
+    ecr_text = res.text
+    fields = ecr_text.strip().split("#~#")
+    # UAN#~#Name#~#Gross#~#EPF#~#EPS#~#EDLI#~#EE_Share#~#EPS_Share#~#ER_EPF#~#NCP#~#Refund
+    assert fields[4] == "0"   # EPS Wages must be 0
+    assert fields[7] == "0"   # EPS Contribution Remitted must be 0

@@ -6076,6 +6076,9 @@ def _build_ecr_employees_for_scope(project: Project, year_record, branch_id=None
             name=master_emp.name,
             father_name=master_emp.father_name,
             uan=master_emp.uan,
+            dob=master_emp.dob,
+            eps_member=master_emp.eps_member,
+            year_from=year_record.year_from,
             branch_id=master_emp.branch_id,
             division_id=master_emp.division_id,
             unit_id=master_emp.unit_id,
@@ -6088,7 +6091,6 @@ def _build_ecr_employees_for_scope(project: Project, year_record, branch_id=None
             emp_obj.higher_epf_er = master_emp.higher_epf_er
             emp_obj.pohw = master_emp.pohw
             emp_obj.pohw_additional_1_16 = master_emp.pohw_additional_1_16
-            emp_obj.age_crosses_58 = getattr(entry, 'age_crosses_58', False)
         else:
             emp_obj.wages = [0.0] * 12
             emp_obj.ncp_days = [0] * 12
@@ -6278,6 +6280,9 @@ async def generate_ecr_zip_by_scope(
                 name=master_emp.name,
                 father_name=master_emp.father_name,
                 uan=master_emp.uan,
+                dob=master_emp.dob,
+                eps_member=master_emp.eps_member,
+                year_from=year_record.year_from,
                 branch_id=master_emp.branch_id,
                 division_id=master_emp.division_id,
                 unit_id=master_emp.unit_id,
@@ -6288,7 +6293,6 @@ async def generate_ecr_zip_by_scope(
                 higher_epf_er=master_emp.higher_epf_er,
                 pohw=master_emp.pohw,
                 pohw_additional_1_16=master_emp.pohw_additional_1_16,
-                age_crosses_58=getattr(entry, 'age_crosses_58', False) if entry else False
             )
             scope_emps[key][1].append(emp_obj)
 
