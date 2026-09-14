@@ -66,10 +66,17 @@ Investigation (code-reading only, no production data touched) found:
    to parse `DD-MM-YYYY` (matching what's actually stored), not `DD/MM/YYYY`. This is a
    prerequisite for #1 above (the whole age-58 design is built on `calc_age_years()`
    actually working) and also fixes Form 5/Form 10 generation as a side effect.
-4. **`dob` becomes a required field** in Employee Master — add form, edit form, and the
-   Excel bulk-import path, backend validation included — matching how Member ID/Name are
-   already required. (Existing employees already saved without a DOB are not
-   retroactively touched by this alone; see Migration/rollout.)
+4. **`dob` becomes a required field on the manual Add/Edit Employee forms only** —
+   matching how Member ID/Name are already required there. **Excel bulk import stays
+   lenient and does NOT require DOB** (user's explicit call, 2026-09-14): a row with a
+   blank DOB still imports, same as every other already-optional import column
+   (father_name, sex, etc.) — real EPFO-portal exports often don't carry it, and losing
+   the rest of that employee's data over one missing field is worse than importing it
+   and catching the gap later. The DOB/age-58/eps-member check instead happens **at the
+   point it actually matters**: wage entry and ECR generation (see new section below),
+   not at data-entry time. (Existing employees already saved without a DOB — whether via
+   import or old manual entry — are not retroactively touched by any of this; see
+   Migration/rollout.)
 
 Confirmed with the user (2026-09-14): pure DOB-driven automation, no manual override
 checkbox retained (see "What is explicitly NOT changing" for why); DOB required, not
@@ -161,10 +168,21 @@ age-58 cutover rule satisfies both EPFO checks without separate logic.
 
 - **Employee Master** (`employees.js`): new "EPS Member" checkbox in the add/edit
   forms, default checked. A small badge (matching the existing "58+" badge pattern) on
-  any employee row where it's unchecked. `Date of Birth` moves into the same required-
-  field validation as Member ID/Name (add form, edit form, and the Excel-import
-  row-level validation — a row with no parseable DOB is rejected with a warning, same
-  pattern as the existing invalid-UAN rejection).
+  any employee row where it's unchecked, and a second small badge/indicator for "No DOB
+  on file" so it's visible without having to go elsewhere to discover it. `Date of
+  Birth` becomes required on the **manual** add form and edit form only — the Excel
+  import path is explicitly exempted (see "What changes" #4) and does not validate or
+  require it.
+- **Monthly Wage Entry / Wage Entry Batch** (`wages.js`, `wage-entry-batch.js`): when
+  saving wages for a member with no DOB on file, show a non-blocking warning ("No DOB on
+  file — age-58 EPS cutover can't be auto-checked for this employee") rather than
+  silently proceeding. Doesn't block the save (wage entry is not the place to force a
+  Employee Master edit) — just makes the gap visible at the moment it's actually
+  relevant, instead of only surfacing as an EPFO ECR rejection days later.
+- **ECR text file generation** (`reports.js` + the `/api/reports/.../ecr` endpoint):
+  before/alongside generating the file, list any employee in that month/batch with no
+  DOB on file as a pre-flight warning — the exact failure mode that produced the RFE
+  errors this design exists to fix, so this is the highest-value place to catch it.
 - **Monthly Wage Entry** (`wages.js`): remove the "Age > 58 (EPS = 0)" checkbox from
   both the single-employee modal and the bulk-table row, and its `age_crosses_58` /
   `age58` state plumbing (`bulkTableState`, save payload, the read-side flag badge).
@@ -233,17 +251,25 @@ code stops reading them.
 - `eps_member=False` zeroes EPS every month regardless of age.
 - Full existing suite (205 tests as of this design) must still pass; any test
   asserting the old `age_crosses_58` behavior is migrated to the new fields.
+- Excel import with a blank-DOB row: confirm the employee still imports fully (not
+  rejected), and that the resulting record shows the "No DOB on file" indicator.
 - Live verification on a throwaway scratch-DB copy via the Claude_Browser tool, per
   this project's established pattern — Employee Master's new EPS Member checkbox and
-  required-DOB validation, both wage-entry pages with the old checkbox gone, and a
-  generated ECR/Excel/PDF correctly zeroing EPS for both a DOB-58+ employee and an
-  `eps_member=False` employee.
+  manual-form required-DOB validation, both wage-entry pages with the old checkbox
+  gone and the new no-DOB warning showing for an affected employee, ECR generation's
+  pre-flight no-DOB warning, and a generated ECR/Excel/PDF correctly zeroing EPS for
+  both a DOB-58+ employee and an `eps_member=False` employee.
 
 ## Resolved during design review
 
-- **DOB required-ness**: originally proposed keeping `dob` optional with a warning;
-  user confirmed (2026-09-14) to make it required instead, matching Member ID/Name.
-  Existing employees saved before this change without a DOB are not retroactively
-  edited by this alone — they simply can't be re-saved without adding one going
-  forward. Combined with the migration audit below, this closes the missing-DOB risk
-  for any employee currently depended on for EPS-zero correctness.
+- **DOB required-ness**: originally proposed keeping `dob` optional everywhere with a
+  warning. User's final call (2026-09-14, two rounds): required on the **manual**
+  Add/Edit Employee forms (matching Member ID/Name), but **Excel bulk import stays
+  lenient** — a blank-DOB row still imports in full, since real EPFO-portal exports
+  often lack it and the priority there is not losing the rest of that employee's data.
+  The actual age-58/EPS-member check happens downstream, at wage-entry and
+  ECR-generation time (see UI changes), which is where the original RFE errors were
+  actually caught in the first place. Existing employees saved without a DOB — via
+  import or old manual entry — are not retroactively edited by any of this; they
+  simply can't be re-saved via the manual form without adding one going forward, and
+  the wage-entry/ECR warnings catch them in the meantime.
