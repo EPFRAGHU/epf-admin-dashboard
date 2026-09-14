@@ -3363,6 +3363,48 @@ async def admin_get_advance_credit(
     }
 
 
+@app.get("/api/admin/audit/eps-58-dob-check")
+async def audit_eps_58_dob_check(
+    current_user: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Read-only, one-off pre-merge audit: find every establishment/member that
+    currently relies on the OLD manual age_crosses_58=True flag for a financial year
+    and has no (or an unparseable) DOB on file -- these are the members whose EPS
+    would wrongly un-zero once the DOB-driven cutover replaces the old flag. Reads
+    raw stored JSON directly since the live data model no longer has this field."""
+    at_risk = []
+    establishments = db.query(Establishment).all()
+    for est in establishments:
+        try:
+            data = json.loads(est.data)
+        except (TypeError, ValueError):
+            continue
+        master = data.get("master", {})
+        for year_key, year_data in (data.get("years") or {}).items():
+            for entry in (year_data.get("entries") or []):
+                if not entry.get("age_crosses_58"):
+                    continue
+                member_id = entry.get("member_id", "")
+                m = master.get(member_id, {})
+                dob = (m.get("dob") or "").strip()
+                if not dob:
+                    issue = "missing_dob"
+                else:
+                    issue = None if calc_age_years(dob) is not None else "unparseable_dob"
+                if issue:
+                    at_risk.append({
+                        "establishment_id": est.id,
+                        "establishment_code": data.get("code", ""),
+                        "establishment_name": data.get("name", ""),
+                        "member_id": member_id,
+                        "member_name": m.get("name", ""),
+                        "year_key": year_key,
+                        "issue": issue,
+                    })
+    return {"at_risk": at_risk}
+
+
 def _route_cashfree_confirmation(db: Session, order_id: str, payment_ref: str, source_label: str) -> None:
     """Shared by both webhook branches below (Payment Links and the Orders-API
     fallback) -- routes a confirmed-paid order_id to whichever table it belongs to,

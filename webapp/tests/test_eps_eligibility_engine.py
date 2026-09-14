@@ -423,3 +423,46 @@ def test_yearly_wage_checklist_pdf_eps_zero_for_58_plus_employee(tmp_path):
     result_path = generate_yearly_wage_checklist_pdf(p, est, emps, out_path)
     assert os.path.exists(result_path)
     assert os.path.getsize(result_path) > 0
+
+
+import json
+
+
+def test_eps_58_dob_audit_flags_missing_dob(consultant_a, superadmin_session, test_db):
+    from webapp.database import Establishment
+
+    res = consultant_a.post("/api/establishments", json={
+        "coverage_date": "01-04-2020", "code": "AUDIT001", "name": "Audit Test Co",
+    })
+    assert res.status_code == 200, res.text
+    est_id = res.json()["establishment"]["id"]
+    consultant_a.set_establishment(est_id)
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={
+        "member_id": "AUDIT01", "name": "At Risk Employee", "uan": "100900000007",
+    })
+    consultant_a.post("/api/years/2026-27/wages", json={
+        "member_id": "AUDIT01", "wages": [20000.0] + [0.0] * 11,
+    })
+
+    # Simulate a pre-existing establishment that still has the OLD age_crosses_58=True
+    # flag stored in its raw JSON, with no DOB on the member -- exactly the at-risk
+    # case this audit exists to catch. Written directly to raw storage since the
+    # current Project/YearEntry model no longer has this field to set through the API.
+    est = test_db.query(Establishment).filter(Establishment.id == est_id).first()
+    data = json.loads(est.data)
+    data["years"]["2026-27"]["entries"][0]["age_crosses_58"] = True
+    est.data = json.dumps(data)
+    test_db.commit()
+
+    res = superadmin_session.get("/api/admin/audit/eps-58-dob-check")
+    assert res.status_code == 200, res.text
+    at_risk = res.json()["at_risk"]
+    match = next((r for r in at_risk if r["member_id"] == "AUDIT01"), None)
+    assert match is not None, f"expected AUDIT01 flagged, got {at_risk}"
+    assert match["issue"] == "missing_dob"
+
+
+def test_eps_58_dob_audit_requires_superadmin(consultant_a):
+    res = consultant_a.get("/api/admin/audit/eps-58-dob-check")
+    assert res.status_code == 403
