@@ -59,6 +59,62 @@ def test_employees_left_in_month_parses_hyphen_doe():
     assert matches[0].member_id == "M2"
 
 
+def test_add_employee_accepts_eps_member_false(consultant_a):
+    res = consultant_a.post("/api/establishments", json={
+        "coverage_date": "01-04-2020", "code": "EPSM0001", "name": "EPS Member Test Co",
+    })
+    assert res.status_code == 200, res.text
+    consultant_a.set_establishment(res.json()["establishment"]["id"])
+    res = consultant_a.post("/api/employees", json={
+        "member_id": "EPSM001", "name": "Non Member Employee", "uan": "100900000003",
+        "eps_member": False,
+    })
+    assert res.status_code == 200, res.text
+    emps = consultant_a.get("/api/employees").json()["employees"]
+    emp = next(e for e in emps if e["member_id"] == "EPSM001")
+    assert emp["eps_member"] is False
+
+
+def test_add_employee_eps_member_defaults_true(consultant_a):
+    res = consultant_a.post("/api/establishments", json={
+        "coverage_date": "01-04-2020", "code": "EPSM0002", "name": "EPS Member Default Co",
+    })
+    assert res.status_code == 200, res.text
+    consultant_a.set_establishment(res.json()["establishment"]["id"])
+    res = consultant_a.post("/api/employees", json={
+        "member_id": "EPSM002", "name": "Default Member Employee", "uan": "100900000004",
+    })
+    assert res.status_code == 200, res.text
+    emps = consultant_a.get("/api/employees").json()["employees"]
+    emp = next(e for e in emps if e["member_id"] == "EPSM002")
+    assert emp["eps_member"] is True
+
+
+def test_get_wages_returns_eps_zero_months_not_age_crosses_58(consultant_a):
+    res = consultant_a.post("/api/establishments", json={
+        "coverage_date": "01-04-2020", "code": "EPSM0003", "name": "EPS Zero Months Co",
+    })
+    assert res.status_code == 200, res.text
+    consultant_a.set_establishment(res.json()["establishment"]["id"])
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={
+        "member_id": "EPSM003", "name": "Boundary Employee", "uan": "100900000005",
+        "dob": "15-06-1968",
+    })
+    res = consultant_a.post("/api/years/2026-27/wages", json={
+        "member_id": "EPSM003", "wages": [75000.0] * 12,
+    })
+    assert res.status_code == 200, res.text
+
+    data = consultant_a.get("/api/years/2026-27/wages").json()
+    emp = next(e for e in data["employees"] if e["member_id"] == "EPSM003")
+    assert "age_crosses_58" not in emp
+    assert emp["eps_member"] is True
+    assert len(emp["eps_zero_months"]) == 12
+    assert emp["eps_zero_months"][3] is False  # June -- birthday month, still EPS
+    assert emp["eps_zero_months"][4] is True   # July -- zero from here
+
+
 from epf_engine import MasterEmployee, Project
 
 

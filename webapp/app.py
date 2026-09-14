@@ -1102,6 +1102,7 @@ class EmployeeIn(BaseModel):
     higher_epf_er: bool = False
     pohw: bool = False
     pohw_additional_1_16: bool = False
+    eps_member: bool = True
     branch_id: Optional[int] = None
     division_id: Optional[int] = None
     unit_id: Optional[int] = None
@@ -1129,7 +1130,6 @@ class WageIn(BaseModel):
     wages: List[float]
     gross_wages: List[float] = []
     ncp_days: List[int] = []
-    age_crosses_58: bool = False
     higher_epf_ee: bool = False
     higher_epf_er: bool = False
     pohw: bool = False
@@ -1140,7 +1140,6 @@ class BulkMonthWageUpdate(BaseModel):
     gross_wage: float
     epf_wage: float
     ncp_days: int
-    age_crosses_58: bool = False
     higher_epf_ee: bool = False
     higher_epf_er: bool = False
     pohw: bool = False
@@ -4892,6 +4891,7 @@ async def list_employees(active: Tuple[Establishment, Project] = Depends(get_act
             "higher_epf_er": m.higher_epf_er,
             "pohw": m.pohw,
             "pohw_additional_1_16": m.pohw_additional_1_16,
+            "eps_member": m.eps_member,
             "branch_id": m.branch_id,
             "division_id": m.division_id,
             "unit_id": m.unit_id,
@@ -4916,7 +4916,7 @@ async def add_employee(
                               d.dob, d.sex, d.doj, d.doe, d.reason_leaving, d.serial_no,
                               d.relationship, d.marital_status, d.mobile, d.email, d.aadhaar,
                               d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er,
-                              d.pohw, d.pohw_additional_1_16,
+                              d.pohw, d.pohw_additional_1_16, d.eps_member,
                               d.branch_id, d.division_id, d.unit_id)
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -4948,7 +4948,7 @@ async def edit_employee(
                               d.dob, d.sex, d.doj, d.doe, d.reason_leaving, d.serial_no,
                               d.relationship, d.marital_status, d.mobile, d.email, d.aadhaar,
                               d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er,
-                              d.pohw, d.pohw_additional_1_16,
+                              d.pohw, d.pohw_additional_1_16, d.eps_member,
                               d.branch_id, d.division_id, d.unit_id)
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -5311,7 +5311,11 @@ async def get_wages(
             "higher_epf_er": emp.higher_epf_er,
             "pohw": emp.pohw,
             "pohw_additional_1_16": emp.pohw_additional_1_16,
-            "age_crosses_58": emp.age_crosses_58,
+            "eps_member": emp.eps_member,
+            "eps_zero_months": [
+                (not emp.eps_member) or is_eps_zero_for_month(emp.dob, i, yr.year_from)
+                for i in range(12)
+            ],
             "months": [{"m": MONTHS[i], "w": int(round(r[0])),
                         "we": int(round(r[1])), "ws": int(round(r[2])), "wt": int(round(r[3])),
                         "ee": int(round(r[4])), "es": int(round(r[5])), "et": int(round(r[6]))}
@@ -5431,7 +5435,7 @@ async def put_wages(
     capped_wages = [min(w, g) for w, g in zip(wages_int, gross_wages)]
     ncp_days = d.ncp_days if d.ncp_days and len(d.ncp_days) == 12 else [0] * 12
 
-    project.upsert_entry(key, d.member_id, capped_wages, gross_wages=gross_wages, ncp_days=ncp_days, age_crosses_58=d.age_crosses_58,
+    project.upsert_entry(key, d.member_id, capped_wages, gross_wages=gross_wages, ncp_days=ncp_days,
                           higher_epf_ee=d.higher_epf_ee, higher_epf_er=d.higher_epf_er,
                           pohw=d.pohw, pohw_additional_1_16=d.pohw_additional_1_16)
     save_establishment_project(db, est_obj, project)
@@ -5516,12 +5520,11 @@ async def bulk_month_wages(
         ncp_days_arr[d.month_idx] = emp_update.ncp_days
         
         project.upsert_entry(
-            key, 
-            emp_update.member_id, 
-            wages_arr, 
-            gross_wages=gross_wages_arr, 
-            ncp_days=ncp_days_arr, 
-            age_crosses_58=emp_update.age_crosses_58,
+            key,
+            emp_update.member_id,
+            wages_arr,
+            gross_wages=gross_wages_arr,
+            ncp_days=ncp_days_arr,
             higher_epf_ee=emp_update.higher_epf_ee,
             higher_epf_er=emp_update.higher_epf_er,
             pohw=emp_update.pohw,
