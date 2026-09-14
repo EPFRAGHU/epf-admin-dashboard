@@ -253,12 +253,11 @@ function renderWageCard(emp) {
             ${emp.doj ? `DOJ: <strong>${App.esc(emp.doj)}</strong>` : ''}
             ${emp.doe ? ` | DOE: <strong>${App.esc(emp.doe)}</strong>` : ''}
           </div>
-          ${emp.higher_epf_ee || emp.higher_epf_er || emp.pohw || emp.age_crosses_58 ? `
+          ${emp.higher_epf_ee || emp.higher_epf_er || emp.pohw ? `
           <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
             ${emp.higher_epf_ee ? `<span class="badge low" style="font-size: 10px;">✓ H.EPF(EE)</span>` : ''}
             ${emp.higher_epf_er ? `<span class="badge low" style="font-size: 10px;">✓ H.EPF(ER)</span>` : ''}
             ${emp.pohw ? `<span class="badge high" style="font-size: 10px;">✓ PoHW${emp.pohw_additional_1_16 ? ' +1.16%' : ''}</span>` : ''}
-            ${emp.age_crosses_58 ? `<span class="badge high" style="font-size: 10px;">✓ Age > 58 (EPS=0)</span>` : ''}
           </div>
           ` : ''}
         </div>
@@ -332,7 +331,6 @@ window.showWageModal = async (emp = null) => {
   const wagesArr = isEdit ? emp.wages : Array(12).fill(0);
   const grossWagesArr = isEdit && emp.gross_wages ? emp.gross_wages : Array(12).fill(0);
   const ncpDaysArr = isEdit && emp.ncp_days ? emp.ncp_days : Array(12).fill(0);
-  const age58Checked = isEdit && emp.age_crosses_58 ? 'checked' : '';
   const r = currentWagesData.rates;
 
   const body = `
@@ -379,9 +377,6 @@ window.showWageModal = async (emp = null) => {
         </label>
         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; white-space:nowrap;">
           <input type="checkbox" id="w-higher-epf-er"> Allow Higher EPF (ER) - PF on Actual
-        </label>
-        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; white-space:nowrap;">
-          <input type="checkbox" id="w-age-58" ${age58Checked}> Age > 58 (EPS = 0)
         </label>
         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; white-space:nowrap;" title="EPS computed on actual (uncapped) wage instead of the ₹15,000 ceiling -- standalone, doesn't need Higher EPF (EE)/(ER) also ticked">
           <input type="checkbox" id="w-pohw"> Pension on Higher Wages (PoHW)
@@ -454,7 +449,6 @@ window.showWageModal = async (emp = null) => {
     let tGross = 0, tWage = 0, tWEpf = 0, tEEpf = 0, tEEps = 0;
     const isHigherEpfEe = document.getElementById('w-higher-epf-ee').checked;
     const isHigherEpfEr = document.getElementById('w-higher-epf-er').checked;
-    const isAge58 = document.getElementById('w-age-58').checked;
     const isPohw = document.getElementById('w-pohw').checked;
     const isPohw116 = document.getElementById('w-pohw-116').checked;
 
@@ -472,14 +466,14 @@ window.showWageModal = async (emp = null) => {
       if (r.e_eps > 0) {
         const workerWageBase = isPohw ? w : (isHigherEpfEe ? w : Math.min(w, ceiling));
         const erTotalWageBase = isPohw ? w : (isHigherEpfEr ? w : Math.min(w, ceiling));
-        const epsWage = isAge58 ? 0 : (isPohw ? w : Math.min(w, ceiling));
+        const epsWage = isPohw ? w : Math.min(w, ceiling);
 
         wEpf = calculateRow(workerWageBase, r.w_epf);
         eEps = calculateRow(epsWage, r.e_eps);
         const totalErContrib = calculateRow(erTotalWageBase, r.w_epf);
         eEpf = Math.max(0, totalErContrib - eEps);
 
-        if (isPohw && isPohw116 && !isAge58 && w > ceiling) {
+        if (isPohw && isPohw116 && w > ceiling) {
           // Redistribution, not additional employer outgo -- moved out of eEpf into
           // eEps, so total employer contribution stays capped at the standard 12% of
           // wage. Mirrors Employee.month_rows() in epf_engine.py.
@@ -544,7 +538,6 @@ window.showWageModal = async (emp = null) => {
   });
   document.getElementById('w-higher-epf-ee').addEventListener('change', updateCalculations);
   document.getElementById('w-higher-epf-er').addEventListener('change', updateCalculations);
-  document.getElementById('w-age-58').addEventListener('change', updateCalculations);
   document.getElementById('w-pohw').addEventListener('change', updateCalculations);
   document.getElementById('w-pohw-116').addEventListener('change', updateCalculations);
   updateCalculations(); // Run once on load
@@ -636,11 +629,9 @@ window.showWageModal = async (emp = null) => {
           document.querySelectorAll('.g-input').forEach((inp, i) => inp.value = existingWageEmp.gross_wages && existingWageEmp.gross_wages[i] != null ? existingWageEmp.gross_wages[i] : '');
           document.querySelectorAll('.w-input').forEach((inp, i) => inp.value = existingWageEmp.wages[i] != null ? existingWageEmp.wages[i] : '');
           document.querySelectorAll('.ncp-input').forEach((inp, i) => inp.value = existingWageEmp.ncp_days && existingWageEmp.ncp_days[i] != null ? existingWageEmp.ncp_days[i] : '');
-          document.getElementById('w-age-58').checked = existingWageEmp.age_crosses_58 || false;
           App.toast('Loaded previously entered wages for ' + App.esc(matchedMaster.name), 'info');
         } else {
           document.querySelectorAll('.g-input, .w-input, .ncp-input').forEach(inp => inp.value = '');
-          document.getElementById('w-age-58').checked = false;
         }
         updateCalculations();
       }
@@ -669,12 +660,11 @@ window.saveWages = async () => {
 
   const higher_epf_ee = document.getElementById('w-higher-epf-ee').checked;
   const higher_epf_er = document.getElementById('w-higher-epf-er').checked;
-  const age_crosses_58 = document.getElementById('w-age-58').checked;
   const pohw = document.getElementById('w-pohw').checked;
   const pohw_additional_1_16 = document.getElementById('w-pohw-116').checked;
 
   try {
-    await App.post(`/api/years/${currentYearKey}/wages`, { member_id: acc, wages, gross_wages, ncp_days, higher_epf_ee, higher_epf_er, age_crosses_58, pohw, pohw_additional_1_16 });
+    await App.post(`/api/years/${currentYearKey}/wages`, { member_id: acc, wages, gross_wages, ncp_days, higher_epf_ee, higher_epf_er, pohw, pohw_additional_1_16 });
     App.toast('Wages saved successfully.');
     App.closeModal();
     App.navigate('wages');
@@ -1366,7 +1356,7 @@ function addEmployeeToBulkWageTable(emp) {
     }
 
     if (!bulkTableState[emp.member_id]) {
-      bulkTableState[emp.member_id] = { g: 0, w: 0, n: 0, higher_ee: false, higher_er: false, pohw: false, pohw116: false, age58: false, isCopied: false };
+      bulkTableState[emp.member_id] = { g: 0, w: 0, n: 0, higher_ee: false, higher_er: false, pohw: false, pohw116: false, isCopied: false };
     }
 
     App.toast(`Added ${emp.name}`, 'success');
@@ -1458,7 +1448,7 @@ window.initBulkTableState = () => {
 
   allEmps.forEach(master => {
     const existingData = currentWagesData.employees.find(e => e.member_id === master.member_id);
-    let g = 0, w = 0, n = 0, higher_ee = false, higher_er = false, pohw = false, pohw116 = false, age58 = false, isCopied = false;
+    let g = 0, w = 0, n = 0, higher_ee = false, higher_er = false, pohw = false, pohw116 = false, isCopied = false;
     let hasCurrent = false;
     let hasPrev = false;
 
@@ -1470,7 +1460,6 @@ window.initBulkTableState = () => {
       higher_er = existingData.higher_epf_er || false;
       pohw = existingData.pohw || false;
       pohw116 = existingData.pohw_additional_1_16 || false;
-      age58 = existingData.age_crosses_58 || false;
 
       if (g > 0 || w > 0) hasCurrent = true;
 
@@ -1509,7 +1498,6 @@ window.initBulkTableState = () => {
         higher_er = currentSessionState.higher_er;
         pohw = currentSessionState.pohw;
         pohw116 = currentSessionState.pohw116;
-        age58 = currentSessionState.age58;
         isCopied = currentSessionState.isCopied;
       }
     }
@@ -1534,7 +1522,7 @@ window.initBulkTableState = () => {
 
     if (shouldShow) {
       window.bulkTableVisibleIds.push(master.member_id);
-      bulkTableState[master.member_id] = { g, w, n, higher_ee, higher_er, pohw, pohw116, age58, isCopied };
+      bulkTableState[master.member_id] = { g, w, n, higher_ee, higher_er, pohw, pohw116, isCopied };
     }
   });
 
@@ -1611,7 +1599,6 @@ window.syncBulkTableState = () => {
       bulkTableState[member_id].higher_er = infoRow.querySelector('.b-higher-er').checked;
       bulkTableState[member_id].pohw = infoRow.querySelector('.b-pohw').checked;
       bulkTableState[member_id].pohw116 = infoRow.querySelector('.b-pohw-116').checked;
-      bulkTableState[member_id].age58 = infoRow.querySelector('.b-age58').checked;
       // Clear isCopied once it's rendered and synced, to avoid showing the badge forever if edited
       bulkTableState[member_id].isCopied = false;
     }
@@ -1642,8 +1629,8 @@ window.renderMonthlyTable = () => {
   const sliced = allVisibleEmps.slice(start, start + BULK_PAGE_SIZE);
 
   sliced.forEach((master, idx) => {
-    const state = bulkTableState[master.member_id] || { g: 0, w: 0, n: 0, higher_ee: false, higher_er: false, pohw: false, pohw116: false, age58: false, isCopied: false };
-    const { g, w, n, higher_ee, higher_er, pohw, pohw116, age58, isCopied } = state;
+    const state = bulkTableState[master.member_id] || { g: 0, w: 0, n: 0, higher_ee: false, higher_er: false, pohw: false, pohw116: false, isCopied: false };
+    const { g, w, n, higher_ee, higher_er, pohw, pohw116, isCopied } = state;
 
     const workDays = Math.max(0, daysInMonth - n);
 
@@ -1665,7 +1652,6 @@ window.renderMonthlyTable = () => {
                 <div style="display:flex; gap:16px; font-size:13px; font-weight:600; color:var(--text1); align-items:center; flex-wrap:wrap;">
                   <label style="cursor:pointer; display:inline-flex; align-items:center; gap:5px;" title="Higher EPF (Employee Share)"><input type="checkbox" class="b-higher-ee" style="width:16px;height:16px;" ${higher_ee ? 'checked' : ''}> Higher EPF (EE)</label>
                   <label style="cursor:pointer; display:inline-flex; align-items:center; gap:5px;" title="Higher EPF (Employer Share)"><input type="checkbox" class="b-higher-er" style="width:16px;height:16px;" ${higher_er ? 'checked' : ''}> Higher EPF (ER)</label>
-                  <label style="cursor:pointer; display:inline-flex; align-items:center; gap:5px;" title="Age > 58 (EPS = 0)"><input type="checkbox" class="b-age58" style="width:16px;height:16px;" ${age58 ? 'checked' : ''}> Age &gt; 58</label>
                   <label style="cursor:pointer; display:inline-flex; align-items:center; gap:5px;" title="Pension on Higher Wages -- EPS on actual (uncapped) wage, standalone"><input type="checkbox" class="b-pohw" style="width:16px;height:16px;" ${pohw ? 'checked' : ''}> PoHW</label>
                   <label style="cursor:pointer; display:inline-flex; align-items:center; gap:5px; color:var(--text2);" title="1.16% of wages above the ceiling, moved from EPF (ER) into EPS -- total employer contribution stays at the standard 12%. Struck down by the Supreme Court (Nov 2022), not collected under current EPFO practice. Off by default."><input type="checkbox" class="b-pohw-116" style="width:16px;height:16px;" ${pohw116 ? 'checked' : ''}> +1.16%</label>
                   <button type="button" class="btn btn-ghost btn-sm" style="font-size:13px; font-weight:700;" onclick="openExitModalForWageRow('${App.esc(master.member_id)}')" title="Set or edit Date of Exit &amp; Reason of Leaving">🚪 ${master.doe ? 'Edit Exit' : 'Mark Exit'}</button>
@@ -1709,7 +1695,6 @@ window.renderMonthlyTable = () => {
     const epfInp = tr.querySelector('.b-epf');
     const higherEeChk = infoRow.querySelector('.b-higher-ee');
     const higherErChk = infoRow.querySelector('.b-higher-er');
-    const age58Chk = infoRow.querySelector('.b-age58');
     const pohwChk = infoRow.querySelector('.b-pohw');
     const pohw116Chk = infoRow.querySelector('.b-pohw-116');
 
@@ -1720,7 +1705,6 @@ window.renderMonthlyTable = () => {
     epfInp.addEventListener('input', recalc);
     higherEeChk.addEventListener('change', recalc);
     higherErChk.addEventListener('change', recalc);
-    age58Chk.addEventListener('change', recalc);
     pohwChk.addEventListener('change', recalc);
     pohw116Chk.addEventListener('change', recalc);
 
@@ -1766,7 +1750,6 @@ window.calcBulkRow = (tr) => {
   const infoRow = getInfoRow(tr);
   const higherEe = infoRow.querySelector('.b-higher-ee').checked;
   const higherEr = infoRow.querySelector('.b-higher-er').checked;
-  const age58 = infoRow.querySelector('.b-age58').checked;
   const pohw = infoRow.querySelector('.b-pohw').checked;
   const pohw116 = infoRow.querySelector('.b-pohw-116').checked;
   const ceiling = parseFloat(tr.getAttribute('data-ceiling')) || 15000;
@@ -1780,7 +1763,7 @@ window.calcBulkRow = (tr) => {
   if (r.e_eps > 0) {
     const workerWageBase = pohw ? w : (higherEe ? w : Math.min(w, ceiling));
     const erTotalWageBase = pohw ? w : (higherEr ? w : Math.min(w, ceiling));
-    const epsWage = age58 ? 0 : (pohw ? w : Math.min(w, ceiling));
+    const epsWage = pohw ? w : Math.min(w, ceiling);
     epsWageFinal = epsWage;
 
     wEpf = calcRow(workerWageBase, r.w_epf);
@@ -1788,7 +1771,7 @@ window.calcBulkRow = (tr) => {
     const totalErContrib = calcRow(erTotalWageBase, r.w_epf);
     eEpf = Math.max(0, totalErContrib - eEps);
 
-    if (pohw && pohw116 && !age58 && w > ceiling) {
+    if (pohw && pohw116 && w > ceiling) {
       // Redistribution, not additional employer outgo -- moved out of eEpf into eEps,
       // so total employer contribution stays capped at the standard 12% of wage.
       const additional116 = calcRow(w - ceiling, 1.16);
@@ -1840,8 +1823,7 @@ window.saveMonthlyWages = async () => {
     higher_epf_ee: state.higher_ee,
     higher_epf_er: state.higher_er,
     pohw: state.pohw,
-    pohw_additional_1_16: state.pohw116,
-    age_crosses_58: state.age58
+    pohw_additional_1_16: state.pohw116
   }));
 
   try {
