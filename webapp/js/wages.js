@@ -1029,11 +1029,14 @@ App.registerPage('wage-entry', async (container) => {
           <div id="wage-entry-month-summary" style="overflow-x:auto; overflow-y:hidden; border:1px solid var(--card-border); border-radius:var(--radius-sm);">
             <div style="padding:10px; font-size:11px; color:var(--text3); text-align:center;">Loading…</div>
           </div>
-        </div>
-        <div class="form-group" style="margin-bottom: 0; display:flex; flex-direction:row; flex-wrap:wrap; gap:8px; flex-shrink:0; max-width:280px;">
-          <input type="text" class="form-input" id="bulk-add-uan" placeholder="Enter UAN to add employee..." style="width:100%;">
-          <button class="btn btn-secondary" onclick="addEmployeeByUAN()">Add Employee</button>
-          <button class="btn btn-danger" onclick="deleteSelectedWageEntries()">🗑️ Delete Selected</button>
+          <div style="display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:10px;">
+            <div style="flex:1 1 260px; min-width:220px; max-width:380px; position:relative;">
+              <input type="text" class="form-input" id="bulk-add-uan" placeholder="🔍 Search UAN or name to add an employee…" autocomplete="off" style="width:100%;">
+              <div id="bulk-add-uan-dropdown" style="display:none; position:absolute; top:100%; left:0; right:0; max-height:260px; overflow-y:auto; background:var(--bg2); border:1px solid var(--border); border-radius:6px; z-index:100; box-shadow:0 4px 12px rgba(0,0,0,0.15); margin-top:4px;"></div>
+            </div>
+            <button class="btn btn-secondary btn-sm" onclick="addEmployeeByUAN()">Add Employee</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteSelectedWageEntries()">🗑️ Delete Selected</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1075,6 +1078,7 @@ App.registerPage('wage-entry', async (container) => {
   document.getElementById('bulk-month-select').value = defaultMonthIdx;
   initBulkTableState();
   renderWageEntryMonthSummary();
+  setupBulkAddUanSearch();
 });
 
 window.downloadMonthlyWageEntryPdf = () => {
@@ -1345,15 +1349,10 @@ function getInfoRow(tr) {
   return tr.previousElementSibling;
 }
 
-window.addEmployeeByUAN = () => {
-  const uan = document.getElementById('bulk-add-uan').value.trim();
-  if (!uan) return App.toast('Please enter a UAN', 'error');
-
-  const emp = window._masterEmployees.find(e => e.uan === uan);
-  if (!emp) {
-    return App.toast('Employee not found with this UAN. Please add them in the main Employees menu first.', 'error');
-  }
-
+// Shared by both the exact-UAN "Add Employee" button/Enter-key path and clicking a
+// live-search suggestion below -- takes the resolved employee object directly so
+// neither path has to re-derive it.
+function addEmployeeToBulkWageTable(emp) {
   const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
   const violation = getEmploymentWindowViolation(emp, monthIdx);
   if (violation) {
@@ -1372,11 +1371,75 @@ window.addEmployeeByUAN = () => {
 
     App.toast(`Added ${emp.name}`, 'success');
     document.getElementById('bulk-add-uan').value = '';
+    const dropdown = document.getElementById('bulk-add-uan-dropdown');
+    if (dropdown) dropdown.style.display = 'none';
     renderMonthlyTable();
   } else {
     App.toast('Employee already in the list for this month', 'info');
   }
+}
+
+window.addEmployeeByUAN = () => {
+  const uan = document.getElementById('bulk-add-uan').value.trim();
+  if (!uan) return App.toast('Please enter a UAN', 'error');
+
+  const emp = window._masterEmployees.find(e => e.uan === uan);
+  if (!emp) {
+    return App.toast('Employee not found with this UAN. Please add them in the main Employees menu first.', 'error');
+  }
+  addEmployeeToBulkWageTable(emp);
 };
+
+// Live search-as-you-type dropdown for the "Enter UAN to add employee" box -- matches
+// partial UAN, member ID, or name (same pattern as setupWageEmployeeSearch() above),
+// click a suggestion to add them directly rather than requiring the full exact UAN.
+function setupBulkAddUanSearch() {
+  const input = document.getElementById('bulk-add-uan');
+  const dropdown = document.getElementById('bulk-add-uan-dropdown');
+  if (!input || !dropdown) return;
+
+  const findMatches = (q) => {
+    const lower = q.trim().toLowerCase();
+    if (!lower) return [];
+    return (window._masterEmployees || []).filter(e =>
+      (e.member_id || '').toLowerCase().includes(lower) ||
+      (e.uan || '').toLowerCase().includes(lower) ||
+      (e.name || '').toLowerCase().includes(lower)
+    ).slice(0, 20);
+  };
+
+  const renderMatches = (q) => {
+    const matches = findMatches(q);
+    if (!q.trim()) { dropdown.style.display = 'none'; return; }
+
+    if (matches.length === 0) {
+      dropdown.innerHTML = '<div style="padding:8px 12px; color:var(--text3); font-size:13px;">No matching employees</div>';
+      dropdown.style.display = 'block';
+      return;
+    }
+
+    dropdown.innerHTML = matches.map(e => `
+      <div class="wage-search-option" data-id="${App.esc(e.member_id)}" style="padding:8px 12px; cursor:pointer; border-bottom:1px solid var(--border); font-size:13px;">
+        <strong>${App.esc(e.name)}</strong> — ${App.esc(e.member_id)}${e.uan ? ' | UAN: ' + App.esc(e.uan) : ''}
+        ${window.bulkTableVisibleIds && window.bulkTableVisibleIds.includes(e.member_id) ? ' <span class="badge low" style="font-size:10px;">Already added</span>' : ''}
+      </div>
+    `).join('');
+    dropdown.style.display = 'block';
+
+    dropdown.querySelectorAll('.wage-search-option').forEach(opt => {
+      opt.addEventListener('mousedown', () => {
+        const emp = (window._masterEmployees || []).find(e => e.member_id === opt.getAttribute('data-id'));
+        if (emp) addEmployeeToBulkWageTable(emp);
+      });
+      opt.addEventListener('mouseenter', () => opt.style.background = 'var(--hover-bg, rgba(0,0,0,0.05))');
+      opt.addEventListener('mouseleave', () => opt.style.background = 'transparent');
+    });
+  };
+
+  input.addEventListener('input', () => renderMatches(input.value));
+  input.addEventListener('focus', () => { if (input.value.trim()) renderMatches(input.value); });
+  input.addEventListener('blur', () => setTimeout(() => { dropdown.style.display = 'none'; }, 150));
+}
 
 window.initBulkTableState = () => {
   const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
