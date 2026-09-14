@@ -178,10 +178,16 @@ function webRow(memberId) {
     member_id: memberId,
     name: master.name,
     uan: master.uan,
+    dob: master.dob,
     gross_wages: wageRow ? wageRow.gross_wages : new Array(12).fill(0),
     wages: wageRow ? wageRow.wages : new Array(12).fill(0),
     ncp_days: wageRow ? wageRow.ncp_days : new Array(12).fill(0),
-    age_crosses_58: wageRow ? wageRow.age_crosses_58 : false,
+    // eps_zero_months/eps_member come from the server (GET .../wages), computed by
+    // the same is_eps_zero_for_month() the backend uses everywhere else -- never
+    // reimplement the age/month-boundary rule client-side (see the ER PF rounding
+    // bug this project already hit once for why).
+    eps_zero_months: wageRow ? wageRow.eps_zero_months : new Array(12).fill(false),
+    eps_member: master.eps_member !== false,
     // These four are master-level flags (not per-year-entry), so pulling them
     // from webMaster is correct whether or not an entry exists yet this year.
     higher_epf_ee: master.higher_epf_ee,
@@ -219,17 +225,19 @@ function webCalendarDaysInMonth(monthIdx) {
 }
 
 // Live preview only (before Save persists it) -- deliberately the same simple
-// formula as the old bulk table's non-higher-EPF/non-PoHW/non-age58 case. Higher
-// EPF / PoHW / age-58 overrides aren't editable from this page; an employee who
-// already has one of those flags set keeps it untouched on Save (see webCommit),
-// but the LIVE number shown here while typing won't reflect that override until
-// you Save and the real per-month breakdown is refetched.
-function webCalcLive(wage, ncp) {
+// formula as the old bulk table's non-higher-EPF/non-PoHW case, except EPS
+// eligibility (epsZero) IS live-accurate: callers pass in the server-computed
+// eps_zero_months[monthIdx] for this row. Higher EPF / PoHW overrides aren't
+// editable from this page; an employee who already has one of those flags set
+// keeps it untouched on Save (see webCommit), but the LIVE number shown here
+// while typing won't reflect that override until you Save and the real
+// per-month breakdown is refetched.
+function webCalcLive(wage, ncp, epsZero) {
   const r = webWagesData.rates;
   const ceiling = (r.wage_ceilings && r.wage_ceilings[webMonthIdx]) || 15000;
   const days = webCalendarDaysInMonth(webMonthIdx);
   const workDays = Math.max(0, days - (ncp || 0));
-  const epsWage = Math.min(wage || 0, ceiling);
+  const epsWage = epsZero ? 0 : Math.min(wage || 0, ceiling);
   const ee = Math.round((wage || 0) * (r.w_epf / 100));
   const pension = Math.round(epsWage * (r.e_eps / 100));
   // ER PF is the REMAINDER of the employer's total contribution (same rate as EE,
@@ -270,7 +278,7 @@ function webRowHtml(memberId, mode, serial) {
     };
   }
   const vals = editable ? webEdits[memberId] : { g: row.gross_wages[webMonthIdx] || 0, w: row.wages[webMonthIdx] || 0, n: row.ncp_days[webMonthIdx] || 0 };
-  const c = webCalcLive(vals.w, vals.n);
+  const c = webCalcLive(vals.w, vals.n, row.eps_zero_months ? row.eps_zero_months[webMonthIdx] : false);
   const isSel = webSelected.has(memberId);
 
   const wageCells = editable
@@ -400,7 +408,8 @@ function webSetPageSize(val) {
 function webUpdateDraftCell(memberId, field, val) {
   webEdits[memberId][field] = Number(val) || 0;
   const v = webEdits[memberId];
-  const c = webCalcLive(v.w, v.n);
+  const row = webRow(memberId);
+  const c = webCalcLive(v.w, v.n, row && row.eps_zero_months ? row.eps_zero_months[webMonthIdx] : false);
   const wd = document.getElementById(`web-wd-${memberId}`); if (wd) wd.textContent = c.workDays;
   const eps = document.getElementById(`web-eps-${memberId}`); if (eps) eps.textContent = v.w ? webRupee(c.epsWage) : '—';
   const ee = document.getElementById(`web-ee-${memberId}`); if (ee) ee.textContent = v.w ? webRupee(c.ee) : '—';
@@ -499,7 +508,7 @@ async function webCommit(memberIds) {
 }
 
 // Persists wage numbers only -- shared by webCommit() and webFinishEditRow().
-// Existing special-case flags (Higher EPF EE/ER, PoHW, age-crosses-58) are NOT
+// Existing special-case flags (Higher EPF EE/ER, PoHW) are NOT
 // editable from this page; they're read back from the currently loaded wage data
 // and passed through unchanged, so saving here never silently clears a flag set
 // via the Employee Master or the old Monthly Wage Entry page.
@@ -512,7 +521,6 @@ async function webPersistWages(memberIds) {
       gross_wage: v.g || 0,
       epf_wage: v.w || 0,
       ncp_days: v.n || 0,
-      age_crosses_58: !!(row && row.age_crosses_58),
       higher_epf_ee: !!(row && row.higher_epf_ee),
       higher_epf_er: !!(row && row.higher_epf_er),
       pohw: !!(row && row.pohw),
@@ -628,7 +636,7 @@ function webOpenHistory(memberId) {
       : { g: row.gross_wages[idx] || 0, w: row.wages[idx] || 0, n: row.ncp_days[idx] || 0 };
     const savedMonth = webMonthIdx;
     const oldIdx = webMonthIdx; webMonthIdx = idx; // reuse webCalcLive's ceiling/day lookup for the right month
-    const c = webCalcLive(rec.w, rec.n);
+    const c = webCalcLive(rec.w, rec.n, row.eps_zero_months ? row.eps_zero_months[idx] : false);
     webMonthIdx = oldIdx;
     const isCur = idx === savedMonth;
     return `<tr${isCur ? ' style="background:var(--accent-glow, rgba(108,92,231,.1)); font-weight:700;"' : ''}>
@@ -729,7 +737,8 @@ function webRenderFePanel() {
     return;
   }
   const p = webCurrentPick;
-  const c = webCalcLive(Number(p.w) || 0, Number(p.n) || 0);
+  const pickRow = webRow(p.member_id);
+  const c = webCalcLive(Number(p.w) || 0, Number(p.n) || 0, pickRow && pickRow.eps_zero_months ? pickRow.eps_zero_months[webMonthIdx] : false);
   const prev = p.source === 'new' ? webPrevMonthData(p.member_id) : null;
   panel.innerHTML = `
     <div style="background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:16px;">
@@ -764,7 +773,8 @@ function webRenderFePanel() {
 function webUpdatePick(field, val) {
   webCurrentPick[field] = val;
   const p = webCurrentPick;
-  const c = webCalcLive(Number(p.w) || 0, Number(p.n) || 0);
+  const pickRow = webRow(p.member_id);
+  const c = webCalcLive(Number(p.w) || 0, Number(p.n) || 0, pickRow && pickRow.eps_zero_months ? pickRow.eps_zero_months[webMonthIdx] : false);
   const wd = document.getElementById('web-fe-work-days'); if (wd) wd.value = c.workDays;
   const eps = document.getElementById('web-fe-eps-wages'); if (eps) eps.value = webRupee(c.epsWage);
   const ee = document.getElementById('web-fe-ee'); if (ee) ee.textContent = webRupee(c.ee);
