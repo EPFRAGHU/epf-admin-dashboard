@@ -127,9 +127,9 @@ age-58 cutover rule satisfies both EPFO checks without separate logic.
 - `calc_age_years()`: fix `strptime` format from `"%d/%m/%Y"` to `"%d-%m-%Y"`.
 - `employees_joined_in_month()`/`employees_left_in_month()`: same fix, same reason —
   these feed Form 5/Form 10.
-- `MasterEmployee`: add `eps_member: bool = True`; `dob` becomes required (no default
-  empty string accepted by the create/update path — enforced in `webapp/app.py`'s
-  Pydantic request models, matching how `member_id`/`name` are already required there).
+- `MasterEmployee`: add `eps_member: bool = True`. `dob` stays `str = ""` at the data/
+  backend level (see "Additional findings" below — enforcement is UI-only, not a
+  Pydantic model change).
 - `YearEntry`: remove `age_crosses_58` (no longer meaningful — the calc no longer
   reads a per-year flag).
 - Calc-engine `Employee` dataclass: remove `age_crosses_58`; add `eps_member: bool`,
@@ -259,6 +259,48 @@ code stops reading them.
   gone and the new no-DOB warning showing for an affected employee, ECR generation's
   pre-flight no-DOB warning, and a generated ECR/Excel/PDF correctly zeroing EPS for
   both a DOB-58+ employee and an `eps_member=False` employee.
+
+## Additional findings during implementation planning
+
+Discovered while mapping the exact call sites for this change — all folded into the
+plan, none change the design's intent:
+
+- **`year_from` belongs on `Employee` as a field set once at construction, not as a
+  `month_rows()` parameter.** There are 3 separate places that construct an `Employee`
+  object (`build_employees_for_year()` in `epf_engine.py`, plus two ECR/report builders
+  in `webapp/app.py` — `_build_ecr_employees_for_scope` and the scope/subscription
+  builder), and roughly 20 call sites that call `.month_rows()`/`.annual_totals()` on
+  the result. Passing `year_from` as a method parameter would mean touching all ~20
+  call sites, with a silent-wrong-output risk at any site someone forgets. Setting it
+  once as an `Employee.year_from` field at each of the 3 construction sites and reading
+  `self.year_from` inside `month_rows()` means the ~20 downstream call sites need no
+  change at all.
+- **Two of those 3 `Employee`-construction sites never copy `dob` over from
+  `MasterEmployee` at all** (`webapp/app.py`'s `_build_ecr_employees_for_scope` line
+  ~6074 and the scope/subscription builder line ~6276) — an independent, pre-existing
+  omission (predates this design) that would otherwise silently defeat the whole
+  age-58 engine for ECR generation specifically, even after every other fix lands.
+  Fixed as part of this same pass (adding `dob=master_emp.dob` at both sites), since
+  it's a one-line fix directly required for this design to actually work end-to-end.
+- **The `eps_wage`/`eps_wage_base` figure is independently (re)computed from
+  `age_crosses_58` in several more places** beyond `month_rows()`/`generate_ecr_month`:
+  `webapp/app.py`'s dashboard monthly-stats loop (~3979), a per-month employee-detail
+  listing (~4108), a year-totals loop (~5235), and the wage-history report builder
+  (~5642), plus `pdf_engine.py`'s Monthly Wage Entry PDF (~246) and Yearly Wage
+  Checklist PDF (~460). None of these are prohibited by "ECR/Excel/PDF generators — no
+  changes" above (that referred to the actual EPF/EPS/ER contribution amounts, which
+  do come from `month_rows()` correctly) — these are separate *display-only*
+  recomputations of the wage base a report renders, and each one needs the same
+  `is_eps_zero_for_month`/`eps_member` substitution, or they'll silently disagree with
+  the real numbers the moment `age_crosses_58` is removed.
+- **DOB enforcement, resolved**: "required in Employee Master" means the manual
+  Add/Edit **form** (client-side validation, can't submit without it) — the backend
+  `EmployeeIn` Pydantic model stays `dob: str = ""` (unchanged). Confirmed with the
+  user (2026-09-14) specifically to avoid updating the 60 existing
+  `POST /api/employees` test call sites across 15 test files that don't currently pass
+  a `dob`, which a hard backend requirement would break. A direct API call bypassing
+  the UI could still send a blank DOB — accepted as out of scope; the real path this
+  closes is the one a consultant actually uses.
 
 ## Resolved during design review
 
