@@ -12,7 +12,7 @@ from reportlab.platypus import (
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from reportlab.pdfgen.canvas import Canvas
 from xml.sax.saxutils import escape as _xml_escape
-from epf_engine import natural_sort_key, is_eps_zero_for_month
+from epf_engine import natural_sort_key
 
 
 def esc(value) -> str:
@@ -242,9 +242,8 @@ def generate_monthly_wage_entry_pdf(project, est, employees, filepath: str, mont
 
         wage_raw = int(round(float(emp.wages[month_idx]))) if emp.wages[month_idx] else 0
         ceiling = wage_ceilings[month_idx] if wage_ceilings and month_idx < len(wage_ceilings) else 15000
-        eps_zero = (not emp.eps_member) or is_eps_zero_for_month(emp.dob, month_idx, emp.year_from)
         if est.employer_eps_rate > 0:
-            if eps_zero:
+            if emp.age_crosses_58:
                 eps_wage_base = 0
             elif emp.pohw:
                 eps_wage_base = wage_raw
@@ -259,7 +258,7 @@ def generate_monthly_wage_entry_pdf(project, est, employees, filepath: str, mont
         flags = []
         if emp.higher_epf_ee: flags.append("Higher EPF (EE)")
         if emp.higher_epf_er: flags.append("Higher EPF (ER)")
-        if eps_zero: flags.append("EPS = 0 (58+/non-member)")
+        if emp.age_crosses_58: flags.append("Age &gt; 58")
         if emp.pohw: flags.append("PoHW")
         if emp.pohw_additional_1_16: flags.append("+1.16%")
         m = project.master.get(emp.member_id)
@@ -457,9 +456,8 @@ def generate_yearly_wage_checklist_pdf(project, est, employees, filepath: str):
             gross = emp.gross_wages[i] if i < len(emp.gross_wages) else 0
             wage_raw = emp.wages[i] if i < len(emp.wages) else 0
             ceiling = wage_ceilings[i] if wage_ceilings and i < len(wage_ceilings) else 15000
-            eps_zero = (not emp.eps_member) or is_eps_zero_for_month(emp.dob, i, emp.year_from)
             if est.employer_eps_rate > 0:
-                if eps_zero:
+                if emp.age_crosses_58:
                     eps_wage_base = 0
                 elif emp.pohw:
                     eps_wage_base = wage_raw
@@ -1332,6 +1330,8 @@ def generate_employee_wage_history_pdf(data: dict, filepath: str):
             flags.append('(Higher EPF - ER)')
         if y.get('pohw'):
             flags.append('(Pension on Higher Wages' + (' + 1.16% shift)' if y.get('pohw_additional_1_16') else ')'))
+        if y.get('age_crosses_58'):
+            flags.append('(Age 58+ applied)')
         if flags:
             block.append(Paragraph(' '.join(flags), style_wyh_footnote))
 

@@ -192,7 +192,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from epf_engine import (
     Project, ExcelGenerator, MONTHS, MONTH_FULL,
     SCHEME_PRE_1997, SCHEME_POST_1997,
-    REASONS_FOR_LEAVING, SUPERANNUATION_AGE, calc_age_years, is_eps_zero_for_month,
+    REASONS_FOR_LEAVING, SUPERANNUATION_AGE, calc_age_years,
     import_wages_from_excel, generate_form9, import_master_from_excel, parse_ecr_text_file,
     natural_sort_key, get_wage_ceilings_for_year,
     account2_rate_percent, account22_rate_percent, account2_min_floor, account22_min_floor,
@@ -3976,8 +3976,7 @@ async def dashboard(
                 
                 ceiling = get_wage_ceilings_for_year(yr.year_from)[i]
                 if est.worker_eps_rate == 0:
-                    eps_zero = (not emp.eps_member) or is_eps_zero_for_month(emp.dob, i, yr.year_from)
-                    eps_wage = 0 if eps_zero else min(wages, ceiling)
+                    eps_wage = 0 if emp.age_crosses_58 else min(wages, ceiling)
                 else:
                     eps_wage = wages
                     
@@ -4106,8 +4105,7 @@ async def dashboard_month_employees(
             _, w_epf, w_eps, w_tot, e_epf, e_eps, e_tot = mrows[month_index]
             
             ceiling = get_wage_ceilings_for_year(yr.year_from)[month_index]
-            eps_zero = (not emp.eps_member) or is_eps_zero_for_month(emp.dob, month_index, yr.year_from)
-            eps_wage = (0 if eps_zero else min(wages, ceiling)) if est.worker_eps_rate == 0 else wages
+            eps_wage = (0 if emp.age_crosses_58 else min(wages, ceiling)) if est.worker_eps_rate == 0 else wages
                 
             results.append({
                 "uan": emp.uan,
@@ -5234,8 +5232,7 @@ async def get_remittances(
             gross = emp.gross_wages[i] if emp.gross_wages and len(emp.gross_wages) > i else 0
             gross_wages_total += gross
             if est.worker_eps_rate == 0:
-                eps_zero = (not emp.eps_member) or is_eps_zero_for_month(emp.dob, i, yr.year_from)
-                eps_wages_total += 0 if eps_zero else min(wages, ceiling)
+                eps_wages_total += 0 if emp.age_crosses_58 else min(wages, ceiling)
             else:
                 eps_wages_total += wages
             # EDLI wages: same ceiling-capped basis as generate_ecr_month() --
@@ -5642,9 +5639,10 @@ def _build_employee_wage_history_data(project: Project, member_id: str) -> Optio
             higher_epf_er = bool(emp.higher_epf_er)
             pohw = bool(emp.pohw)
             pohw_additional_1_16 = bool(emp.pohw_additional_1_16)
+            age_crosses_58 = bool(emp.age_crosses_58)
         else:
             ee_epf = er_epf = er_eps = [0] * 12
-            higher_epf_ee = higher_epf_er = pohw = pohw_additional_1_16 = False
+            higher_epf_ee = higher_epf_er = pohw = pohw_additional_1_16 = age_crosses_58 = False
 
         month_total = [ee_epf[i] + er_epf[i] + er_eps[i] for i in range(12)]
 
@@ -5664,6 +5662,7 @@ def _build_employee_wage_history_data(project: Project, member_id: str) -> Optio
             "higher_epf_er": higher_epf_er,
             "pohw": pohw,
             "pohw_additional_1_16": pohw_additional_1_16,
+            "age_crosses_58": age_crosses_58
         })
 
     return {
@@ -6077,9 +6076,6 @@ def _build_ecr_employees_for_scope(project: Project, year_record, branch_id=None
             name=master_emp.name,
             father_name=master_emp.father_name,
             uan=master_emp.uan,
-            dob=master_emp.dob,
-            eps_member=master_emp.eps_member,
-            year_from=year_record.year_from,
             branch_id=master_emp.branch_id,
             division_id=master_emp.division_id,
             unit_id=master_emp.unit_id,
@@ -6092,6 +6088,7 @@ def _build_ecr_employees_for_scope(project: Project, year_record, branch_id=None
             emp_obj.higher_epf_er = master_emp.higher_epf_er
             emp_obj.pohw = master_emp.pohw
             emp_obj.pohw_additional_1_16 = master_emp.pohw_additional_1_16
+            emp_obj.age_crosses_58 = getattr(entry, 'age_crosses_58', False)
         else:
             emp_obj.wages = [0.0] * 12
             emp_obj.ncp_days = [0] * 12
@@ -6281,9 +6278,6 @@ async def generate_ecr_zip_by_scope(
                 name=master_emp.name,
                 father_name=master_emp.father_name,
                 uan=master_emp.uan,
-                dob=master_emp.dob,
-                eps_member=master_emp.eps_member,
-                year_from=year_record.year_from,
                 branch_id=master_emp.branch_id,
                 division_id=master_emp.division_id,
                 unit_id=master_emp.unit_id,
@@ -6294,6 +6288,7 @@ async def generate_ecr_zip_by_scope(
                 higher_epf_er=master_emp.higher_epf_er,
                 pohw=master_emp.pohw,
                 pohw_additional_1_16=master_emp.pohw_additional_1_16,
+                age_crosses_58=getattr(entry, 'age_crosses_58', False) if entry else False
             )
             scope_emps[key][1].append(emp_obj)
 

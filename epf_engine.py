@@ -76,43 +76,12 @@ def calc_age_years(dob_text: str, as_of: date = None):
     if not dob_text:
         return None
     try:
-        dob = datetime.strptime(dob_text, "%d-%m-%Y").date()
+        dob = datetime.strptime(dob_text, "%d/%m/%Y").date()
     except ValueError:
         return None
     as_of = as_of or date.today()
     years = as_of.year - dob.year - ((as_of.month, as_of.day) < (dob.month, dob.day))
     return years
-
-
-def wage_month_start_date(month_idx: int, year_from: str) -> Optional[date]:
-    """First calendar day of wage-month `month_idx` within the financial year
-    starting `year_from`. month_idx 0 = March (of year_from) .. 9 = December (of
-    year_from), 10 = January .. 11 = February (of year_from + 1) -- the same Mar-Feb
-    convention as MONTHS/calendar_year_for_month(). Returns None if year_from isn't a
-    parseable year or month_idx is out of range."""
-    try:
-        y_from = int(str(year_from)[:4])
-    except (TypeError, ValueError):
-        return None
-    if not (0 <= month_idx <= 11):
-        return None
-    if month_idx <= 9:
-        return date(y_from, month_idx + 3, 1)
-    return date(y_from + 1, month_idx - 9, 1)
-
-
-def is_eps_zero_for_month(dob: str, month_idx: int, year_from: str) -> bool:
-    """True if EPS/Pension contribution should be zero for this wage month because
-    the employee had already turned 58 as of the FIRST day of that month. An
-    employee whose 58th birthday falls inside the month still gets EPS for that
-    month -- the cutover starts the following month (confirmed EPFO practice).
-    A missing/unparseable DOB returns False (never auto-zeroed) rather than raising,
-    matching calc_age_years()'s own None-safe convention."""
-    month_start = wage_month_start_date(month_idx, year_from)
-    if month_start is None:
-        return False
-    age = calc_age_years(dob, as_of=month_start)
-    return age is not None and age >= SUPERANNUATION_AGE
 
 MONTHS = [
     "Mar Paid in Apr", "Apr Paid in May", "May Paid in Jun", 
@@ -678,10 +647,7 @@ class Employee:
     higher_epf_er: bool = False
     pohw: bool = False                    # Pension on Higher Wages -- see month_rows()
     pohw_additional_1_16: bool = False    # optional add-on within PoHW, off by default -- see month_rows()
-    eps_member: bool = True               # False = never contributes to EPS, independent of age (RFE-21)
-    year_from: str = ''                   # set once at construction -- lets month_rows() resolve each
-                                           # wage-month index to a real calendar date for the age-58 check
-                                           # without every caller having to pass it in separately
+    age_crosses_58: bool = False
     dob: str = ''
     sex: str = ''
     doj: str = ''
@@ -706,8 +672,7 @@ class Employee:
         for i, w in enumerate(self.wages):
             w = int(round(float(w))) if w else 0
             ceiling = wage_ceilings[i]
-            eps_zero = (not self.eps_member) or is_eps_zero_for_month(self.dob, i, self.year_from)
-
+            
             # Post-1997 calculation restrictions:
             if worker_eps_rate == 0:
                 if self.pohw:
@@ -718,11 +683,11 @@ class Employee:
                     # Higher EPF (EE)/(ER) checkboxes say.
                     worker_wage_base = w
                     er_total_wage_base = w
-                    eps_wage = 0 if eps_zero else w
+                    eps_wage = 0 if self.age_crosses_58 else w
                 else:
                     worker_wage_base = w if self.higher_epf_ee else min(w, ceiling)
                     er_total_wage_base = w if self.higher_epf_er else min(w, ceiling)
-                    eps_wage = 0 if eps_zero else min(w, ceiling)
+                    eps_wage = 0 if self.age_crosses_58 else min(w, ceiling)
 
                 w_epf = round(worker_wage_base * worker_epf_rate / 100)
                 w_eps = round(w * worker_eps_rate / 100)  # Will be 0 anyway
@@ -731,7 +696,7 @@ class Employee:
                 total_er_contrib = round(er_total_wage_base * worker_epf_rate / 100)
                 e_epf = max(0, total_er_contrib - e_eps)
 
-                if self.pohw and self.pohw_additional_1_16 and not eps_zero and w > ceiling:
+                if self.pohw and self.pohw_additional_1_16 and not self.age_crosses_58 and w > ceiling:
                     # Additional 1.16% "contribution" on the wage portion above the
                     # ceiling, from the 2014 EPS amendment. The Supreme Court struck
                     # this down as ultra vires in Nov 2022 (EPFO v. Sunil Kumar B) and
@@ -840,10 +805,10 @@ class MasterEmployee:
     name: str = ""
     father_name: str = ""
     uan: str = ""         # Universal Account Number
-    dob: str = ""        # Date of Birth, DD-MM-YYYY
+    dob: str = ""        # Date of Birth, DD/MM/YYYY
     sex: str = ""         # "Male" or "Female"
-    doj: str = ""         # Date of Joining, DD-MM-YYYY
-    doe: str = ""         # Date of Exit, DD-MM-YYYY
+    doj: str = ""         # Date of Joining, DD/MM/YYYY
+    doe: str = ""         # Date of Exit, DD/MM/YYYY
     reason_leaving: str = ""  # one of REASONS_FOR_LEAVING
     serial_no: int = 0    # SL No. -- the employee list sorts by THIS, not by member_id
     relationship: str = "" # Relationship to Father/Husband
@@ -857,7 +822,6 @@ class MasterEmployee:
     higher_epf_er: bool = False
     pohw: bool = False
     pohw_additional_1_16: bool = False
-    eps_member: bool = True  # False = never contributes to EPS/Pension, independent of age (RFE-21)
     branch_id: int = 0
     division_id: Optional[int] = None
     unit_id: Optional[int] = None
@@ -882,7 +846,6 @@ class MasterEmployee:
             higher_epf_er=d.get("higher_epf_er", False),
             pohw=d.get("pohw", False),
             pohw_additional_1_16=d.get("pohw_additional_1_16", False),
-            eps_member=d.get("eps_member", True),
             branch_id=d.get("branch_id", 0) or 0,
             division_id=d.get("division_id"),
             unit_id=d.get("unit_id"))
@@ -904,6 +867,7 @@ class YearEntry:
     wages: List[int] = field(default_factory=lambda: [0] * 12)  # APR..MAR
     gross_wages: List[int] = field(default_factory=lambda: [0] * 12)
     ncp_days: List[int] = field(default_factory=lambda: [0] * 12)
+    age_crosses_58: bool = False
 
     def to_dict(self):
         return asdict(self)
@@ -911,7 +875,6 @@ class YearEntry:
     @staticmethod
     def from_dict(d):
         d.pop("higher_epf", None)  # Safe cleanup
-        d.pop("age_crosses_58", None)  # Removed -- EPS-58 cutover is now DOB-driven, see is_eps_zero_for_month()
         if "account_no" in d and "member_id" not in d:
             d["member_id"] = normalize_member_id(d.pop("account_no"))
         d["member_id"] = normalize_member_id(d.get("member_id", ""))
@@ -1032,7 +995,7 @@ class Project:
                        doe="", reason_leaving="", serial_no=None, relationship="", marital_status="",
                        mobile="", email="", aadhaar="", bank_account="", ifsc="",
                        higher_epf_ee=False, higher_epf_er=False,
-                       pohw=False, pohw_additional_1_16=False, eps_member=True,
+                       pohw=False, pohw_additional_1_16=False,
                        branch_id=None, division_id=None, unit_id=None):
         member_id = normalize_member_id(member_id)
 
@@ -1070,7 +1033,6 @@ class Project:
             m.higher_epf_er = higher_epf_er
             m.pohw = pohw
             m.pohw_additional_1_16 = pohw_additional_1_16
-            m.eps_member = eps_member
             m.branch_id = branch_id
             m.division_id = division_id
             m.unit_id = unit_id
@@ -1085,7 +1047,6 @@ class Project:
                                                        bank_account=bank_account, ifsc=ifsc,
                                                        higher_epf_ee=higher_epf_ee, higher_epf_er=higher_epf_er,
                                                        pohw=pohw, pohw_additional_1_16=pohw_additional_1_16,
-                                                       eps_member=eps_member,
                                                        branch_id=branch_id, division_id=division_id, unit_id=unit_id)
 
     # ---- org structure: Branch -> Division -> Unit ----
@@ -1268,7 +1229,7 @@ class Project:
         return None
 
 
-    def upsert_entry(self, year_key, member_id, wages, gross_wages=None, ncp_days=None,
+    def upsert_entry(self, year_key, member_id, wages, gross_wages=None, ncp_days=None, age_crosses_58=False,
                       higher_epf_ee=None, higher_epf_er=None, pohw=None, pohw_additional_1_16=None):
         yr = self.years[year_key]
         member_id = normalize_member_id(member_id)
@@ -1293,8 +1254,9 @@ class Project:
                 e.wages = wages
                 e.gross_wages = gross_wages
                 e.ncp_days = ncp_days
+                e.age_crosses_58 = age_crosses_58
                 return
-        yr.entries.append(YearEntry(member_id=member_id, wages=wages, gross_wages=gross_wages, ncp_days=ncp_days))
+        yr.entries.append(YearEntry(member_id=member_id, wages=wages, gross_wages=gross_wages, ncp_days=ncp_days, age_crosses_58=age_crosses_58))
 
     def remove_entry(self, year_key, index):
         del self.years[year_key].entries[index]
@@ -1335,8 +1297,7 @@ class Project:
                                     higher_epf_er=m.higher_epf_er if m else False,
                                     pohw=m.pohw if m else False,
                                     pohw_additional_1_16=m.pohw_additional_1_16 if m else False,
-                                    eps_member=m.eps_member if m else True,
-                                    year_from=yr.year_from,
+                                    age_crosses_58=getattr(e, 'age_crosses_58', False),
                                     dob=dob, sex=sex, doj=doj, doe=doe, reason_leaving=reason_leaving,
                                     branch_id=branch_id, division_id=division_id, unit_id=unit_id))
         return result
@@ -2581,7 +2542,7 @@ def employees_joined_in_month(project: "Project", cal_year: int, cal_month: int,
         if not m.doj:
             continue
         try:
-            d = datetime.strptime(m.doj, "%d-%m-%Y").date()
+            d = datetime.strptime(m.doj, "%d/%m/%Y").date()
         except ValueError:
             continue
         if d.year == cal_year and d.month == cal_month:
@@ -2600,7 +2561,7 @@ def employees_left_in_month(project: "Project", cal_year: int, cal_month: int, m
         if not m.doe:
             continue
         try:
-            d = datetime.strptime(m.doe, "%d-%m-%Y").date()
+            d = datetime.strptime(m.doe, "%d/%m/%Y").date()
         except ValueError:
             continue
         if d.year == cal_year and d.month == cal_month:
@@ -3092,8 +3053,7 @@ def generate_ecr_month(est, employees: List[Employee], year_record: YearRecord, 
             gross = round(w)
             
         epf_w = round(w)
-        eps_zero = (not emp.eps_member) or is_eps_zero_for_month(emp.dob, month_idx, year_record.year_from)
-        eps_w = 0 if eps_zero else round(min(w, wage_ceilings[month_idx]))
+        eps_w = 0 if emp.age_crosses_58 else round(min(w, wage_ceilings[month_idx]))
         edli_w = round(min(w, wage_ceilings[month_idx]))
         
         # UAN#~#Member Name#~#Gross Wages#~#EPF Wages#~#EPS Wages#~#EDLI Wages#~#EE Share Remitted#~#EPS Contribution Remitted#~#ER EPF Contribution Remitted#~#NCP Days#~#Refund of Advances
