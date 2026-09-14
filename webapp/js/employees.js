@@ -235,6 +235,11 @@ App.registerPage('employees', async (container) => {
             + 1.16% Shift EPF→EPS (legacy)
           </label>
         </div>
+        <div class="form-group">
+          <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px;">
+            <input type="checkbox" id="ae-eps-member" checked> EPS Member
+          </label>
+        </div>
         <div class="form-group" style="grid-column: span 3;">
           <label class="form-label">Branch / Division / Unit</label>
           <div id="ae-scope-picker"></div>
@@ -304,9 +309,9 @@ window.clearAddEmpForm = () => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
-  ['ae-higher-epf-ee', 'ae-higher-epf-er', 'ae-pohw', 'ae-pohw-116'].forEach(id => {
+  ['ae-higher-epf-ee', 'ae-higher-epf-er', 'ae-pohw', 'ae-pohw-116', 'ae-eps-member'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.checked = false;
+    if (el) el.checked = (id === 'ae-eps-member'); // ae-eps-member defaults to checked
   });
   const pickerEl = document.getElementById('ae-scope-picker');
   if (pickerEl) ScopePicker.render(pickerEl, orgStructureData, {});
@@ -337,6 +342,7 @@ window.saveNewEmpFromPage = async () => {
     higher_epf_er: document.getElementById('ae-higher-epf-er').checked,
     pohw: document.getElementById('ae-pohw').checked,
     pohw_additional_1_16: document.getElementById('ae-pohw-116').checked,
+    eps_member: document.getElementById('ae-eps-member').checked,
   };
   const pickerEl = document.getElementById('ae-scope-picker');
   if (pickerEl) {
@@ -406,11 +412,12 @@ function empRow(e, index) {
     <td class="txt">${App.esc(e.name)}</td>
     <td>${e.scope_path ? `<span style="font-size:11px; color:var(--text2);">${App.esc(e.scope_path)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
     <td>${App.esc(e.father_name)}</td>
-    <td>${App.esc(e.dob)}${e.superannuation ? '<br><span class="badge high" style="margin-top:2px; display:inline-block">58+</span>' : ''}</td>
+    <td>${App.esc(e.dob)}${e.superannuation ? '<br><span class="badge high" style="margin-top:2px; display:inline-block">58+</span>' : ''}${!e.dob ? '<br><span class="badge" style="background:var(--border); color:var(--text2); margin-top:2px; display:inline-block;">No DOB</span>' : ''}</td>
     <td>
       ${e.higher_epf_ee ? '<span class="badge low" style="margin-bottom:2px">H.EPF(EE)</span><br>' : ''}
       ${e.higher_epf_er ? '<span class="badge low" style="margin-bottom:2px">H.EPF(ER)</span><br>' : ''}
       ${e.pohw ? `<span class="badge high" style="margin-bottom:2px" title="Pension on Higher Wages${e.pohw_additional_1_16 ? ' + 1.16% add-on' : ''}">PoHW${e.pohw_additional_1_16 ? '+1.16%' : ''}</span>` : ''}
+      ${e.eps_member === false ? '<span class="badge high" style="font-size:10px;">Not EPS Member</span>' : ''}
     </td>
     <td>${App.esc(e.sex)}</td>
     <td>${App.esc(e.doj)}</td>
@@ -556,6 +563,12 @@ async function showEmpModal(emp = null, opts = {}) {
         </label>
         <p style="font-size:10px;color:var(--text3);margin-top:2px;">1.16% of wages above the ceiling, moved from EPF (ER) into EPS -- total employer contribution stays at 12%. Struck down by Supreme Court (Nov 2022), not collected under current EPFO practice. Off by default.</p>
       </div>
+      <div class="form-group">
+        <label class="form-label" style="display:flex;align-items:center;gap:8px">
+          <input type="checkbox" id="m-eps-member" ${e.eps_member !== false ? 'checked' : ''}>
+          EPS Member
+        </label>
+      </div>
     </div>`;
   const footer = `
     <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
@@ -595,6 +608,7 @@ async function saveEmp(origAcc) {
     higher_epf_er: document.getElementById('m-higher-epf-er').checked,
     pohw: document.getElementById('m-pohw').checked,
     pohw_additional_1_16: document.getElementById('m-pohw-116').checked,
+    eps_member: document.getElementById('m-eps-member').checked,
   };
   const pickerEl = document.getElementById('m-scope-picker');
   if (pickerEl) {
