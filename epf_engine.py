@@ -84,6 +84,44 @@ def calc_age_years(dob_text: str, as_of: date = None):
     return years
 
 
+def normalize_date_string(s: str) -> Optional[str]:
+    """
+    Best-effort normalize a DOB/DOJ/DOE string to this app's canonical
+    DD-MM-YYYY, the only format calc_age_years()/employees_joined_in_month()/
+    employees_left_in_month() understand. Tries, in order:
+      - DD-MM-YYYY   -- already correct (round-trips unchanged)
+      - DD-MMM-YYYY  -- 4-digit year, month as a 3-letter name, any case
+      - DD-Mon-YY    -- 2-digit year, month as a 3-letter name, any case
+      - DD/MM/YYYY   -- legacy slash format
+      - YYYY-MM-DD   -- ISO, in case an export ever uses it
+    The last three are all real formats found in real EPFO "Active Members"
+    portal exports (which are not even consistent with each other) and in
+    this app's own historical data. `%b` uses Python's strptime's built-in
+    case-insensitive month matching. The 2-digit `%y` year does NOT use
+    Python's own fixed 69-99->19xx/00-68->20xx pivot -- that pivot gets a
+    real EPFO example wrong ("25-May-66" as a date of birth means 1966, but
+    Python's own rule maps "66" to 2066, an impossible future birth year).
+    Instead: whichever century keeps the result from landing more than 2
+    years in the future is chosen, since neither a DOB nor a DOJ/DOE is
+    realistically ever that far ahead -- correct for both a DOB clearly in
+    the past ("66"->1966) and a near-future DOJ ("26"->2026, a employee
+    joining later this year).
+    Returns None if none match -- never guesses at an unrecognized format.
+    """
+    s = (s or "").strip()
+    if not s:
+        return None
+    for fmt in ("%d-%m-%Y", "%d-%b-%Y", "%d-%b-%y", "%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+        if fmt == "%d-%b-%y" and d.year > date.today().year + 2:
+            d = d.replace(year=d.year - 100)
+        return d.strftime("%d-%m-%Y")
+    return None
+
+
 def wage_month_start_date(month_idx: int, year_from: str) -> Optional[date]:
     """First calendar day of wage-month `month_idx` within the financial year
     starting `year_from`. month_idx 0 = March (of year_from) .. 9 = December (of
@@ -399,9 +437,14 @@ def import_wages_from_excel(filepath: str, sheet_name=None, import_type="yearly"
             import pandas as pd
             if pd.isna(val) or val == "": return ""
             if isinstance(val, str):
-                val = val.strip().replace("/", "-")
+                val = val.strip()
                 if val.endswith(" 00:00:00"): val = val.split(" ")[0]
-                return val
+                normalized = normalize_date_string(val)
+                # Fall back to the old raw-passthrough for anything the normalizer
+                # doesn't recognize, rather than dropping/blanking it -- import stays
+                # lenient (see feedback_wages_endpoint_entry_scoped-adjacent design
+                # decision: never reject a row over one unparseable field).
+                return normalized if normalized else val.replace("/", "-")
             if hasattr(val, "strftime"):
                 return val.strftime("%d-%m-%Y")
             return str(val)
@@ -513,9 +556,10 @@ def import_master_from_excel(filepath: str):
     def format_date(val):
         if pd.isna(val) or val == "": return ""
         if isinstance(val, str):
-            val = val.strip().replace("/", "-")
+            val = val.strip()
             if val.endswith(" 00:00:00"): val = val.split(" ")[0]
-            return val
+            normalized = normalize_date_string(val)
+            return normalized if normalized else val.replace("/", "-")
         if hasattr(val, "strftime"):
             return val.strftime("%d-%m-%Y")
         return str(val)

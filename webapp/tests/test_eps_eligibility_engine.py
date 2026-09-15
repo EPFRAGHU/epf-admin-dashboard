@@ -1,11 +1,46 @@
-import os
+﻿import os
 from datetime import date
 
 from epf_engine import (
     calc_age_years,
     employees_joined_in_month,
     employees_left_in_month,
+    normalize_date_string,
 )
+
+
+def test_normalize_date_string_already_correct_round_trips():
+    assert normalize_date_string("17-07-1967") == "17-07-1967"
+
+
+def test_normalize_date_string_four_digit_year_month_name():
+    assert normalize_date_string("17-JUL-1967") == "17-07-1967"
+    assert normalize_date_string("07-JUL-1995") == "07-07-1995"
+
+
+def test_normalize_date_string_two_digit_year_picks_correct_century():
+    """Real EPFO ActiveMembers portal export values -- '66' must resolve to 1966
+    (a plausible DOB), not 2066 (Python's own default %y pivot would get this
+    wrong: 00-68 -> 20xx maps '66' to 2066, an impossible future birth year).
+    '26' must resolve to 2026 (a plausible near-future DOJ), not 1926."""
+    assert normalize_date_string("25-May-66") == "25-05-1966"
+    assert normalize_date_string("06-Mar-75") == "06-03-1975"
+    assert normalize_date_string("27-Jul-26") == "27-07-2026"
+    assert normalize_date_string("02-Sep-02") == "02-09-2002"
+
+
+def test_normalize_date_string_legacy_slash_format():
+    assert normalize_date_string("15/06/1968") == "15-06-1968"
+
+
+def test_normalize_date_string_iso_format():
+    assert normalize_date_string("1967-07-17") == "17-07-1967"
+
+
+def test_normalize_date_string_unrecognized_returns_none():
+    assert normalize_date_string("garbage") is None
+    assert normalize_date_string("") is None
+    assert normalize_date_string(None) is None
 
 
 def test_calc_age_years_parses_hyphen_format():
@@ -468,6 +503,54 @@ def test_eps_58_dob_audit_requires_superadmin(consultant_a):
     assert res.status_code == 403
 
 
+def test_date_format_scan_and_apply_fixes_non_canonical_dob(consultant_a, superadmin_session):
+    res = consultant_a.post("/api/establishments", json={
+        "coverage_date": "01-04-2020", "code": "DATEFT1", "name": "Date Format Test Co",
+    })
+    assert res.status_code == 200, res.text
+    est_id = res.json()["establishment"]["id"]
+    consultant_a.set_establishment(est_id)
+    consultant_a.post("/api/employees", json={
+        "member_id": "DATEFT1", "name": "Bad Format Employee", "uan": "100900000010",
+        "dob": "17-JUL-1967", "doj": "27-Jul-26",
+    })
+
+    scan = superadmin_session.get("/api/admin/audit/date-format-scan")
+    assert scan.status_code == 200, scan.text
+    fixable = scan.json()["fixable"]
+    dob_row = next(r for r in fixable if r["establishment_id"] == est_id and r["field"] == "dob")
+    assert dob_row["current"] == "17-JUL-1967"
+    assert dob_row["normalized"] == "17-07-1967"
+    doj_row = next(r for r in fixable if r["establishment_id"] == est_id and r["field"] == "doj")
+    assert doj_row["current"] == "27-Jul-26"
+    assert doj_row["normalized"] == "27-07-2026"
+
+    apply_res = superadmin_session.post("/api/admin/audit/date-format-apply")
+    assert apply_res.status_code == 200, apply_res.text
+    applied = apply_res.json()["applied"]
+    assert any(r["establishment_id"] == est_id and r["field"] == "dob" for r in applied)
+
+    emps = consultant_a.get("/api/employees").json()["employees"]
+    emp = next(e for e in emps if e["member_id"] == "DATEFT1")
+    assert emp["dob"] == "17-07-1967"
+    assert emp["doj"] == "27-07-2026"
+
+    # Idempotent -- second scan finds nothing left for this establishment.
+    scan2 = superadmin_session.get("/api/admin/audit/date-format-scan")
+    fixable2 = scan2.json()["fixable"]
+    assert not any(r["establishment_id"] == est_id for r in fixable2)
+
+
+def test_date_format_scan_requires_superadmin(consultant_a):
+    res = consultant_a.get("/api/admin/audit/date-format-scan")
+    assert res.status_code == 403
+
+
+def test_date_format_apply_requires_superadmin(consultant_a):
+    res = consultant_a.post("/api/admin/audit/date-format-apply")
+    assert res.status_code == 403
+
+
 def test_list_employees_eps_zero_months_with_year_key(consultant_a):
     """GET /api/employees?year_key=... must attach a 12-entry eps_zero_months array
     to EVERY employee -- including one with no wage entry for that year at all.
@@ -563,3 +646,4 @@ def test_upsert_master_create_without_eps_member_still_defaults_true():
     p.set_establishment("EST1", "Test Co", "Addr")
     p.upsert_master("M9", "Brand New Employee")
     assert p.master["M9"].eps_member is True
+

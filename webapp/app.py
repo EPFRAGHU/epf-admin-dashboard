@@ -193,6 +193,7 @@ from epf_engine import (
     Project, ExcelGenerator, MONTHS, MONTH_FULL,
     SCHEME_PRE_1997, SCHEME_POST_1997,
     REASONS_FOR_LEAVING, SUPERANNUATION_AGE, calc_age_years, is_eps_zero_for_month,
+    normalize_date_string,
     import_wages_from_excel, generate_form9, import_master_from_excel, parse_ecr_text_file,
     natural_sort_key, get_wage_ceilings_for_year,
     account2_rate_percent, account22_rate_percent, account2_min_floor, account22_min_floor,
@@ -3380,6 +3381,8 @@ async def audit_eps_58_dob_check(
             data = json.loads(est.data)
         except (TypeError, ValueError):
             continue
+        if not isinstance(data, dict):
+            continue
         master = data.get("master", {})
         for year_key, year_data in (data.get("years") or {}).items():
             for entry in (year_data.get("entries") or []):
@@ -3403,6 +3406,106 @@ async def audit_eps_58_dob_check(
                         "issue": issue,
                     })
     return {"at_risk": at_risk}
+
+
+@app.get("/api/admin/audit/date-format-scan")
+async def audit_date_format_scan(
+    current_user: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Read-only: scans EVERY employee's DOB/DOJ/DOE across EVERY establishment
+    (not scoped to the old age_crosses_58 flag like eps-58-dob-check above) for
+    any date string that isn't already the canonical DD-MM-YYYY. Real EPFO
+    "Active Members" portal exports are not even internally consistent with
+    themselves -- DD-MMM-YYYY (4-digit year), DD-Mon-YY (2-digit year), and the
+    correct DD-MM-YYYY have all been found in real establishments' data.
+    Changes nothing -- see the paired POST .../date-format-apply to act on it."""
+    fixable = []
+    unrecognized = []
+    establishments = db.query(Establishment).all()
+    for est in establishments:
+        try:
+            data = json.loads(est.data)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        master = data.get("master", {})
+        for member_id, m in master.items():
+            if not isinstance(m, dict):
+                continue
+            for field in ("dob", "doj", "doe"):
+                current = (m.get(field) or "").strip()
+                if not current:
+                    continue
+                normalized = normalize_date_string(current)
+                row = {
+                    "establishment_id": est.id,
+                    "establishment_code": data.get("code", ""),
+                    "establishment_name": data.get("name", ""),
+                    "member_id": member_id,
+                    "member_name": m.get("name", ""),
+                    "field": field,
+                    "current": current,
+                }
+                if normalized is None:
+                    unrecognized.append(row)
+                elif normalized != current:
+                    row["normalized"] = normalized
+                    fixable.append(row)
+    return {
+        "establishments_scanned": len(establishments),
+        "fixable": fixable,
+        "unrecognized": unrecognized,
+    }
+
+
+@app.post("/api/admin/audit/date-format-apply")
+async def audit_date_format_apply(
+    current_user: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Re-runs the same scan as GET .../date-format-scan server-side (never
+    trusts any client-supplied replacement values) and WRITES every fixable
+    row directly to that establishment's raw stored JSON -- a pure reformat
+    of a date already present, never a guessed value. Idempotent: running
+    this twice finds nothing left to do on the second run."""
+    applied = []
+    establishments = db.query(Establishment).all()
+    for est in establishments:
+        try:
+            data = json.loads(est.data)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        master = data.get("master", {})
+        changed = False
+        for member_id, m in master.items():
+            if not isinstance(m, dict):
+                continue
+            for field in ("dob", "doj", "doe"):
+                current = (m.get(field) or "").strip()
+                if not current:
+                    continue
+                normalized = normalize_date_string(current)
+                if normalized and normalized != current:
+                    applied.append({
+                        "establishment_id": est.id,
+                        "establishment_code": data.get("code", ""),
+                        "establishment_name": data.get("name", ""),
+                        "member_id": member_id,
+                        "member_name": m.get("name", ""),
+                        "field": field,
+                        "current": current,
+                        "normalized": normalized,
+                    })
+                    m[field] = normalized
+                    changed = True
+        if changed:
+            est.data = json.dumps(data)
+    db.commit()
+    return {"applied": applied, "count": len(applied)}
 
 
 def _route_cashfree_confirmation(db: Session, order_id: str, payment_ref: str, source_label: str) -> None:
