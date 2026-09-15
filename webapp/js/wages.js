@@ -1075,6 +1075,13 @@ App.registerPage('wage-entry', async (container) => {
           </tbody>
         </table>
       </div>
+      <div style="display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--text2); padding:12px; border-top:1px solid var(--card-border);">
+        <label for="bulk-page-size">Show</label>
+        <select class="form-select" id="bulk-page-size" style="width:80px" onchange="setBulkPageSize(this.value)">
+          ${[10, 20, 50, 100].map(n => `<option value="${n}" ${n === bulkPageSize ? 'selected' : ''}>${n}</option>`).join('')}
+        </select>
+        <span>records per page</span>
+      </div>
       <div id="bulk-pagination-container"></div>
     </div>
   </div>`;
@@ -1214,7 +1221,7 @@ let bulkTableStateMonthIdx = null; // which month bulkTableState's cached values
 window.bulkTableVisibleIds = [];
 window.bulkTableManualIds = [];
 let currentBulkPage = 1;
-const BULK_PAGE_SIZE = 50;
+let bulkPageSize = 10; // rows per page -- user-selectable 10/20/50/100
 
 window.toggleSelectAllWageRows = (headerChk) => {
   document.querySelectorAll('.b-select-row').forEach(cb => { cb.checked = headerChk.checked; });
@@ -1625,6 +1632,13 @@ window.setBulkPage = (page) => {
   renderMonthlyTable();
 };
 
+window.setBulkPageSize = (val) => {
+  syncBulkTableState();
+  bulkPageSize = parseInt(val, 10) || 10;
+  currentBulkPage = 1;
+  renderMonthlyTable();
+};
+
 window.renderMonthlyTable = () => {
   const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
   const tbody = document.getElementById('bulk-wage-body');
@@ -1639,8 +1653,12 @@ window.renderMonthlyTable = () => {
 
   let html = '';
 
-  const start = (currentBulkPage - 1) * BULK_PAGE_SIZE;
-  const sliced = allVisibleEmps.slice(start, start + BULK_PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(allVisibleEmps.length / bulkPageSize));
+  if (currentBulkPage > totalPages) currentBulkPage = totalPages;
+  if (currentBulkPage < 1) currentBulkPage = 1;
+
+  const start = (currentBulkPage - 1) * bulkPageSize;
+  const sliced = allVisibleEmps.slice(start, start + bulkPageSize);
 
   sliced.forEach((master, idx) => {
     const state = bulkTableState[master.member_id] || { g: 0, w: 0, n: 0, higher_ee: false, higher_er: false, pohw: false, pohw116: false, isCopied: false };
@@ -1700,7 +1718,7 @@ window.renderMonthlyTable = () => {
 
   const pgContainer = document.getElementById('bulk-pagination-container');
   if (pgContainer) {
-    pgContainer.innerHTML = App.renderPagination(allVisibleEmps.length, currentBulkPage, BULK_PAGE_SIZE, 'setBulkPage');
+    pgContainer.innerHTML = App.renderPagination(allVisibleEmps.length, currentBulkPage, bulkPageSize, 'setBulkPage');
   }
 
   // Attach listeners
