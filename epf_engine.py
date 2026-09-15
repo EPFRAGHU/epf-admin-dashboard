@@ -297,7 +297,6 @@ def import_wages_from_excel(filepath: str, sheet_name=None, import_type="yearly"
         elif "reason" in text: col_map["reason_leaving"] = idx
         elif text == "sl" or text == "sl no": col_map["serial_no"] = idx
         elif "higher" in text and "epf" in text: col_map["higher_epf"] = idx
-        elif "age" in text and "58" in text: col_map["age_crosses_58"] = idx
         elif text == "total":
             col_map["total"] = idx
         else:
@@ -443,7 +442,6 @@ def import_wages_from_excel(filepath: str, sheet_name=None, import_type="yearly"
 
         records[-1]["gross_wages"] = gross_wages
         records[-1]["higher_epf"] = get_bool("higher_epf")
-        records[-1]["age_crosses_58"] = get_bool("age_crosses_58")
 
     return records, warnings
 
@@ -1032,8 +1030,13 @@ class Project:
                        doe="", reason_leaving="", serial_no=None, relationship="", marital_status="",
                        mobile="", email="", aadhaar="", bank_account="", ifsc="",
                        higher_epf_ee=False, higher_epf_er=False,
-                       pohw=False, pohw_additional_1_16=False, eps_member=True,
+                       pohw=False, pohw_additional_1_16=False,
+                       eps_member: Optional[bool] = None,
                        branch_id=None, division_id=None, unit_id=None):
+        # eps_member defaults to None, not True: callers that update an existing
+        # employee without saying anything about EPS membership (the bulk wage/ECR
+        # Excel importers) must not silently flip a deliberate eps_member=False back
+        # on. A genuinely new employee still defaults to True below.
         member_id = normalize_member_id(member_id)
 
         if branch_id is None:
@@ -1070,7 +1073,8 @@ class Project:
             m.higher_epf_er = higher_epf_er
             m.pohw = pohw
             m.pohw_additional_1_16 = pohw_additional_1_16
-            m.eps_member = eps_member
+            if eps_member is not None:
+                m.eps_member = eps_member
             m.branch_id = branch_id
             m.division_id = division_id
             m.unit_id = unit_id
@@ -1085,7 +1089,7 @@ class Project:
                                                        bank_account=bank_account, ifsc=ifsc,
                                                        higher_epf_ee=higher_epf_ee, higher_epf_er=higher_epf_er,
                                                        pohw=pohw, pohw_additional_1_16=pohw_additional_1_16,
-                                                       eps_member=eps_member,
+                                                       eps_member=eps_member if eps_member is not None else True,
                                                        branch_id=branch_id, division_id=division_id, unit_id=unit_id)
 
     # ---- org structure: Branch -> Division -> Unit ----

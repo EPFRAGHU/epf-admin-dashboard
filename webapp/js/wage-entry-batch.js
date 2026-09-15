@@ -71,7 +71,10 @@ async function webLoadMonth(yearKey, monthIdx) {
   webMonthIdx = monthIdx;
   const [wagesRes, masterRes, batchesRes] = await Promise.all([
     App.get(`/api/years/${yearKey}/wages`),
-    App.get('/api/employees'),
+    // year_key makes each master row carry its own server-computed eps_zero_months[12],
+    // independent of whether that employee has a wage entry this year yet -- which is
+    // exactly the case this page's search-and-add flow exists for.
+    App.get(`/api/employees?year_key=${encodeURIComponent(yearKey)}`),
     App.get(`/api/years/${yearKey}/wage-batches/${monthIdx}`),
   ]);
   webWagesData = wagesRes;
@@ -182,11 +185,15 @@ function webRow(memberId) {
     gross_wages: wageRow ? wageRow.gross_wages : new Array(12).fill(0),
     wages: wageRow ? wageRow.wages : new Array(12).fill(0),
     ncp_days: wageRow ? wageRow.ncp_days : new Array(12).fill(0),
-    // eps_zero_months/eps_member come from the server (GET .../wages), computed by
-    // the same is_eps_zero_for_month() the backend uses everywhere else -- never
-    // reimplement the age/month-boundary rule client-side (see the ER PF rounding
-    // bug this project already hit once for why).
-    eps_zero_months: wageRow ? wageRow.eps_zero_months : new Array(12).fill(false),
+    // eps_zero_months/eps_member come from the server, computed by the same
+    // is_eps_zero_for_month() the backend uses everywhere else -- never reimplement
+    // the age/month-boundary rule client-side (see the ER PF rounding bug this
+    // project already hit once for why). Prefer the master-sourced array: it is
+    // year-aware but entry-INDEPENDENT, so employees with no wage entry yet get their
+    // real eligibility instead of defaulting to "EPS applies". The wage-row array is
+    // only a fallback for a master row fetched without year_key.
+    eps_zero_months: master.eps_zero_months
+      || (wageRow ? wageRow.eps_zero_months : new Array(12).fill(false)),
     eps_member: master.eps_member !== false,
     // These four are master-level flags (not per-year-entry), so pulling them
     // from webMaster is correct whether or not an entry exists yet this year.

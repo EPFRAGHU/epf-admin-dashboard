@@ -4917,12 +4917,22 @@ async def delete_unit(
 
 # ── Employees Endpoints ───────────────────────────────────────────────────
 @app.get("/api/employees")
-async def list_employees(active: Tuple[Establishment, Project] = Depends(get_active_establishment)):
+async def list_employees(
+    year_key: Optional[str] = None,
+    active: Tuple[Establishment, Project] = Depends(get_active_establishment)
+):
     est_obj, project = active
+    # When a financial year is supplied, every employee also gets a 12-entry
+    # eps_zero_months array -- server-computed, DOB-driven EPS eligibility per
+    # wage month. This is deliberately independent of whether the employee has a
+    # wage entry for that year yet, so newly-added employees are covered too.
+    year_from = None
+    if year_key and year_key in project.years:
+        year_from = project.years[year_key].year_from
     rows = []
     for m in project.master_list():
         age = calc_age_years(m.dob)
-        rows.append({
+        row = {
             "member_id": m.member_id, "name": m.name,
             "father_name": m.father_name, "uan": m.uan,
             "dob": m.dob, "sex": m.sex, "doj": m.doj, "doe": m.doe,
@@ -4938,7 +4948,13 @@ async def list_employees(active: Tuple[Establishment, Project] = Depends(get_act
             "division_id": m.division_id,
             "unit_id": m.unit_id,
             "scope_path": resolve_employee_scope_path(m, project),
-        })
+        }
+        if year_from is not None:
+            row["eps_zero_months"] = [
+                (not m.eps_member) or is_eps_zero_for_month(m.dob, i, year_from)
+                for i in range(12)
+            ]
+        rows.append(row)
     return {"employees": rows, "total": len(rows)}
 
 

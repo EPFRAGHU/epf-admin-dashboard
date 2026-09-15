@@ -466,3 +466,100 @@ def test_eps_58_dob_audit_flags_missing_dob(consultant_a, superadmin_session, te
 def test_eps_58_dob_audit_requires_superadmin(consultant_a):
     res = consultant_a.get("/api/admin/audit/eps-58-dob-check")
     assert res.status_code == 403
+
+
+def test_list_employees_eps_zero_months_with_year_key(consultant_a):
+    """GET /api/employees?year_key=... must attach a 12-entry eps_zero_months array
+    to EVERY employee -- including one with no wage entry for that year at all.
+    That entry-independence is the whole point: GET /api/years/{key}/wages only ever
+    lists employees who already have an entry, so the wage-entry UIs could never get
+    the right EPS eligibility for a freshly-added member from it.
+
+    Same DOB boundary as test_get_wages_returns_eps_zero_months_not_age_crosses_58:
+    DOB 15-06-1968 with year_from 2026 turns 58 mid-June-2026, so month_idx 3 (June)
+    is still EPS and month_idx 4 (July) onward is zero.
+    """
+    res = consultant_a.post("/api/establishments", json={
+        "coverage_date": "01-04-2020", "code": "EPSL0001", "name": "EPS List Co",
+    })
+    assert res.status_code == 200, res.text
+    consultant_a.set_establishment(res.json()["establishment"]["id"])
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    res = consultant_a.post("/api/employees", json={
+        "member_id": "EPSL001", "name": "No Entry Boundary Employee",
+        "uan": "100900000020", "dob": "15-06-1968",
+    })
+    assert res.status_code == 200, res.text
+    res = consultant_a.post("/api/employees", json={
+        "member_id": "EPSL002", "name": "No Entry Non Member",
+        "uan": "100900000021", "dob": "01-01-1995", "eps_member": False,
+    })
+    assert res.status_code == 200, res.text
+
+    # Deliberately NO wage entry is created for either employee.
+    data = consultant_a.get("/api/employees?year_key=2026-27").json()
+
+    boundary = next(e for e in data["employees"] if e["member_id"] == "EPSL001")
+    assert len(boundary["eps_zero_months"]) == 12
+    assert boundary["eps_zero_months"][:4] == [False, False, False, False]  # Mar-Jun
+    assert all(boundary["eps_zero_months"][4:]), boundary["eps_zero_months"]  # Jul->Feb
+
+    # A non-EPS member is zeroed for all 12 months regardless of age.
+    non_member = next(e for e in data["employees"] if e["member_id"] == "EPSL002")
+    assert non_member["eps_member"] is False
+    assert non_member["eps_zero_months"] == [True] * 12
+
+
+def test_list_employees_without_year_key_omits_eps_zero_months(consultant_a):
+    """The year_key param is purely additive -- existing callers that don't pass it
+    must get exactly the response they got before."""
+    res = consultant_a.post("/api/establishments", json={
+        "coverage_date": "01-04-2020", "code": "EPSL0002", "name": "EPS List Plain Co",
+    })
+    assert res.status_code == 200, res.text
+    consultant_a.set_establishment(res.json()["establishment"]["id"])
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    consultant_a.post("/api/employees", json={
+        "member_id": "EPSL003", "name": "Plain Employee",
+        "uan": "100900000022", "dob": "15-06-1968",
+    })
+
+    emp = next(e for e in consultant_a.get("/api/employees").json()["employees"]
+               if e["member_id"] == "EPSL003")
+    assert "eps_zero_months" not in emp
+
+    # An unknown/blank year key is tolerated the same way, not a 500.
+    res = consultant_a.get("/api/employees?year_key=1999-00")
+    assert res.status_code == 200, res.text
+    emp = next(e for e in res.json()["employees"] if e["member_id"] == "EPSL003")
+    assert "eps_zero_months" not in emp
+
+
+def test_upsert_master_update_without_eps_member_preserves_false():
+    """The bulk wage/ECR Excel importers in webapp/app.py call upsert_master() to
+    refresh identity fields and never pass eps_member. Before the fix, the parameter
+    defaulted to True and was assigned unconditionally on the update path, silently
+    re-enabling EPS deduction for a member deliberately marked as a non-member."""
+    p = Project()
+    p.set_establishment("EST1", "Test Co", "Addr")
+    p.upsert_master("M1", "Test Employee", eps_member=False)
+    assert p.master["M1"].eps_member is False
+
+    p.upsert_master("M1", "Test Employee", father_name="Father Name")
+    assert p.master["M1"].eps_member is False, "importer-style update reset eps_member"
+    assert p.master["M1"].father_name == "Father Name"
+
+    # An explicit value still wins in both directions.
+    p.upsert_master("M1", "Test Employee", eps_member=True)
+    assert p.master["M1"].eps_member is True
+    p.upsert_master("M1", "Test Employee", eps_member=False)
+    assert p.master["M1"].eps_member is False
+
+
+def test_upsert_master_create_without_eps_member_still_defaults_true():
+    """Changing the default to None must not change what a genuinely NEW employee
+    gets -- EPS membership is still the default for a new member."""
+    p = Project()
+    p.set_establishment("EST1", "Test Co", "Addr")
+    p.upsert_master("M9", "Brand New Employee")
+    assert p.master["M9"].eps_member is True

@@ -322,9 +322,16 @@ function renderWageCard(emp) {
 
 window.showWageModal = async (emp = null) => {
   const isEdit = !!emp;
-  const { employees } = await App.get('/api/employees');
+  // year_key makes the backend attach a per-employee eps_zero_months[12] array --
+  // server-computed, DOB-driven EPS eligibility for this financial year. Never
+  // recompute the age-58 / eps_member rule client-side.
+  const { employees } = await App.get(`/api/employees?year_key=${encodeURIComponent(currentYearKey)}`);
 
   window._currentEmployees = employees;
+  // The master record for whoever this modal is currently showing: set on open in edit
+  // mode, re-pointed by the employee-search change handler below in add mode. Its
+  // server-computed eps_zero_months[] drives updateCalculations()'s per-month EPS gating.
+  let selectedMaster = isEdit ? employees.find(e => e.member_id === emp.member_id) : null;
   const initialEmpValue = isEdit ? `${emp.member_id} - ${emp.name}${emp.uan ? ' - UAN: ' + emp.uan : ''}` : '';
 
   const mths = constantsCache.months;
@@ -460,20 +467,23 @@ window.showWageModal = async (emp = null) => {
       const w = parseInt(wInp.value, 10) || 0;
       const ncp = parseInt(nInp.value, 10) || 0;
       const ceiling = r.wage_ceilings ? r.wage_ceilings[i] : 15000;
+      // Server-computed, DOB-driven EPS eligibility for month i -- never recomputed here.
+      const epsZero = selectedMaster && selectedMaster.eps_zero_months
+        ? !!selectedMaster.eps_zero_months[i] : false;
 
       let wEpf = 0, eEps = 0, eEpf = 0;
 
       if (r.e_eps > 0) {
         const workerWageBase = isPohw ? w : (isHigherEpfEe ? w : Math.min(w, ceiling));
         const erTotalWageBase = isPohw ? w : (isHigherEpfEr ? w : Math.min(w, ceiling));
-        const epsWage = isPohw ? w : Math.min(w, ceiling);
+        const epsWage = epsZero ? 0 : (isPohw ? w : Math.min(w, ceiling));
 
         wEpf = calculateRow(workerWageBase, r.w_epf);
         eEps = calculateRow(epsWage, r.e_eps);
         const totalErContrib = calculateRow(erTotalWageBase, r.w_epf);
         eEpf = Math.max(0, totalErContrib - eEps);
 
-        if (isPohw && isPohw116 && w > ceiling) {
+        if (isPohw && isPohw116 && !epsZero && w > ceiling) {
           // Redistribution, not additional employer outgo -- moved out of eEpf into
           // eEps, so total employer contribution stays capped at the standard 12% of
           // wage. Mirrors Employee.month_rows() in epf_engine.py.
@@ -602,6 +612,7 @@ window.showWageModal = async (emp = null) => {
       });
 
       if (matchedMaster) {
+        selectedMaster = matchedMaster; // so updateCalculations() gates EPS on this member's eps_zero_months
         if (detailsDiv) {
           detailsDiv.style.display = 'block';
           detailsDiv.innerHTML = `
@@ -944,8 +955,9 @@ App.registerPage('wage-entry', async (container) => {
 
   currentWagesData = await App.get(`/api/years/${currentYearKey}/wages`);
 
-  // Ensure master employees are loaded
-  const { employees: masterEmployees } = await App.get('/api/employees');
+  // Ensure master employees are loaded. year_key makes each row carry the
+  // server-computed eps_zero_months[12] array used by calcBulkRow().
+  const { employees: masterEmployees } = await App.get(`/api/employees?year_key=${encodeURIComponent(currentYearKey)}`);
   window._masterEmployees = masterEmployees;
 
   // Fetch previous year data for March fallback
@@ -1260,7 +1272,7 @@ window.openExitModalForWageRow = (memberId) => {
   showEmpModal(masterEmp, {
     onSaved: async () => {
       try {
-        const { employees } = await App.get('/api/employees');
+        const { employees } = await App.get(`/api/employees?year_key=${encodeURIComponent(currentYearKey)}`);
         window._masterEmployees = employees;
       } catch (_) { }
       renderMonthlyTable();
@@ -1741,6 +1753,14 @@ window.renderMonthlyTable = () => {
 };
 
 window.calcBulkRow = (tr) => {
+  // EPS eligibility is never recomputed here -- it comes straight from the
+  // server-computed eps_zero_months[] that GET /api/employees?year_key=... attaches
+  // (same is_eps_zero_for_month() the calc engine, reports and ECR all use).
+  const memberId = tr.dataset.id;
+  const monthIdx = parseInt(document.getElementById('bulk-month-select').value, 10);
+  const master = (window._masterEmployees || []).find(m => m.member_id === memberId);
+  const epsZero = master && master.eps_zero_months ? !!master.eps_zero_months[monthIdx] : false;
+
   const dim = parseInt(tr.querySelector('.b-dim').textContent, 10);
   const ncp = parseInt(tr.querySelector('.b-ncp').value, 10) || 0;
   tr.querySelector('.b-work').textContent = Math.max(0, dim - ncp);
@@ -1763,7 +1783,7 @@ window.calcBulkRow = (tr) => {
   if (r.e_eps > 0) {
     const workerWageBase = pohw ? w : (higherEe ? w : Math.min(w, ceiling));
     const erTotalWageBase = pohw ? w : (higherEr ? w : Math.min(w, ceiling));
-    const epsWage = pohw ? w : Math.min(w, ceiling);
+    const epsWage = epsZero ? 0 : (pohw ? w : Math.min(w, ceiling));
     epsWageFinal = epsWage;
 
     wEpf = calcRow(workerWageBase, r.w_epf);
@@ -1771,7 +1791,7 @@ window.calcBulkRow = (tr) => {
     const totalErContrib = calcRow(erTotalWageBase, r.w_epf);
     eEpf = Math.max(0, totalErContrib - eEps);
 
-    if (pohw && pohw116 && w > ceiling) {
+    if (pohw && pohw116 && !epsZero && w > ceiling) {
       // Redistribution, not additional employer outgo -- moved out of eEpf into eEps,
       // so total employer contribution stays capped at the standard 12% of wage.
       const additional116 = calcRow(w - ceiling, 1.16);
