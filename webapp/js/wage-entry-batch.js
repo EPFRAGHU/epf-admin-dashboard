@@ -313,7 +313,7 @@ function webRowHtml(memberId, mode, serial) {
     <td style="text-align:center"><input type="checkbox" ${isSel ? 'checked' : ''} onchange="webToggleRow('${memberId}', this.checked)"></td>
     <td style="text-align:center">${statusCell}</td>
     <td style="font-family:monospace; font-size:12px; cursor:pointer; color:var(--accent2);" onclick="webOpenHistory('${memberId}')" title="View this employee's Mar-Feb wage history">${App.esc(row.uan || '—')}</td>
-    <td>${App.esc(row.name)}${row.eps_member !== false && row.eps_zero_months && row.eps_zero_months[webMonthIdx] ? ' <span class="badge high" style="font-size:10px;">58+</span>' : ''}</td>
+    <td>${App.esc(row.name)}${row.eps_member !== false && row.eps_zero_months && row.eps_zero_months[webMonthIdx] ? ' <span class="badge high" style="font-size:10px;">58+</span>' : ''}${row.eps_member === false ? ' <span class="badge high" style="font-size:10px;">Not EPS Member</span>' : ''}</td>
     <td style="text-align:center">${c.days}</td>
     ${ncpCell}
     <td style="text-align:center" id="web-wd-${memberId}">${c.workDays}</td>

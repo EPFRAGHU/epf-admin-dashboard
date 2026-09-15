@@ -253,6 +253,7 @@ function renderWageCard(emp) {
             ${emp.doj ? `DOJ: <strong>${App.esc(emp.doj)}</strong>` : ''}
             ${emp.doe ? ` | DOE: <strong>${App.esc(emp.doe)}</strong>` : ''}
             ${emp.eps_member !== false && emp.eps_zero_months && emp.eps_zero_months.some(Boolean) ? '<span class="badge high" style="margin-left:6px; font-size:10px;">58+</span>' : ''}
+            ${emp.eps_member === false ? '<span class="badge high" style="margin-left:6px; font-size:10px;">Not EPS Member</span>' : ''}
           </div>
           ${emp.higher_epf_ee || emp.higher_epf_er || emp.pohw ? `
           <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
@@ -1660,6 +1661,7 @@ window.renderMonthlyTable = () => {
                 <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
                   <div style="font-weight:700; font-size:15px;">${App.esc(master.name)}</div>
                   ${master.eps_member !== false && master.eps_zero_months && master.eps_zero_months[monthIdx] ? '<span class="badge high" style="font-size:11px; font-weight:700; padding:3px 8px;">58+</span>' : ''}
+                  ${master.eps_member === false ? '<span class="badge high" style="font-size:11px; font-weight:700; padding:3px 8px;">Not EPS Member</span>' : ''}
                   ${master.doj ? `<span class="badge" style="background:rgba(31,170,89,.15); color:var(--green); font-size:11px; font-weight:700; padding:3px 8px;">Joined ${App.esc(master.doj)}</span>` : ''}
                   ${master.doe ? `<span class="badge high" style="font-size:11px; font-weight:700; padding:3px 8px;">Exited ${App.esc(master.doe)}</span>` : ''}
                 </div>
