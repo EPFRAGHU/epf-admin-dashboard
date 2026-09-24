@@ -201,6 +201,8 @@ function webRow(memberId) {
     higher_epf_er: master.higher_epf_er,
     pohw: master.pohw,
     pohw_additional_1_16: master.pohw_additional_1_16,
+    epf_from: master.epf_from || '',
+    eps_from: master.eps_from || '',
   };
 }
 function webWhichBatch(memberId) {
@@ -231,28 +233,31 @@ function webCalendarDaysInMonth(monthIdx) {
   return new Date(targetYear, monthNumber, 0).getDate();
 }
 
-// Live preview only (before Save persists it) -- deliberately the same simple
-// formula as the old bulk table's non-higher-EPF/non-PoHW case, except EPS
-// eligibility (epsZero) IS live-accurate: callers pass in the server-computed
-// eps_zero_months[monthIdx] for this row. Higher EPF / PoHW overrides aren't
-// editable from this page; an employee who already has one of those flags set
-// keeps it untouched on Save (see webCommit), but the LIVE number shown here
-// while typing won't reflect that override until you Save and the real
-// per-month breakdown is refetched.
-function webCalcLive(wage, ncp, epsZero) {
+// Live preview only (before Save persists it). Wage bases come from the shared
+// window.calcWageBases() (wages.js), fed the server's per-month ceiling periods and this
+// row's own flags (Higher EPF / PoHW / EPS-from / EPF-from), so a month that straddles a
+// ceiling change is prorated exactly as the server will. EPS eligibility (epsZero) is
+// live-accurate: callers pass in the server-computed eps_zero_months[monthIdx].
+// Higher EPF / PoHW aren't editable from this page; a row that already has one set
+// keeps it untouched on Save (see webCommit) and the preview now reflects it.
+function webCalcLive(wage, ncp, epsZero, row) {
   const r = webWagesData.rates;
-  const ceiling = (r.wage_ceilings && r.wage_ceilings[webMonthIdx]) || 15000;
   const days = webCalendarDaysInMonth(webMonthIdx);
   const workDays = Math.max(0, days - (ncp || 0));
-  const epsWage = epsZero ? 0 : Math.min(wage || 0, ceiling);
-  const ee = Math.round((wage || 0) * (r.w_epf / 100));
-  const pension = Math.round(epsWage * (r.e_eps / 100));
+  const bases = window.calcWageBases(wage || 0, window.ceilingSegmentsFor(r, webMonthIdx), {
+    higherEe: !!(row && row.higher_epf_ee), higherEr: !!(row && row.higher_epf_er),
+    pohw: !!(row && row.pohw), epsZero: !!epsZero,
+    epfFrom: row && row.epf_from, epsFrom: row && row.eps_from,
+  });
+  const epsWage = Math.round(bases.eps);
+  const ee = Math.round(bases.epf * (r.w_epf / 100));
+  const pension = Math.round(bases.eps * (r.e_eps / 100));
   // ER PF is the REMAINDER of the employer's total contribution (same rate as EE,
   // r.w_epf) after Pension is taken out -- not an independently-rounded 3.67%.
   // Matches epf_engine.py's month_rows() exactly (e_epf = total_er_contrib - e_eps);
   // rounding e_epf on its own can land on a .5 boundary Pension already claimed
   // (e.g. wage 15000: 15000*3.67%=550.5 rounds to 551, but EE 1800 - Pension 1250 = 550).
-  const er = Math.max(0, ee - pension);
+  const er = Math.max(0, Math.round(bases.er * (r.w_epf / 100)) - pension);
   return { days, workDays, epsWage, ee, er, pension };
 }
 
@@ -285,7 +290,7 @@ function webRowHtml(memberId, mode, serial) {
     };
   }
   const vals = editable ? webEdits[memberId] : { g: row.gross_wages[webMonthIdx] || 0, w: row.wages[webMonthIdx] || 0, n: row.ncp_days[webMonthIdx] || 0 };
-  const c = webCalcLive(vals.w, vals.n, row.eps_zero_months ? row.eps_zero_months[webMonthIdx] : false);
+  const c = webCalcLive(vals.w, vals.n, row.eps_zero_months ? row.eps_zero_months[webMonthIdx] : false, row);
   const isSel = webSelected.has(memberId);
 
   const wageCells = editable
@@ -416,7 +421,7 @@ function webUpdateDraftCell(memberId, field, val) {
   webEdits[memberId][field] = Number(val) || 0;
   const v = webEdits[memberId];
   const row = webRow(memberId);
-  const c = webCalcLive(v.w, v.n, row && row.eps_zero_months ? row.eps_zero_months[webMonthIdx] : false);
+  const c = webCalcLive(v.w, v.n, row && row.eps_zero_months ? row.eps_zero_months[webMonthIdx] : false, row);
   const wd = document.getElementById(`web-wd-${memberId}`); if (wd) wd.textContent = c.workDays;
   const eps = document.getElementById(`web-eps-${memberId}`); if (eps) eps.textContent = v.w ? webRupee(c.epsWage) : '—';
   const ee = document.getElementById(`web-ee-${memberId}`); if (ee) ee.textContent = v.w ? webRupee(c.ee) : '—';
@@ -643,7 +648,7 @@ function webOpenHistory(memberId) {
       : { g: row.gross_wages[idx] || 0, w: row.wages[idx] || 0, n: row.ncp_days[idx] || 0 };
     const savedMonth = webMonthIdx;
     const oldIdx = webMonthIdx; webMonthIdx = idx; // reuse webCalcLive's ceiling/day lookup for the right month
-    const c = webCalcLive(rec.w, rec.n, row.eps_zero_months ? row.eps_zero_months[idx] : false);
+    const c = webCalcLive(rec.w, rec.n, row.eps_zero_months ? row.eps_zero_months[idx] : false, row);
     webMonthIdx = oldIdx;
     const isCur = idx === savedMonth;
     return `<tr${isCur ? ' style="background:var(--accent-glow, rgba(108,92,231,.1)); font-weight:700;"' : ''}>
@@ -745,7 +750,7 @@ function webRenderFePanel() {
   }
   const p = webCurrentPick;
   const pickRow = webRow(p.member_id);
-  const c = webCalcLive(Number(p.w) || 0, Number(p.n) || 0, pickRow && pickRow.eps_zero_months ? pickRow.eps_zero_months[webMonthIdx] : false);
+  const c = webCalcLive(Number(p.w) || 0, Number(p.n) || 0, pickRow && pickRow.eps_zero_months ? pickRow.eps_zero_months[webMonthIdx] : false, pickRow);
   const prev = p.source === 'new' ? webPrevMonthData(p.member_id) : null;
   panel.innerHTML = `
     <div style="background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:16px;">
@@ -781,7 +786,7 @@ function webUpdatePick(field, val) {
   webCurrentPick[field] = val;
   const p = webCurrentPick;
   const pickRow = webRow(p.member_id);
-  const c = webCalcLive(Number(p.w) || 0, Number(p.n) || 0, pickRow && pickRow.eps_zero_months ? pickRow.eps_zero_months[webMonthIdx] : false);
+  const c = webCalcLive(Number(p.w) || 0, Number(p.n) || 0, pickRow && pickRow.eps_zero_months ? pickRow.eps_zero_months[webMonthIdx] : false, pickRow);
   const wd = document.getElementById('web-fe-work-days'); if (wd) wd.value = c.workDays;
   const eps = document.getElementById('web-fe-eps-wages'); if (eps) eps.value = webRupee(c.epsWage);
   const ee = document.getElementById('web-fe-ee'); if (ee) ee.textContent = webRupee(c.ee);

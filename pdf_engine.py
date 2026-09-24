@@ -12,7 +12,7 @@ from reportlab.platypus import (
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from reportlab.pdfgen.canvas import Canvas
 from xml.sax.saxutils import escape as _xml_escape
-from epf_engine import natural_sort_key, is_eps_zero_for_month
+from epf_engine import natural_sort_key, is_eps_zero_for_month, round_contribution
 
 
 def esc(value) -> str:
@@ -243,15 +243,7 @@ def generate_monthly_wage_entry_pdf(project, est, employees, filepath: str, mont
         wage_raw = int(round(float(emp.wages[month_idx]))) if emp.wages[month_idx] else 0
         ceiling = wage_ceilings[month_idx] if wage_ceilings and month_idx < len(wage_ceilings) else 15000
         eps_zero = (not emp.eps_member) or is_eps_zero_for_month(emp.dob, month_idx, emp.year_from)
-        if est.employer_eps_rate > 0:
-            if eps_zero:
-                eps_wage_base = 0
-            elif emp.pohw:
-                eps_wage_base = wage_raw
-            else:
-                eps_wage_base = min(wage_raw, ceiling)
-        else:
-            eps_wage_base = 0
+        eps_wage_base = round_contribution(emp.wage_bases(month_idx, wage_raw, ceiling).eps, True) if est.employer_eps_rate > 0 else 0
 
         ncp = emp.ncp_days[month_idx] if hasattr(emp, 'ncp_days') and month_idx < len(emp.ncp_days) else 0
         work_days = max(0, days_in_month - (ncp or 0))
@@ -457,16 +449,7 @@ def generate_yearly_wage_checklist_pdf(project, est, employees, filepath: str):
             gross = emp.gross_wages[i] if i < len(emp.gross_wages) else 0
             wage_raw = emp.wages[i] if i < len(emp.wages) else 0
             ceiling = wage_ceilings[i] if wage_ceilings and i < len(wage_ceilings) else 15000
-            eps_zero = (not emp.eps_member) or is_eps_zero_for_month(emp.dob, i, emp.year_from)
-            if est.employer_eps_rate > 0:
-                if eps_zero:
-                    eps_wage_base = 0
-                elif emp.pohw:
-                    eps_wage_base = wage_raw
-                else:
-                    eps_wage_base = min(wage_raw, ceiling)
-            else:
-                eps_wage_base = 0
+            eps_wage_base = round_contribution(emp.wage_bases(i, wage_raw, ceiling).eps, True) if est.employer_eps_rate > 0 else 0
             rows_by_key["gross"].append(gross)
             rows_by_key["epf"].append(wages)
             rows_by_key["eps_wage"].append(eps_wage_base)
@@ -890,7 +873,9 @@ def generate_form_12a_pdf(project, year_key: str, filepath: str, member_ids: Opt
     from epf_engine import calendar_year_for_month, get_month_num, account2_rate_percent, account22_rate_percent, account2_min_floor, account22_min_floor, ACCOUNT_21_RATE, ACCOUNT_22_MIN, ACCOUNT_2_MIN, MONTHS
     
     all_month_rows = [emp.month_rows(est.worker_epf_rate, est.worker_eps_rate, est.employer_epf_rate, est.employer_eps_rate) for emp in employees]
-    
+    from epf_engine import default_wage_ceilings, reported_epf_wage
+    year_ceilings = default_wage_ceilings(est.year_from)   # same ceilings month_rows() just used
+
     grand = [0] * 7 # members (summed? no), a1, a2, a10, a21, a22, total
     
     for i, month_label in enumerate(MONTHS):
@@ -901,7 +886,8 @@ def generate_form_12a_pdf(project, year_key: str, filepath: str, member_ids: Opt
         month_remittances = [r for r in all_remittances if r.get("month_label") == month_label]
         
         if not month_remittances:
-            wages_total = sum(rows[i][0] for rows in all_month_rows)
+            wages_total = sum(reported_epf_wage(emp, i, rows[i][0], year_ceilings[i])
+                              for emp, rows in zip(employees, all_month_rows))
             ee_total = sum(rows[i][1] for rows in all_month_rows)
             er_total = sum(rows[i][4] for rows in all_month_rows)
             a10_total = sum(rows[i][5] for rows in all_month_rows)

@@ -195,7 +195,7 @@ from epf_engine import (
     REASONS_FOR_LEAVING, SUPERANNUATION_AGE, calc_age_years, is_eps_zero_for_month,
     normalize_date_string,
     import_wages_from_excel, generate_form9, import_master_from_excel, parse_ecr_text_file,
-    natural_sort_key, get_wage_ceilings_for_year,
+    natural_sort_key, get_wage_ceilings_for_year, round_contribution, reported_epf_wage,
     account2_rate_percent, account22_rate_percent, account2_min_floor, account22_min_floor,
     ACCOUNT_21_RATE, ACCOUNT_22_MIN, ACCOUNT_2_MIN,
     generate_ecr_month, calendar_year_for_month, Employee,
@@ -1104,9 +1104,23 @@ class EmployeeIn(BaseModel):
     pohw: bool = False
     pohw_additional_1_16: bool = False
     eps_member: bool = True
+    epf_from: Optional[str] = None   # None = leave untouched on update; "" = clear
+    eps_from: Optional[str] = None
     branch_id: Optional[int] = None
     division_id: Optional[int] = None
     unit_id: Optional[int] = None
+
+def _clean_coverage_date(value: Optional[str]) -> Optional[str]:
+    """EPF/EPS coverage-from date: None (leave untouched) and "" (clear) pass through;
+    anything else must be a date normalize_date_string() understands and is stored in
+    the app's canonical DD-MM-YYYY."""
+    if value is None or not value.strip():
+        return None if value is None else ""
+    normalized = normalize_date_string(value)
+    if normalized is None or not (1952 <= int(normalized[-4:]) <= 2100):
+        raise HTTPException(400, f"'{value}' is not a valid date -- use DD-MM-YYYY (year 1952-2100)")
+    return normalized
+
 
 class YearIn(BaseModel):
     year_from: str
@@ -4120,15 +4134,14 @@ async def dashboard(
                 
                 ceiling = get_wage_ceilings_for_year(yr.year_from)[i]
                 if est.worker_eps_rate == 0:
-                    eps_zero = (not emp.eps_member) or is_eps_zero_for_month(emp.dob, i, yr.year_from)
-                    eps_wage = 0 if eps_zero else min(wages, ceiling)
+                    eps_wage = round_contribution(emp.wage_bases(i, wages, ceiling, honor_pohw=False).eps, True)
                 else:
                     eps_wage = wages
                     
                 if wages > 0 or gross > 0:
                     m_emp_count += 1
                     m_gross += gross
-                    m_epf_wage += wages
+                    m_epf_wage += reported_epf_wage(emp, i, wages, ceiling)
                     m_eps_wage += eps_wage
                     m_worker += w_tot
                     m_employer += e_tot
@@ -4250,8 +4263,7 @@ async def dashboard_month_employees(
             _, w_epf, w_eps, w_tot, e_epf, e_eps, e_tot = mrows[month_index]
             
             ceiling = get_wage_ceilings_for_year(yr.year_from)[month_index]
-            eps_zero = (not emp.eps_member) or is_eps_zero_for_month(emp.dob, month_index, yr.year_from)
-            eps_wage = (0 if eps_zero else min(wages, ceiling)) if est.worker_eps_rate == 0 else wages
+            eps_wage = round_contribution(emp.wage_bases(month_index, wages, ceiling, honor_pohw=False).eps, True) if est.worker_eps_rate == 0 else wages
                 
             results.append({
                 "uan": emp.uan,
@@ -5047,6 +5059,8 @@ async def list_employees(
             "pohw": m.pohw,
             "pohw_additional_1_16": m.pohw_additional_1_16,
             "eps_member": m.eps_member,
+            "epf_from": m.epf_from,
+            "eps_from": m.eps_from,
             "branch_id": m.branch_id,
             "division_id": m.division_id,
             "unit_id": m.unit_id,
@@ -5078,7 +5092,8 @@ async def add_employee(
                               d.relationship, d.marital_status, d.mobile, d.email, d.aadhaar,
                               d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er,
                               d.pohw, d.pohw_additional_1_16, d.eps_member,
-                              d.branch_id, d.division_id, d.unit_id)
+                              d.branch_id, d.division_id, d.unit_id,
+                              _clean_coverage_date(d.epf_from), _clean_coverage_date(d.eps_from))
     except ValueError as e:
         raise HTTPException(400, str(e))
     save_establishment_project(db, est_obj, project)
@@ -5110,7 +5125,8 @@ async def edit_employee(
                               d.relationship, d.marital_status, d.mobile, d.email, d.aadhaar,
                               d.bank_account, d.ifsc, d.higher_epf_ee, d.higher_epf_er,
                               d.pohw, d.pohw_additional_1_16, d.eps_member,
-                              d.branch_id, d.division_id, d.unit_id)
+                              d.branch_id, d.division_id, d.unit_id,
+                              _clean_coverage_date(d.epf_from), _clean_coverage_date(d.eps_from))
     except ValueError as e:
         raise HTTPException(400, str(e))
     save_establishment_project(db, est_obj, project)
@@ -5378,7 +5394,8 @@ async def get_remittances(
     results = []
 
     for i, month_label in enumerate(MONTHS):
-        wages_total = sum(rows[i][0] for rows in all_month_rows)
+        wages_total = sum(reported_epf_wage(emp, i, rows[i][0], wage_ceilings[i])
+                          for emp, rows in zip(employees, all_month_rows))
         ee_total = sum(rows[i][1] for rows in all_month_rows)
         er_total = sum(rows[i][6] for rows in all_month_rows)
         a10_total = sum(rows[i][5] for rows in all_month_rows)
@@ -5394,15 +5411,15 @@ async def get_remittances(
             wages = emp.wages[i] if emp.wages and len(emp.wages) > i else 0
             gross = emp.gross_wages[i] if emp.gross_wages and len(emp.gross_wages) > i else 0
             gross_wages_total += gross
+            bases = emp.wage_bases(i, wages, ceiling, honor_pohw=False)
             if est.worker_eps_rate == 0:
-                eps_zero = (not emp.eps_member) or is_eps_zero_for_month(emp.dob, i, yr.year_from)
-                eps_wages_total += 0 if eps_zero else min(wages, ceiling)
+                eps_wages_total += round_contribution(bases.eps, True)
             else:
                 eps_wages_total += wages
             # EDLI wages: same ceiling-capped basis as generate_ecr_month() --
             # capped even when Higher EPF lets EPF wages exceed the ceiling,
             # and (unlike EPS) not zeroed out past age 58.
-            edli_wages_total += min(wages, ceiling)
+            edli_wages_total += round_contribution(bases.edli, True)
 
         row_data = compute_remittance_row(yr, est, i, wages_total, ee_total, er_total, a10_total, members)
         row_data["gross_wages"] = gross_wages_total
@@ -5473,6 +5490,8 @@ async def get_wages(
             "pohw": emp.pohw,
             "pohw_additional_1_16": emp.pohw_additional_1_16,
             "eps_member": emp.eps_member,
+            "epf_from": emp.epf_from,
+            "eps_from": emp.eps_from,
             "eps_zero_months": [
                 (not emp.eps_member) or is_eps_zero_for_month(emp.dob, i, yr.year_from)
                 for i in range(12)
@@ -5494,6 +5513,13 @@ async def get_wages(
             "e_epf": est.employer_epf_rate, "e_eps": est.employer_eps_rate,
             "eps_label": est.eps_label, "text": est.statutory_rate_text,
             "wage_ceilings": wage_ceilings,
+            # Per wage month: [[period_start_iso_or_null, days, ceiling], ...] -- two periods
+            # for a month that straddles a ceiling change, one otherwise. The browser's live
+            # preview prorates from exactly this, so it can't disagree with the server.
+            "wage_ceiling_segments": [
+                [[s.isoformat() if s else None, d, c] for s, d, c in ceiling.segments]
+                for ceiling in wage_ceilings
+            ],
         },
         "employees": rows,
         "grand": {"w": int(round(g[0])), "we": int(round(g[1])), "ws": int(round(g[2])), "wt": int(round(g[3])),
@@ -6243,6 +6269,8 @@ def _build_ecr_employees_for_scope(project: Project, year_record, branch_id=None
             uan=master_emp.uan,
             dob=master_emp.dob,
             eps_member=master_emp.eps_member,
+            epf_from=master_emp.epf_from,
+            eps_from=master_emp.eps_from,
             year_from=year_record.year_from,
             branch_id=master_emp.branch_id,
             division_id=master_emp.division_id,
@@ -6447,6 +6475,8 @@ async def generate_ecr_zip_by_scope(
                 uan=master_emp.uan,
                 dob=master_emp.dob,
                 eps_member=master_emp.eps_member,
+                epf_from=master_emp.epf_from,
+                eps_from=master_emp.eps_from,
                 year_from=year_record.year_from,
                 branch_id=master_emp.branch_id,
                 division_id=master_emp.division_id,
@@ -6682,6 +6712,15 @@ async def ecr_import_analyze(
 
     token = str(uuid.uuid4())
     BULK_IMPORT_CACHE[token] = tmp.name
+
+    # A wage month that straddles a wage-ceiling change reports a PRORATED EPF wage in the
+    # ECR (official EPFO FAQ), but this import stores that figure as the month's entered
+    # wage and the engine prorates it again -- so the recomputed contributions come out low.
+    if len(get_wage_ceilings_for_year(project.years[year_key].year_from)[month_idx].segments) > 1:
+        parse_warnings = [
+            "This wage month straddles a wage-ceiling change: an ECR reports a prorated EPF wage "
+            "for it, so importing it here will understate contributions. Enter or import this "
+            "month's full-month wages instead (Monthly Wage Entry / Excel import)."] + list(parse_warnings)
 
     uan_index = _build_uan_index(project)
     entries_index = _build_entries_index(project, year_key)

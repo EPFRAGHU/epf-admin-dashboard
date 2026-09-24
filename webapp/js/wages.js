@@ -387,7 +387,7 @@ window.showWageModal = async (emp = null) => {
         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; white-space:nowrap;">
           <input type="checkbox" id="w-higher-epf-er"> Allow Higher EPF (ER) - PF on Actual
         </label>
-        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; white-space:nowrap;" title="EPS computed on actual (uncapped) wage instead of the ₹15,000 ceiling -- standalone, doesn't need Higher EPF (EE)/(ER) also ticked">
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; white-space:nowrap;" title="EPS computed on actual (uncapped) wage instead of the wage ceiling -- standalone, doesn't need Higher EPF (EE)/(ER) also ticked">
           <input type="checkbox" id="w-pohw"> Pension on Higher Wages (PoHW)
         </label>
         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; white-space:nowrap; color:var(--text3);" title="1.16% of wages above the ceiling, moved from EPF (ER) into EPS -- total employer contribution stays at the standard 12%, only the split changes. From the 2014 EPS amendment -- struck down by the Supreme Court (Nov 2022) and not collected under current EPFO practice. Off by default; only tick this if you specifically need to apply/reference it.">
@@ -468,7 +468,8 @@ window.showWageModal = async (emp = null) => {
       const g = parseInt(gInp.value, 10) || 0;
       const w = parseInt(wInp.value, 10) || 0;
       const ncp = parseInt(nInp.value, 10) || 0;
-      const ceiling = r.wage_ceilings ? r.wage_ceilings[i] : 15000;
+      const segments = ceilingSegmentsFor(r, i);
+      const ceiling = segments[segments.length - 1][2];
       // Server-computed, DOB-driven EPS eligibility for month i -- never recomputed here.
       const epsZero = selectedMaster && selectedMaster.eps_zero_months
         ? !!selectedMaster.eps_zero_months[i] : false;
@@ -476,9 +477,13 @@ window.showWageModal = async (emp = null) => {
       let wEpf = 0, eEps = 0, eEpf = 0;
 
       if (r.e_eps > 0) {
-        const workerWageBase = isPohw ? w : (isHigherEpfEe ? w : Math.min(w, ceiling));
-        const erTotalWageBase = isPohw ? w : (isHigherEpfEr ? w : Math.min(w, ceiling));
-        const epsWage = epsZero ? 0 : (isPohw ? w : Math.min(w, ceiling));
+        const bases = window.calcWageBases(w, segments, {
+          higherEe: isHigherEpfEe, higherEr: isHigherEpfEr, pohw: isPohw, epsZero,
+          epfFrom: selectedMaster && selectedMaster.epf_from, epsFrom: selectedMaster && selectedMaster.eps_from,
+        });
+        const workerWageBase = bases.epf;
+        const erTotalWageBase = bases.er;
+        const epsWage = bases.eps;
 
         wEpf = calculateRow(workerWageBase, r.w_epf);
         eEps = calculateRow(epsWage, r.e_eps);
@@ -1774,6 +1779,63 @@ window.renderMonthlyTable = () => {
   });
 };
 
+// Per-wage-month ceiling periods from the server: [[period_start_iso, days, ceiling], ...]
+// -- two periods for a month that straddles a ceiling change, one otherwise.
+window.ceilingSegmentsFor = (r, monthIdx) =>
+  (r.wage_ceiling_segments && r.wage_ceiling_segments[monthIdx])
+  || [[null, 1, r.wage_ceilings ? r.wage_ceilings[monthIdx] : 15000]];
+
+// Mirrors Employee.wage_bases() in epf_engine.py -- the client-side live preview only;
+// the saved/reloaded/reported figures always come from the server's engine. Contribution
+// rates are applied ONCE by the caller to these combined wage bases, never per period.
+window.calcWageBases = (w, segments, o) => {
+  // DD-MM-YYYY -> ms since epoch (UTC), or null when blank/invalid (never blocks coverage).
+  const parseFrom = (from) => {
+    const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(String(from || '').trim());
+    if (!m) return null;
+    const d = +m[1], mo = +m[2], y = +m[3];
+    const dt = new Date(Date.UTC(y, mo - 1, d));
+    if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+    return dt.getTime();
+  };
+  const DAY = 86400000;
+  const reached = (from, startIso) => {
+    const t = parseFrom(from);
+    if (t === null || !startIso) return true;
+    return t <= Date.parse(startIso + 'T00:00:00Z');
+  };
+  // A coverage-from date that falls mid-period covers that period only from that day.
+  for (const cut of [parseFrom(o.epfFrom), parseFrom(o.epsFrom)]) {
+    if (cut === null) continue;
+    const next = [];
+    for (const [start, days, c] of segments) {
+      const s = start ? Date.parse(start + 'T00:00:00Z') : null;
+      if (s !== null && s < cut && cut < s + days * DAY) {
+        const first = (cut - s) / DAY;
+        next.push([start, first, c], [new Date(cut).toISOString().slice(0, 10), days - first, c]);
+      } else {
+        next.push([start, days, c]);
+      }
+    }
+    segments = next;
+  }
+  const raw = segments.map(([start, days, c]) => {
+    const epfCov = reached(o.epfFrom, start);
+    const epsCov = epfCov && !o.epsZero && reached(o.epsFrom, start);
+    return {
+      days,
+      epf: !epfCov ? 0 : ((o.pohw || o.higherEe) ? w : Math.min(w, c)),
+      er: !epfCov ? 0 : ((o.pohw || o.higherEr) ? w : Math.min(w, c)),
+      eps: !epsCov ? 0 : (o.pohw ? w : Math.min(w, c)),
+      edli: !epfCov ? 0 : Math.min(w, c),
+    };
+  });
+  if (raw.length === 1) return raw[0];
+  const total = raw.reduce((s, p) => s + p.days, 0);
+  const mix = (k) => raw.reduce((s, p) => s + p[k] * p.days, 0) / total;
+  return { epf: mix('epf'), er: mix('er'), eps: mix('eps'), edli: mix('edli') };
+};
+
 window.calcBulkRow = (tr) => {
   // EPS eligibility is never recomputed here -- it comes straight from the
   // server-computed eps_zero_months[] that GET /api/employees?year_key=... attaches
@@ -1794,19 +1856,23 @@ window.calcBulkRow = (tr) => {
   const higherEr = infoRow.querySelector('.b-higher-er').checked;
   const pohw = infoRow.querySelector('.b-pohw').checked;
   const pohw116 = infoRow.querySelector('.b-pohw-116').checked;
-  const ceiling = parseFloat(tr.getAttribute('data-ceiling')) || 15000;
-
   const r = currentWagesData.rates;
+  const segments = ceilingSegmentsFor(r, monthIdx);
+  const ceiling = segments[segments.length - 1][2];
   const calcRow = (wage, rate) => Math.round(wage * (rate / 100));
 
   let wEpf = 0, eEps = 0, eEpf = 0;
   let epsWageFinal = 0;
 
   if (r.e_eps > 0) {
-    const workerWageBase = pohw ? w : (higherEe ? w : Math.min(w, ceiling));
-    const erTotalWageBase = pohw ? w : (higherEr ? w : Math.min(w, ceiling));
-    const epsWage = epsZero ? 0 : (pohw ? w : Math.min(w, ceiling));
-    epsWageFinal = epsWage;
+    const bases = window.calcWageBases(w, segments, {
+      higherEe, higherEr, pohw, epsZero,
+      epfFrom: master && master.epf_from, epsFrom: master && master.eps_from,
+    });
+    const workerWageBase = bases.epf;
+    const erTotalWageBase = bases.er;
+    const epsWage = bases.eps;
+    epsWageFinal = Math.round(epsWage);
 
     wEpf = calcRow(workerWageBase, r.w_epf);
     eEps = calcRow(epsWage, r.e_eps);

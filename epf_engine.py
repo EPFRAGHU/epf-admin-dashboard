@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, date, timedelta
 from typing import List, Optional, Set
-from collections import Counter
+from collections import Counter, namedtuple
 
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -185,8 +185,121 @@ def get_wage_ceiling(month_idx: int, year_from: str) -> float:
     if ym >= 195706: return 500.0
     return 300.0
 
+# Dated ceiling changes, keyed on TRUE wage-month calendar dates (wage_month_start_date's
+# Mar-Feb convention, idx 6 == September) -- NOT on get_wage_ceiling()'s paid-in-month
+# ym, which sits one month ahead and is left untouched so every historical figure stays
+# byte-identical. A change that lands mid-month splits that wage month into periods.
+# To add the next ceiling change, append (effective_date, new_ceiling) here.
+CEILING_CHANGES = [
+    (date(2026, 9, 17), 25000.0),   # S.O. 5109(E): Rs 15,000 -> Rs 25,000
+]
+LEGACY_DEFAULT_CEILING = 15000.0    # what month_rows() has always defaulted to when given no ceilings
+
+WageBases = namedtuple("WageBases", "epf er eps edli")
+PeriodBases = namedtuple("PeriodBases", "start days epf er eps edli")
+
+
+class CeilingValue(float):
+    """A wage ceiling that is a plain float everywhere (min(), comparisons, JSON) --
+    the ceiling in force at the END of the wage month -- but also carries `.segments`,
+    [(period_start_date, days, ceiling)], so a month that straddles a ceiling change
+    can be split. Single-segment for every ordinary month."""
+
+    def __new__(cls, value, segments=None, dated=False):
+        obj = super().__new__(cls, value)
+        obj.segments = segments
+        obj.dated = dated   # True from the first CEILING_CHANGES month on -- see round_contribution()
+        return obj
+
+
+def round_contribution(x: float, half_up: bool):
+    """Whole-rupee rounding of a contribution. EPFO rounds 50 paise and above UP; Python's
+    round() is banker's (2082.5 -> 2082). The two only disagree on an exact .5, which the
+    old Rs 15,000 ceiling happened never to expose (8.33% of 15,000 = 1249.5 -> 1250 both
+    ways) but Rs 25,000 does (8.33% = 2082.5 -> EPFO 2083, Python 2082). half_up is switched
+    on only for months on/after the first dated ceiling change, so every earlier month keeps
+    computing byte-for-byte as it always did."""
+    if not half_up:
+        return round(x)
+    return int(x + 0.5 + 1e-9) if x >= 0 else round(x)
+
+
+def _build_ceiling(month_idx: int, year_from: str, base: float) -> CeilingValue:
+    start = wage_month_start_date(month_idx, year_from)
+    if start is None:
+        return CeilingValue(base, [(None, 1, float(base))])
+    nxt = date(start.year + 1, 1, 1) if start.month == 12 else date(start.year, start.month + 1, 1)
+    dated = any(d < nxt for d, _ in CEILING_CHANGES)
+    segs = []
+    cur_start, cur = start, float(base)
+    for d, c in sorted(CEILING_CHANGES):
+        if d <= start:
+            cur = c
+        elif d < nxt:
+            segs.append((cur_start, (d - cur_start).days, cur))
+            cur_start, cur = d, c
+    segs.append((cur_start, (nxt - cur_start).days, cur))
+    return CeilingValue(cur, segs, dated)
+
+
 def get_wage_ceilings_for_year(year_from: str) -> List[float]:
-    return [get_wage_ceiling(i, year_from) for i in range(12)]
+    return [_build_ceiling(i, year_from, get_wage_ceiling(i, year_from)) for i in range(12)]
+
+
+def default_wage_ceilings(year_from: str) -> List[float]:
+    """The ceilings month_rows() uses when a caller passes none (Form 3A/6A/12A, several
+    PDFs): the historical flat 15,000 for every month, plus any dated change in
+    CEILING_CHANGES -- so those forms pick up the new ceiling without every year before
+    it changing by a single rupee."""
+    return [_build_ceiling(i, year_from, LEGACY_DEFAULT_CEILING) for i in range(12)]
+
+
+def reported_epf_wage(emp, month_idx: int, entered_wage, ceiling):
+    """The EPF wage a month reports to EPFO -- the ECR's EPF-wages field and the base the
+    Account 2/22 admin charges are computed on. It is the wage as entered, except in a
+    month that straddles a ceiling change, where the official EPFO FAQ reports the
+    prorated total (e.g. 17,333 for a 20,000 wage in Sep 2026). Only that one month is
+    ever different, so every other month is untouched."""
+    if not entered_wage:
+        return entered_wage
+    w = int(round(float(entered_wage)))
+    # More than one period = the month straddles a ceiling change, or this employee's own
+    # EPF/EPS coverage-from date starts part-way through it.
+    if len(emp._raw_period_bases(month_idx, w, ceiling)) > 1:
+        return round_contribution(emp.wage_bases(month_idx, w, ceiling).epf, True)
+    return entered_wage
+
+
+def _parse_coverage_date(text: str):
+    try:
+        return datetime.strptime((text or "").strip(), "%d-%m-%Y").date()
+    except ValueError:
+        return None
+
+
+def _from_date_reached(from_text: str, period_start) -> bool:
+    """True when an employee's coverage-from date (DD-MM-YYYY) has arrived by
+    `period_start`. Blank/unparseable, or no known period start, never blocks --
+    same None-safe convention as calc_age_years()."""
+    d = _parse_coverage_date(from_text)
+    if period_start is None or d is None:
+        return True
+    return d <= period_start
+
+
+def _split_periods_at(segs, cut):
+    """Splits any period that `cut` falls strictly inside into two, so a coverage-from date
+    lands exactly on a period boundary and covers that period's days precisely."""
+    if cut is None:
+        return segs
+    out = []
+    for start, days, c in segs:
+        if start is not None and start < cut < start + timedelta(days=days):
+            first = (cut - start).days
+            out += [(start, first, c), (cut, days - first, c)]
+        else:
+            out.append((start, days, c))
+    return out
 
 # --------------------------------------------------------------------------
 # Contribution schemes
@@ -721,6 +834,9 @@ class Employee:
     pohw: bool = False                    # Pension on Higher Wages -- see month_rows()
     pohw_additional_1_16: bool = False    # optional add-on within PoHW, off by default -- see month_rows()
     eps_member: bool = True               # False = never contributes to EPS, independent of age (RFE-21)
+    epf_from: str = ''                    # DD-MM-YYYY; covered for EPF only from the first wage period starting on/after
+                                           # this date. Blank = always covered.
+    eps_from: str = ''                    # same, for EPS (an EPS member is always also an EPF member)
     year_from: str = ''                   # set once at construction -- lets month_rows() resolve each
                                            # wage-month index to a real calendar date for the age-58 check
                                            # without every caller having to pass it in separately
@@ -733,6 +849,56 @@ class Employee:
     division_id: Optional[int] = None
     unit_id: Optional[int] = None
 
+    def _ceiling_segments(self, month_idx: int, ceiling):
+        segs = getattr(ceiling, "segments", None)
+        if segs:
+            return segs
+        return [(wage_month_start_date(month_idx, self.year_from), 1, float(ceiling))]
+
+    def _raw_period_bases(self, month_idx: int, w, ceiling, honor_pohw: bool = True):
+        """[(start, days, epf, er, eps, edli)] -- each period's wage bases at the FULL
+        month wage, i.e. before prorating by days. epf = the employee-side EPF wage,
+        er = the employer-total-contribution wage, eps = the pension wage, edli = the
+        EDLI wage (ceiling-capped even under Higher EPF, not zeroed by age)."""
+        eps_zero = (not self.eps_member) or is_eps_zero_for_month(self.dob, month_idx, self.year_from)
+        pohw = self.pohw and honor_pohw
+        segs = self._ceiling_segments(month_idx, ceiling)
+        # A coverage-from date that falls mid-period covers that period only from that day.
+        for cut in (_parse_coverage_date(self.epf_from), _parse_coverage_date(self.eps_from)):
+            segs = _split_periods_at(segs, cut)
+        out = []
+        for start, days, c in segs:
+            epf_cov = _from_date_reached(self.epf_from, start)
+            eps_cov = epf_cov and not eps_zero and _from_date_reached(self.eps_from, start)
+            # PoHW: unlike ordinary Higher EPF (EE)/(ER), EPS itself is computed on the
+            # actual (uncapped) wage, and both the employee and employer sides are always
+            # on the full wage while it is ticked, independent of the Higher EPF checkboxes.
+            epf = 0 if not epf_cov else (w if (pohw or self.higher_epf_ee) else min(w, c))
+            er = 0 if not epf_cov else (w if (pohw or self.higher_epf_er) else min(w, c))
+            eps = 0 if not eps_cov else (w if pohw else min(w, c))
+            edli = 0 if not epf_cov else min(w, c)
+            out.append((start, days, epf, er, eps, edli))
+        return out
+
+    def wage_bases_by_period(self, month_idx: int, w, ceiling):
+        """Per-period wage bases, each prorated by that period's share of the month.
+        One period for an ordinary month; two for a month that straddles a ceiling change."""
+        raw = self._raw_period_bases(month_idx, w, ceiling)
+        total = sum(r[1] for r in raw)
+        return [PeriodBases(s, d, *(v if d == total else v * d / total for v in (epf, er, eps, edli)))
+                for s, d, epf, er, eps, edli in raw]
+
+    def wage_bases(self, month_idx: int, w, ceiling, honor_pohw: bool = True) -> WageBases:
+        """The month's wage bases. Contribution rates are applied ONCE to these combined
+        figures by the callers -- only the wage bases are split by period, never the
+        contributions."""
+        raw = self._raw_period_bases(month_idx, w, ceiling, honor_pohw)
+        if len(raw) == 1:
+            _, _, epf, er, eps, edli = raw[0]
+            return WageBases(epf, er, eps, edli)
+        total = sum(r[1] for r in raw)
+        return WageBases(*(sum(r[k] * r[1] for r in raw) / total for k in (2, 3, 4, 5)))
+
     def month_rows(self, worker_epf_rate: float, worker_eps_rate: float,
                    employer_epf_rate: float, employer_eps_rate: float,
                    wage_ceilings: List[float] = None):
@@ -742,7 +908,7 @@ class Employee:
         Rounded to the nearest rupee, exactly as the paper EPF forms do.
         """
         if wage_ceilings is None:
-            wage_ceilings = [15000.0] * 12
+            wage_ceilings = default_wage_ceilings(self.year_from)
 
         rows = []
         for i, w in enumerate(self.wages):
@@ -752,25 +918,20 @@ class Employee:
 
             # Post-1997 calculation restrictions:
             if worker_eps_rate == 0:
-                if self.pohw:
-                    # Pension on Higher Wages: unlike ordinary Higher EPF (EE)/(ER)
-                    # below, EPS itself is computed on the actual (uncapped) wage, not
-                    # the ceiling -- both the employee and employer sides are always on
-                    # the full wage while this is ticked, independent of whatever the
-                    # Higher EPF (EE)/(ER) checkboxes say.
-                    worker_wage_base = w
-                    er_total_wage_base = w
-                    eps_wage = 0 if eps_zero else w
-                else:
-                    worker_wage_base = w if self.higher_epf_ee else min(w, ceiling)
-                    er_total_wage_base = w if self.higher_epf_er else min(w, ceiling)
-                    eps_wage = 0 if eps_zero else min(w, ceiling)
+                # Wage bases (ceiling caps, Higher EPF, PoHW, age-58/non-member EPS zeroing,
+                # coverage-from dates, and the prorating of a month that straddles a ceiling
+                # change) all live in wage_bases() -- the single source every report shares.
+                bases = self.wage_bases(i, w, ceiling)
+                worker_wage_base = bases.epf
+                er_total_wage_base = bases.er
+                eps_wage = bases.eps
 
-                w_epf = round(worker_wage_base * worker_epf_rate / 100)
+                rnd = lambda x, hu=getattr(ceiling, "dated", False): round_contribution(x, hu)
+                w_epf = rnd(worker_wage_base * worker_epf_rate / 100)
                 w_eps = round(w * worker_eps_rate / 100)  # Will be 0 anyway
 
-                e_eps = round(eps_wage * employer_eps_rate / 100)
-                total_er_contrib = round(er_total_wage_base * worker_epf_rate / 100)
+                e_eps = rnd(eps_wage * employer_eps_rate / 100)
+                total_er_contrib = rnd(er_total_wage_base * worker_epf_rate / 100)
                 e_epf = max(0, total_er_contrib - e_eps)
 
                 if self.pohw and self.pohw_additional_1_16 and not eps_zero and w > ceiling:
@@ -900,6 +1061,8 @@ class MasterEmployee:
     pohw: bool = False
     pohw_additional_1_16: bool = False
     eps_member: bool = True  # False = never contributes to EPS/Pension, independent of age (RFE-21)
+    epf_from: str = ""       # DD-MM-YYYY; blank = covered for EPF since joining -- see Employee.epf_from
+    eps_from: str = ""       # DD-MM-YYYY; blank = EPS-covered since joining -- see Employee.eps_from
     branch_id: int = 0
     division_id: Optional[int] = None
     unit_id: Optional[int] = None
@@ -925,6 +1088,8 @@ class MasterEmployee:
             pohw=d.get("pohw", False),
             pohw_additional_1_16=d.get("pohw_additional_1_16", False),
             eps_member=d.get("eps_member", True),
+            epf_from=d.get("epf_from", "") or "",
+            eps_from=d.get("eps_from", "") or "",
             branch_id=d.get("branch_id", 0) or 0,
             division_id=d.get("division_id"),
             unit_id=d.get("unit_id"))
@@ -1076,11 +1241,13 @@ class Project:
                        higher_epf_ee=False, higher_epf_er=False,
                        pohw=False, pohw_additional_1_16=False,
                        eps_member: Optional[bool] = None,
-                       branch_id=None, division_id=None, unit_id=None):
-        # eps_member defaults to None, not True: callers that update an existing
-        # employee without saying anything about EPS membership (the bulk wage/ECR
-        # Excel importers) must not silently flip a deliberate eps_member=False back
-        # on. A genuinely new employee still defaults to True below.
+                       branch_id=None, division_id=None, unit_id=None,
+                       epf_from: Optional[str] = None, eps_from: Optional[str] = None):
+        # eps_member / epf_from / eps_from default to None: callers that update an existing
+        # employee without saying anything about them (the bulk wage/ECR Excel importers)
+        # must not silently reset a deliberate eps_member=False or a coverage-from date.
+        # None = leave untouched; "" = explicitly clear. A genuinely new employee still
+        # defaults to eps_member=True and blank dates below.
         member_id = normalize_member_id(member_id)
 
         if branch_id is None:
@@ -1119,6 +1286,10 @@ class Project:
             m.pohw_additional_1_16 = pohw_additional_1_16
             if eps_member is not None:
                 m.eps_member = eps_member
+            if epf_from is not None:
+                m.epf_from = epf_from.strip()
+            if eps_from is not None:
+                m.eps_from = eps_from.strip()
             m.branch_id = branch_id
             m.division_id = division_id
             m.unit_id = unit_id
@@ -1134,6 +1305,8 @@ class Project:
                                                        higher_epf_ee=higher_epf_ee, higher_epf_er=higher_epf_er,
                                                        pohw=pohw, pohw_additional_1_16=pohw_additional_1_16,
                                                        eps_member=eps_member if eps_member is not None else True,
+                                                       epf_from=(epf_from or "").strip(),
+                                                       eps_from=(eps_from or "").strip(),
                                                        branch_id=branch_id, division_id=division_id, unit_id=unit_id)
 
     # ---- org structure: Branch -> Division -> Unit ----
@@ -1384,6 +1557,8 @@ class Project:
                                     pohw=m.pohw if m else False,
                                     pohw_additional_1_16=m.pohw_additional_1_16 if m else False,
                                     eps_member=m.eps_member if m else True,
+                                    epf_from=m.epf_from if m else "",
+                                    eps_from=m.eps_from if m else "",
                                     year_from=yr.year_from,
                                     dob=dob, sex=sex, doj=doj, doe=doe, reason_leaving=reason_leaving,
                                     branch_id=branch_id, division_id=division_id, unit_id=unit_id))
@@ -2393,6 +2568,7 @@ class ExcelGenerator:
         all_month_rows = [emp.month_rows(est.worker_epf_rate, est.worker_eps_rate,
                                          est.employer_epf_rate, est.employer_eps_rate)
                           for emp in self.employees]
+        year_ceilings = default_wage_ceilings(est.year_from)   # same ceilings month_rows() just used
         row = header_row + 1
         first_data_row = row
         a2_rates_used, a22_rates_used = [], []
@@ -2413,7 +2589,8 @@ class ExcelGenerator:
             
             if not month_remittances:
                 # Fallback to calculated values if no manual remittances are entered for this month
-                wages_total = sum(rows[i][0] for rows in all_month_rows)
+                wages_total = sum(reported_epf_wage(emp, i, rows[i][0], year_ceilings[i])
+                                  for emp, rows in zip(self.employees, all_month_rows))
                 ee_total = sum(rows[i][1] for rows in all_month_rows)     # A/c 1 (EE)
                 er_total = sum(rows[i][4] for rows in all_month_rows)     # A/c 1 (ER)
                 a10_total = sum(rows[i][5] for rows in all_month_rows)    # A/c 10 (Pension Fund)
@@ -3139,10 +3316,16 @@ def generate_ecr_month(est, employees: List[Employee], year_record: YearRecord, 
         else:
             gross = round(w)
             
-        epf_w = round(w)
-        eps_zero = (not emp.eps_member) or is_eps_zero_for_month(emp.dob, month_idx, year_record.year_from)
-        eps_w = 0 if eps_zero else round(min(w, wage_ceilings[month_idx]))
-        edli_w = round(min(w, wage_ceilings[month_idx]))
+        # honor_pohw=False: the ECR has always reported the ceiling-capped EPS wage even for a
+        # PoHW employee (only the contribution is on the full wage) -- unchanged here.
+        w_int = int(round(float(w)))
+        ceiling = wage_ceilings[month_idx]
+        bases = emp.wage_bases(month_idx, w_int, ceiling, honor_pohw=False)
+        # A month that straddles a ceiling change reports its prorated EPF wage (official
+        # EPFO FAQ); every other month keeps reporting the wage exactly as entered.
+        epf_w = round(reported_epf_wage(emp, month_idx, w, ceiling))
+        eps_w = round_contribution(bases.eps, True)
+        edli_w = round_contribution(bases.edli, True)
         
         # UAN#~#Member Name#~#Gross Wages#~#EPF Wages#~#EPS Wages#~#EDLI Wages#~#EE Share Remitted#~#EPS Contribution Remitted#~#ER EPF Contribution Remitted#~#NCP Days#~#Refund of Advances
         ncp = emp.ncp_days[month_idx] if hasattr(emp, 'ncp_days') and emp.ncp_days and len(emp.ncp_days) > month_idx else 0

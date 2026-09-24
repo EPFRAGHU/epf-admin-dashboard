@@ -224,7 +224,7 @@ App.registerPage('employees', async (container) => {
           </label>
         </div>
         <div class="form-group">
-          <label class="form-label" style="display:flex;align-items:center;gap:6px;white-space:nowrap;" title="EPS computed on actual (uncapped) wage instead of the ₹15,000 ceiling -- standalone, doesn't need Higher EPF (EE)/(ER) also ticked">
+          <label class="form-label" style="display:flex;align-items:center;gap:6px;white-space:nowrap;" title="EPS computed on actual (uncapped) wage instead of the wage ceiling -- standalone, doesn't need Higher EPF (EE)/(ER) also ticked">
             <input type="checkbox" id="ae-pohw">
             Pension on Higher Wages
           </label>
@@ -239,6 +239,14 @@ App.registerPage('employees', async (container) => {
           <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px;">
             <input type="checkbox" id="ae-eps-member" checked> EPS Member
           </label>
+        </div>
+        <div class="form-group">
+          <label class="form-label" title="Covered for EPF only from the first wage period starting on/after this date. Leave blank if covered since joining. For the 17-09-2026 wage-ceiling rise, use 17-09-2026 for someone newly covered from that date.">EPF covered from</label>
+          <input class="form-input" id="ae-epf-from" placeholder="DD-MM-YYYY (blank = always)">
+        </div>
+        <div class="form-group">
+          <label class="form-label" title="Covered for EPS/Pension only from the first wage period starting on/after this date. Leave blank if EPS-covered since joining. Use 17-09-2026 for an existing EPF member newly enrolled in EPS from the wage-ceiling rise.">EPS covered from</label>
+          <input class="form-input" id="ae-eps-from" placeholder="DD-MM-YYYY (blank = always)">
         </div>
         <div class="form-group" style="grid-column: span 3;">
           <label class="form-label">Branch / Division / Unit</label>
@@ -343,6 +351,8 @@ window.saveNewEmpFromPage = async () => {
     pohw: document.getElementById('ae-pohw').checked,
     pohw_additional_1_16: document.getElementById('ae-pohw-116').checked,
     eps_member: document.getElementById('ae-eps-member').checked,
+    epf_from: document.getElementById('ae-epf-from').value.trim(),
+    eps_from: document.getElementById('ae-eps-from').value.trim(),
   };
   const pickerEl = document.getElementById('ae-scope-picker');
   if (pickerEl) {
@@ -569,6 +579,16 @@ async function showEmpModal(emp = null, opts = {}) {
           EPS Member
         </label>
       </div>
+      <div class="form-group">
+        <label class="form-label">EPF covered from</label>
+        <input class="form-input" id="m-epf-from" value="${App.esc(e.epf_from || '')}" placeholder="DD-MM-YYYY (blank = always)">
+        <p style="font-size:10px;color:var(--text3);margin-top:2px;">Covered for EPF only from the first wage period starting on/after this date. Blank = covered since joining. Use 17-09-2026 for someone newly covered by the wage-ceiling rise.</p>
+      </div>
+      <div class="form-group">
+        <label class="form-label">EPS covered from</label>
+        <input class="form-input" id="m-eps-from" value="${App.esc(e.eps_from || '')}" placeholder="DD-MM-YYYY (blank = always)">
+        <p style="font-size:10px;color:var(--text3);margin-top:2px;">Same, for EPS/Pension. Use 17-09-2026 for an existing EPF member newly enrolled in EPS by the wage-ceiling rise.</p>
+      </div>
     </div>`;
   const footer = `
     <button class="btn btn-ghost" onclick="App.closeModal()">Cancel</button>
@@ -609,6 +629,8 @@ async function saveEmp(origAcc) {
     pohw: document.getElementById('m-pohw').checked,
     pohw_additional_1_16: document.getElementById('m-pohw-116').checked,
     eps_member: document.getElementById('m-eps-member').checked,
+    epf_from: document.getElementById('m-epf-from').value.trim(),
+    eps_from: document.getElementById('m-eps-from').value.trim(),
   };
   const pickerEl = document.getElementById('m-scope-picker');
   if (pickerEl) {
