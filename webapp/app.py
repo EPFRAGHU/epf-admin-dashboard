@@ -23,7 +23,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Que
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictInt
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
@@ -46,7 +46,7 @@ from .auth import (
 from . import cashfree_client
 from . import google_oauth
 from . import version_info
-from .consultant_plan import current_month_ist, compute_coverage, covers
+from .consultant_plan import current_month_ist, compute_coverage, covers, validate_months
 
 from epf_engine import Project, safe_filename_part
 
@@ -3014,7 +3014,9 @@ def _utr_already_submitted(db: Session, utr: str, exclude_fee_id: Optional[int] 
         fee_q = fee_q.filter(SubscriptionFee.id != exclude_fee_id)
     if fee_q.first():
         return True
-    return db.query(AdvanceCreditLedger).filter(AdvanceCreditLedger.submitted_utr == utr).first() is not None
+    if db.query(AdvanceCreditLedger).filter(AdvanceCreditLedger.submitted_utr == utr).first():
+        return True
+    return db.query(ConsultantPlanPayment).filter(ConsultantPlanPayment.submitted_utr == utr).first() is not None
 
 
 @app.post("/api/subscription-fees/{fee_id}/submit-utr")
@@ -3687,6 +3689,16 @@ def _route_cashfree_confirmation(db: Session, order_id: str, payment_ref: str, s
             print(f"[CashfreeWebhook] No AdvanceCreditLedger row found for order_id={order_id}")
             return
         _confirm_advance_credit_ledger_row(db, ledger_row, payment_ref=payment_ref)
+
+    elif order_id.startswith("plan_"):
+        plan_rows = db.query(ConsultantPlanPayment).filter(ConsultantPlanPayment.cashfree_order_id == order_id).all()
+        if not plan_rows:
+            print(f"[CashfreeWebhook] No ConsultantPlanPayment row found for order_id={order_id}")
+            return
+        for plan_row in plan_rows:
+            # Re-read fresh: a concurrent refresh-status call may have just confirmed it.
+            db.refresh(plan_row)
+            _confirm_plan_payment(db, plan_row, payment_ref=payment_ref, source="cashfree")
 
     else:
         print(f"[CashfreeWebhook] Unrecognized order_id prefix, ignoring ({source_label}): {order_id}")
@@ -4997,6 +5009,179 @@ async def consultant_submit_advance_utr(
     )
 
     return {"ok": True, "status": "pending_verification", "ledger_id": ledger_row.id}
+
+
+# ── Consultant Monthly Plan (consultant-facing) ──────────────────────────
+# A consultant acts only on their own account. The client never sends an amount: it is
+# always months x User.consultant_plan_amount, computed server-side.
+class PlanMonthsIn(BaseModel):
+    months: StrictInt  # strict: a JSON string like "3" (or 2.5 / true) is rejected with 422
+
+
+class PlanUtrIn(BaseModel):
+    months: StrictInt
+    utr: str
+
+
+class PlanRefreshIn(BaseModel):
+    order_id: str
+
+
+def _plan_months_or_400(months) -> int:
+    try:
+        return validate_months(months)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+def _plan_amount_or_400(user: User) -> float:
+    """The account's monthly plan price, or 400 when none is set (checked before any
+    amount is computed, so a NULL price can never reach _plan_payment_amount)."""
+    if user.consultant_plan_amount is None or user.consultant_plan_amount <= 0:
+        raise HTTPException(400, "No monthly plan is set for your account")
+    return user.consultant_plan_amount
+
+
+def _plan_payment_to_dict(p: ConsultantPlanPayment) -> dict:
+    return {
+        "id": p.id, "months": p.months, "amount": p.amount, "status": p.status,
+        "covered_from": p.covered_from, "covered_to": p.covered_to,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+    }
+
+
+@app.get("/api/my-plan")
+async def get_my_plan(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    plan_amount = current_user.consultant_plan_amount
+    rows = db.query(ConsultantPlanPayment).filter(
+        ConsultantPlanPayment.user_id == current_user.id
+    ).order_by(ConsultantPlanPayment.id.desc()).all()
+    covered_through = None
+    if plan_amount is not None:
+        covered_through = max(
+            (to for _, to in _plan_coverage_windows(db, current_user.id)), default=None
+        )
+    return {
+        "plan_amount": plan_amount,
+        "active": is_consultant_plan_active(db, current_user.id),
+        "covered_through": covered_through,
+        "payments": [_plan_payment_to_dict(p) for p in rows],
+    }
+
+
+@app.post("/api/my-plan/create-link")
+async def create_my_plan_payment_link(
+    d: PlanMonthsIn,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Self-serve purchase of N plan months via Cashfree. Creates a pending row; coverage is
+    only allocated when the payment is confirmed (webhook / refresh-status)."""
+    months = _plan_months_or_400(d.months)
+    require_feature_enabled(db, "cashfree_payments_enabled", "Cashfree payments")
+    _plan_amount_or_400(current_user)
+    amount = _plan_payment_amount(current_user, months)
+
+    phone = (current_user.mobile or "").strip()
+    if not phone:
+        raise HTTPException(400, "Add a mobile number to your account to generate a Cashfree payment link.")
+
+    order_id = cashfree_client.new_order_id("plan", current_user.id)
+    if db.query(ConsultantPlanPayment).filter(ConsultantPlanPayment.cashfree_order_id == order_id).first():
+        # Order ids are second-granular; a double-click must not create two rows that one
+        # webhook would then confirm together.
+        raise HTTPException(409, "A payment link was just created. Please wait a moment and try again.")
+    app_base_url = _app_base_url(request)
+    return_url = f"{app_base_url}/?cf_payment_return=1&type=plan&order_id={order_id}"
+    try:
+        cf_resp = cashfree_client.create_payment_link_or_order(
+            link_id=order_id,
+            amount=amount,
+            purpose=f"Monthly plan — {months} month(s) — {current_user.name}",
+            customer_phone=phone,
+            customer_name=current_user.name,
+            customer_email=current_user.email,
+            return_url=return_url,
+        )
+    except cashfree_client.CashfreeConfigError as e:
+        raise HTTPException(500, str(e))
+    except requests.HTTPError as e:
+        raise HTTPException(502, f"Cashfree link creation failed: {e.response.text if e.response is not None else str(e)}")
+
+    db.add(ConsultantPlanPayment(
+        user_id=current_user.id, months=months, amount=amount, status="pending",
+        cashfree_order_id=order_id, cashfree_payment_link_url=cf_resp["link_url"],
+        cashfree_payment_session_id=cf_resp["payment_session_id"],
+    ))
+    db.commit()
+
+    return {"ok": True, "link_url": _cashfree_shareable_url(app_base_url, cf_resp), "order_id": order_id}
+
+
+@app.post("/api/my-plan/refresh-status")
+async def refresh_my_plan_status(
+    d: PlanRefreshIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Looked up by order_id (known from the Cashfree return_url) and scoped to the caller's
+    own rows, so another user's order id can never be polled or confirmed."""
+    row = db.query(ConsultantPlanPayment).filter(
+        ConsultantPlanPayment.cashfree_order_id == d.order_id,
+        ConsultantPlanPayment.user_id == current_user.id,
+    ).first()
+    if not row:
+        raise HTTPException(404, "Plan payment not found")
+    if row.status != "pending":
+        return {"ok": True, "status": row.status, "amount": row.amount}
+
+    try:
+        status = cashfree_client.get_payment_status(row.cashfree_order_id)
+    except requests.HTTPError as e:
+        raise HTTPException(502, f"Cashfree status check failed: {e.response.text if e.response is not None else str(e)}")
+
+    if status["paid"]:
+        # Re-read fresh: a webhook may have confirmed this row while we polled Cashfree.
+        db.refresh(row)
+        _confirm_plan_payment(db, row, payment_ref=status["payment_ref"], source="cashfree")
+
+    return {"ok": True, "status": row.status, "amount": row.amount}
+
+
+@app.post("/api/my-plan/submit-utr")
+async def submit_my_plan_utr(
+    d: PlanUtrIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Manual UPI/QR alternative: the consultant pays directly and submits the UTR. Grants no
+    coverage until a superadmin approves the pending_verification row."""
+    months = _plan_months_or_400(d.months)
+    _plan_amount_or_400(current_user)
+    amount = _plan_payment_amount(current_user, months)
+
+    utr = d.utr.strip()
+    if not utr:
+        raise HTTPException(400, "UTR cannot be empty")
+    if _utr_already_submitted(db, utr):
+        raise HTTPException(400, "This UTR has already been submitted for verification.")
+
+    row = ConsultantPlanPayment(
+        user_id=current_user.id, months=months, amount=amount, status="pending_verification",
+        submitted_utr=utr, submitted_by=current_user.id, submitted_at=datetime.now(timezone.utc),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    log_activity(
+        db, current_user.id, None, "utr_submitted",
+        f"Submitted UTR for monthly plan of ₹{amount} ({months} month(s)): {utr}",
+        {"plan_payment_id": row.id, "months": months, "amount": amount, "utr": utr}
+    )
+
+    return {"ok": True, "status": "pending_verification", "payment_id": row.id}
 
 
 # ── Org Structure Endpoints ───────────────────────────────────────────────
