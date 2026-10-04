@@ -16,6 +16,148 @@ const MyEstablishments = (() => {
     }
   }
 
+  /* ── Consultant "Monthly Plan" card ─────────────────────────────────
+     GET /api/my-plan -> plan_amount (null when the consultant has no plan), active,
+     covered_through ("YYYY-MM"), payments[]. The client never sends an amount: it only
+     picks `months`; the server computes months x plan_amount. */
+  let planData = null;
+  const PLAN_MONTH_OPTIONS = [1, 3, 6, 12];
+  const PLAN_MON_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  // "2027-03" -> "Mar 2027"; anything unparseable (null, '', bad month) -> ''.
+  function formatPlanMonth(ym) {
+    const m = /^(\d{4})-(\d{2})$/.exec(String(ym || ''));
+    if (!m) return '';
+    const idx = Number(m[2]) - 1;
+    if (idx < 0 || idx > 11) return '';
+    return `${PLAN_MON_NAMES[idx]} ${m[1]}`;
+  }
+
+  // Whole rupees stay unadorned (Rs 1,500); a fractional plan amount keeps its paise.
+  function formatPlanMoney(n) {
+    const v = Number(n);
+    return Number.isInteger(v) ? App.fmt(v) : App.fmtD(v);
+  }
+
+  function planStatusBadge(status) {
+    if (status === 'confirmed' || status === 'manual') return '<span class="badge badge-green">Paid</span>';
+    if (status === 'pending_verification') return '<span class="badge badge-amber">Awaiting verification</span>';
+    if (status === 'rejected') return '<span class="badge badge-red">Rejected</span>';
+    return '<span class="badge" style="background:var(--bg2); color:var(--text2); border:1px solid var(--border);">Unpaid</span>';
+  }
+
+  async function loadPlan() {
+    try {
+      planData = await App.get('/api/my-plan');
+    } catch (e) {
+      // The plan card is optional -- never let a failed fetch break the page.
+      planData = null;
+    }
+    return planData;
+  }
+
+  function planCardHtml() {
+    const p = planData;
+    if (!p || p.plan_amount == null) return '';
+    const amount = Number(p.plan_amount);
+    const through = formatPlanMonth(p.covered_through);
+    const statusLine = p.active
+      ? `<span class="badge badge-green">Active</span> <span style="font-size:13px; color:var(--text2);">Paid through ${App.esc(through || '—')}</span>`
+      : `<span class="badge" style="background:var(--bg2); color:var(--text2); border:1px solid var(--border);">Not active</span>`;
+
+    const recent = (p.payments || []).slice(0, 5);
+    const historyHtml = recent.length ? `
+      <div style="margin-top:16px; border-top:1px solid var(--border); padding-top:12px;">
+        <div style="font-size:12px; font-weight:700; color:var(--text2); margin-bottom:8px;">Recent payments</div>
+        <table style="width:100%; font-size:12px; border-collapse:collapse;">
+          <thead><tr style="color:var(--text3); text-align:left;"><th style="padding:4px 6px;">Months</th><th style="padding:4px 6px;">Amount</th><th style="padding:4px 6px;">Status</th><th style="padding:4px 6px;">Covers</th></tr></thead>
+          <tbody>
+            ${recent.map(r => {
+              const from = formatPlanMonth(r.covered_from);
+              const to = formatPlanMonth(r.covered_to);
+              const covers = from && to ? (from === to ? from : `${from} – ${to}`) : '—';
+              return `<tr style="border-top:1px solid var(--border);">
+                <td style="padding:6px;">${App.esc(String(Number(r.months) || 0))}</td>
+                <td style="padding:6px;">₹${App.esc(formatPlanMoney(r.amount))}</td>
+                <td style="padding:6px;">${planStatusBadge(r.status)}</td>
+                <td style="padding:6px; color:var(--text2);">${App.esc(covers)}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>` : '';
+
+    return `
+      <div class="card" id="my-plan-card" style="margin-bottom:20px; padding:20px; border:1px solid var(--card-border); border-radius:var(--radius); background:var(--card); box-shadow:var(--shadow);">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
+          <div>
+            <h3 style="margin:0 0 8px 0; font-size:18px; font-weight:700; color:var(--text1);">Monthly Plan</h3>
+            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">${statusLine}</div>
+            <p style="margin:8px 0 0 0; font-size:13px; color:var(--text2);">₹<strong style="color:var(--text1);">${App.esc(formatPlanMoney(amount))}</strong> per month — one paid month covers all your establishments.</p>
+          </div>
+          <div style="min-width:240px;">
+            <label class="form-label" for="plan-months-select" style="font-weight:600; font-size:12px;">Months to pay for</label>
+            <select id="plan-months-select" class="form-input" style="margin-bottom:6px;" onchange="MyEstablishments.onPlanMonthsChange()">
+              ${PLAN_MONTH_OPTIONS.map(n => `<option value="${n}">${n} month${n > 1 ? 's' : ''}</option>`).join('')}
+            </select>
+            <div style="font-size:13px; color:var(--text2); margin-bottom:10px;">Total: <strong id="plan-total" style="color:var(--text1);">₹${App.esc(formatPlanMoney(amount * PLAN_MONTH_OPTIONS[0]))}</strong></div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button class="btn btn-primary" id="plan-cashfree-btn" style="flex:1;" onclick="MyEstablishments.payPlanCashfree()">💳 Pay with Cashfree</button>
+              <button class="btn btn-ghost" style="flex:1;" onclick="MyEstablishments.openPlanUPIPanel()">📱 Pay via UPI (Manual)</button>
+            </div>
+          </div>
+        </div>
+        <div id="plan-upi-panel" style="margin-top:12px; text-align:left;"></div>
+        <div id="plan-status" style="margin-top:8px; font-size:12px; color:var(--text2); min-height:14px;"></div>
+        ${historyHtml}
+      </div>`;
+  }
+
+  function selectedPlanMonths() {
+    const el = document.getElementById('plan-months-select');
+    const n = el ? parseInt(el.value, 10) : NaN;
+    return PLAN_MONTH_OPTIONS.includes(n) ? n : null;
+  }
+
+  function onPlanMonthsChange() {
+    const months = selectedPlanMonths();
+    const totalEl = document.getElementById('plan-total');
+    if (months && totalEl && planData && planData.plan_amount != null) {
+      totalEl.textContent = '₹' + formatPlanMoney(Number(planData.plan_amount) * months);
+    }
+    // An open UPI panel is bound to the previously selected months/amount -- drop it so a
+    // stale QR/UTR form can never be submitted against a different selection.
+    const panel = document.getElementById('plan-upi-panel');
+    if (panel) panel.innerHTML = '';
+  }
+
+  async function payPlanCashfree() {
+    const months = selectedPlanMonths();
+    if (!months) { App.toast('Select the number of months', 'error'); return; }
+    const btn = document.getElementById('plan-cashfree-btn');
+    const statusEl = document.getElementById('plan-status');
+    if (btn) { btn.disabled = true; btn.textContent = 'Generating payment link…'; }
+    try {
+      const res = await App.post('/api/my-plan/create-link', { months });
+      window.open(res.link_url, '_blank');
+      if (statusEl) statusEl.textContent = 'Opening the Cashfree payment page in a new tab. Your plan activates once the payment is confirmed.';
+      App.toast('Redirecting to Cashfree…');
+    } catch (e) {
+      // App.post already surfaced the server's message
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '💳 Pay with Cashfree'; }
+    }
+  }
+
+  function openPlanUPIPanel() {
+    const months = selectedPlanMonths();
+    if (!months || !planData || planData.plan_amount == null) {
+      App.toast('Select the number of months', 'error');
+      return;
+    }
+    App.showPlanUPIPanel(months, Number(planData.plan_amount) * months);
+  }
+
   function limitInfo() {
     const user = App.getCurrentUser();
     const isEmployer = !!user && user.role === 'employer' && user.max_establishments != null;
@@ -35,7 +177,7 @@ const MyEstablishments = (() => {
   async function render(container) {
     container.innerHTML = `<div class="page-loading"><div class="spinner"></div><p>Loading Establishments…</p></div>`;
 
-    await loadEstablishments();
+    await Promise.all([loadEstablishments(), loadPlan()]);
 
     const activeId = App.getCurrentEstablishmentId();
     const info = limitInfo();
@@ -60,6 +202,8 @@ const MyEstablishments = (() => {
       </div>
 
       ${limitBannerHtml}
+
+      ${planCardHtml()}
 
       <div id="my-est-grid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap:20px;">
         ${renderCards(establishmentsList, activeId)}
@@ -408,7 +552,10 @@ const MyEstablishments = (() => {
     addAdvanceCredit,
     submitAdvanceCreditModal,
     openAdvanceUPIPanel,
-    viewSubscriptionHistory
+    viewSubscriptionHistory,
+    payPlanCashfree,
+    openPlanUPIPanel,
+    onPlanMonthsChange
   };
 })();
 
