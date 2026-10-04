@@ -1663,6 +1663,7 @@ const Admin = (() => {
           </div>
         </div>
         ` : ''}
+        ${c.role === 'consultant' ? consultantPlanSectionHtml(c) : ''}
         <div class="form-group" style="margin-bottom:12px;">
           <label class="form-label" style="font-weight:600;">Reset Password (Leave blank to keep existing)</label>
           <input type="password" id="ec-password" class="form-input" placeholder="Enter new password if changing">
@@ -1678,6 +1679,184 @@ const Admin = (() => {
       <button class="btn btn-primary" onclick="Admin.updateConsultant(${id})">Save Changes</button>
     `;
     App.openModal(`Edit ${roleLabel}: ${App.esc(c.name)}`, bodyHtml, footerHtml, false, true);
+    if (c.role === 'consultant') loadConsultantPlanDetails(id);
+  }
+
+  /* ── Consultant monthly plan (consultant edit modal) ──────────────────
+     Separate from the per-establishment billing choice above: a flat monthly amount for
+     ALL of a consultant's establishments. The amount, and recording a manual payment, are
+     saved immediately via their own endpoints (not by "Save Changes"). The client never
+     sends a payment amount; the server computes months x plan amount. */
+  const PLAN_MONTH_OPTIONS = [1, 3, 6, 12];
+  const PLAN_MON_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+  // "2027-03" -> "Mar 2027"; anything unparseable (null, '', bad month) -> ''.
+  function formatPlanMonth(ym) {
+    const m = /^(\d{4})-(\d{2})$/.exec(String(ym || ''));
+    if (!m) return '';
+    const idx = Number(m[2]) - 1;
+    if (idx < 0 || idx > 11) return '';
+    return `${PLAN_MON_NAMES[idx]} ${m[1]}`;
+  }
+
+  // Whole rupees stay unadorned; a fractional plan amount keeps its paise.
+  function formatPlanMoney(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return '0';
+    return Number.isInteger(v) ? App.fmt(v) : App.fmtD(v);
+  }
+
+  function planStatusBadgeHtml(status) {
+    if (status === 'confirmed' || status === 'manual') return '<span class="badge badge-green">Paid</span>';
+    if (status === 'pending_verification') return '<span class="badge badge-amber">Awaiting verification</span>';
+    if (status === 'rejected') return '<span class="badge badge-red">Rejected</span>';
+    return '<span class="badge" style="background:var(--bg2); color:var(--text2); border:1px solid var(--border);">Unpaid</span>';
+  }
+
+  function consultantPlanSectionHtml(c) {
+    const amt = c.consultant_plan_amount;
+    const amtVal = amt != null && Number.isFinite(Number(amt)) ? Number(amt) : '';
+    const noEnter = "if(event.key==='Enter'){event.preventDefault();}";
+    return `
+        <div id="ec-plan-section" style="margin-bottom:14px; padding:12px 14px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-sm);">
+          <div style="font-weight:700; font-size:13px; color:var(--text1); margin-bottom:6px;">Monthly Plan (all establishments)</div>
+          <div style="font-size:11px; color:var(--text3); margin-bottom:10px;">A flat monthly amount that covers every establishment of this consultant for each paid calendar month. Independent of the billing choice above. Saved immediately, no need to press Save Changes.</div>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+            <input type="number" step="any" min="1" id="ec-plan-amount" class="form-input" style="flex:1; min-width:120px;" placeholder="e.g. 2000" value="${amtVal}" onkeydown="${noEnter}">
+            <button type="button" class="btn btn-primary btn-sm" onclick="Admin.saveConsultantPlan(${c.id})">Save plan</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="Admin.clearConsultantPlan(${c.id})">Clear plan</button>
+          </div>
+          <div id="ec-plan-body" style="font-size:12px; color:var(--text3);">Loading plan status…</div>
+        </div>
+    `;
+  }
+
+  async function loadConsultantPlanDetails(id) {
+    let data = null;
+    try {
+      data = await App.get(`/api/admin/users/${id}/plan`);
+    } catch (e) {
+      data = null; // never let a failed plan fetch break the edit modal
+    }
+    const body = document.getElementById('ec-plan-body');
+    if (!body) return; // modal closed or switched while the request was in flight
+    try {
+      body.innerHTML = consultantPlanDetailsHtml(id, data);
+    } catch (e) {
+      body.textContent = 'Could not load plan status.';
+    }
+  }
+
+  function consultantPlanDetailsHtml(id, p) {
+    if (!p) return '<span style="color:var(--text3);">Could not load plan status.</span>';
+    const through = formatPlanMonth(p.covered_through);
+    const statusLine = p.active
+      ? `<span class="badge badge-green">Active - paid through ${App.esc(through || '—')}</span>`
+      : `<span class="badge" style="background:var(--card); color:var(--text2); border:1px solid var(--border);">Not active</span>`;
+
+    const hasPlan = p.plan_amount != null && Number(p.plan_amount) > 0;
+    const recordHtml = hasPlan ? `
+      <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border);">
+        <div style="font-weight:600; color:var(--text2); margin-bottom:6px;">Record payment (cash / bank / direct UPI)</div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <select id="ec-plan-months" class="form-input" style="width:auto;">
+            ${PLAN_MONTH_OPTIONS.map(n => `<option value="${n}">${n} month${n === 1 ? '' : 's'}</option>`).join('')}
+          </select>
+          <input type="text" id="ec-plan-reference" class="form-input" style="flex:1; min-width:140px;" maxlength="120" placeholder="Reference (UTR / receipt no.)" onkeydown="if(event.key==='Enter'){event.preventDefault();}">
+          <button type="button" class="btn btn-primary btn-sm" onclick="Admin.recordConsultantPlanPayment(${id})">Record payment</button>
+        </div>
+      </div>` : `<div style="margin-top:8px; color:var(--text3);">Set a plan amount above to record payments.</div>`;
+
+    const recent = (p.payments || []).slice(0, 5);
+    const historyHtml = recent.length ? `
+      <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border);">
+        <div style="font-weight:600; color:var(--text2); margin-bottom:6px;">Plan payments</div>
+        <table style="width:100%; font-size:12px; border-collapse:collapse;">
+          <thead><tr style="text-align:left; color:var(--text3);"><th style="padding:4px 6px;">Months</th><th style="padding:4px 6px;">Amount</th><th style="padding:4px 6px;">Status</th><th style="padding:4px 6px;">Covers</th></tr></thead>
+          <tbody>
+            ${recent.map(r => {
+              const from = formatPlanMonth(r.covered_from);
+              const to = formatPlanMonth(r.covered_to);
+              const covers = from && to ? (from === to ? from : `${from} – ${to}`) : '—';
+              return `<tr style="border-top:1px solid var(--border);">
+                <td style="padding:4px 6px;">${App.esc(String(Number(r.months) || 0))}</td>
+                <td style="padding:4px 6px;">₹${App.esc(formatPlanMoney(r.amount))}</td>
+                <td style="padding:4px 6px;">${planStatusBadgeHtml(r.status)}</td>
+                <td style="padding:4px 6px; color:var(--text2);">${App.esc(covers)}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>` : '';
+
+    return `<div>${statusLine}</div>${recordHtml}${historyHtml}`;
+  }
+
+  async function saveConsultantPlan(id) {
+    const input = document.getElementById('ec-plan-amount');
+    const raw = input ? input.value.trim() : '';
+    const amount = raw === '' ? NaN : Number(raw);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      App.toast('Enter a monthly plan amount greater than 0.', 'error');
+      return;
+    }
+    try {
+      const res = await App.put(`/api/admin/users/${id}/consultant-plan`, { amount });
+      const c = consultants.find(item => item.id === id);
+      if (c) c.consultant_plan_amount = res.consultant_plan_amount;
+      if (input && res.consultant_plan_amount != null) input.value = Number(res.consultant_plan_amount);
+      App.toast('Monthly plan saved');
+      loadConsultantPlanDetails(id);
+    } catch (e) {
+      // Error toast already handled by App.api
+    }
+  }
+
+  async function clearConsultantPlan(id) {
+    try {
+      await App.put(`/api/admin/users/${id}/consultant-plan`, { amount: null });
+      const c = consultants.find(item => item.id === id);
+      if (c) c.consultant_plan_amount = null;
+      const input = document.getElementById('ec-plan-amount');
+      if (input) input.value = '';
+      App.toast('Monthly plan cleared');
+      loadConsultantPlanDetails(id);
+    } catch (e) {
+      // Error toast already handled by App.api
+    }
+  }
+
+  function recordConsultantPlanPayment(id) {
+    const c = consultants.find(item => item.id === id);
+    const monthsEl = document.getElementById('ec-plan-months');
+    const refEl = document.getElementById('ec-plan-reference');
+    const months = monthsEl ? parseInt(monthsEl.value, 10) : NaN;
+    const reference = refEl ? refEl.value.trim() : '';
+    if (!Number.isInteger(months) || months < 1) {
+      App.toast('Choose the number of months.', 'error');
+      return;
+    }
+    if (!reference) {
+      App.toast('A payment reference is required.', 'error');
+      return;
+    }
+    const planAmt = c ? Number(c.consultant_plan_amount) : NaN;
+    const totalText = Number.isFinite(planAmt) && planAmt > 0 ? `<strong>₹${App.esc(formatPlanMoney(planAmt * months))}</strong> for ` : '';
+    // App.confirm closes the whole edit modal once the user answers, so the values are read
+    // above, before it opens, and the edit modal is reopened (fresh plan status) afterwards.
+    App.confirm(
+      `Record a payment of ${totalText}<strong>${months} month${months === 1 ? '' : 's'}</strong> for <strong>${App.esc(c ? c.name : '')}</strong>, reference <strong>${App.esc(reference)}</strong>?<br><br><span style="color:var(--text2); font-size:12px;">It is confirmed immediately and extends the plan coverage by ${months} calendar month${months === 1 ? '' : 's'}.</span>`,
+      async () => {
+        try {
+          await App.post(`/api/admin/users/${id}/plan-payment`, { months, reference });
+          App.toast('Plan payment recorded');
+        } catch (e) {
+          // Error toast already handled by App.api
+        }
+        await loadConsultants();
+        showEditConsultantModal(id);
+      }
+    );
   }
 
   async function updateConsultant(id) {
@@ -2166,7 +2345,7 @@ const Admin = (() => {
                     ${m.employee_count}
                   </td>
                   <td style="text-align:right; font-family:monospace; color:var(--text2);">
-                    ${m.billing_mode === 'flat_fee' ? '<span style="font-size:10px;">Flat</span>' : `₹${m.rate_applied}`}
+                    ${m.billing_mode === 'consultant_plan' ? '<span style="font-size:10px;">Consultant plan</span>' : m.billing_mode === 'flat_fee' ? '<span style="font-size:10px;">Flat</span>' : `₹${m.rate_applied}`}
                   </td>
                   <td style="text-align:right; font-weight:700; color:${m.amount_due > 0 ? (m.is_paid ? 'var(--green)' : 'var(--primary)') : 'var(--text3)'};">
                     ₹${App.fmt(m.amount_due)}
@@ -2966,6 +3145,9 @@ const Admin = (() => {
     resetBillingToInherit,
     setConsultantDefaultBillingChoice,
     pickConsultantFlatFeePreset,
+    saveConsultantPlan,
+    clearConsultantPlan,
+    recordConsultantPlanPayment,
     showAddEstablishmentForUserModal,
     saveNewEstablishmentForUser,
     onSignupStatusFilterChange,
