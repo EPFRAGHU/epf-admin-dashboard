@@ -526,6 +526,10 @@ def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project
                 is_paid=False
             )
             db.add(fee_row)
+            if plan_active and emp_count == 0:
+                # Flat-fee mode bills every month; while the plan is active a month with no
+                # wage data stays a 0-due placeholder so it can't block adding a year.
+                fee_row.amount_due = 0
             if plan_active and emp_count > 0:
                 _waive_for_plan(fee_row)
             else:
@@ -538,6 +542,8 @@ def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project
                 fee_row.billing_mode = mode
                 fee_row.rate_applied = rate
                 fee_row.amount_due = flat_amount if mode == "flat_fee" else round(emp_count * rate, 2)
+                if plan_active and emp_count == 0 and fee_row.payment_status != "pending_verification":
+                    fee_row.amount_due = 0
                 if plan_active and emp_count > 0 and fee_row.payment_status != "pending_verification":
                     # A pending_verification row holds a submitted UTR that may be real money
                     # awaiting admin approval: it keeps the normal path so it stays approvable.

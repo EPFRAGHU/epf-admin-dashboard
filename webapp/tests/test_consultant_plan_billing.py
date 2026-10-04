@@ -294,3 +294,47 @@ def test_waiver_works_for_flat_fee_establishment(superadmin_session, consultant_
     assert mar["amount_due"] == 0
     assert mar["billing_mode"] == "consultant_plan"
     assert mar["payment_reference"] == PLAN_COVERED_REFERENCE
+
+
+def _flat_fee_est_with_one_wage_month(superadmin_session, consultant_a, code):
+    est_id = _make_est(consultant_a, code, seed_wages=False)
+    res = superadmin_session.put(f"/api/admin/establishments/{est_id}/billing-mode", json={
+        "billing_mode": "flat_fee", "flat_fee_amount": 300.0
+    })
+    assert res.status_code == 200, res.text
+    _enter_wages(consultant_a, code, 1, 1)  # wages in Mar only
+    return est_id
+
+
+def test_flat_fee_plan_zero_employee_months_do_not_block_add_year(superadmin_session, consultant_a, test_db):
+    _activate_plan(test_db, consultant_a.user_id)
+    est_id = _flat_fee_est_with_one_wage_month(superadmin_session, consultant_a, "CPB015")
+
+    months = _fees(superadmin_session, est_id)
+    assert months["Mar"]["billing_mode"] == "consultant_plan" and months["Mar"]["amount_due"] == 0
+    for m in ("Apr", "May", "Feb"):
+        assert months[m]["employee_count"] == 0
+        assert months[m]["is_paid"] is False
+        assert months[m]["amount_due"] == 0  # placeholder, not the flat amount
+
+    consultant_a.set_establishment(est_id)
+    res = consultant_a.get("/api/establishment/entry-lock-status")
+    assert res.status_code == 200, res.text
+    assert res.json()["can_add_year"] is True
+    assert res.json()["blocking_year"] is None
+
+
+def test_flat_fee_without_plan_zero_employee_months_keep_flat_amount(superadmin_session, consultant_a, test_db):
+    est_id = _flat_fee_est_with_one_wage_month(superadmin_session, consultant_a, "CPB016")
+
+    months = _fees(superadmin_session, est_id)
+    for m in ("Mar", "Apr", "May", "Feb"):
+        assert months[m]["is_paid"] is False
+        assert months[m]["amount_due"] == 300.0
+        assert months[m]["billing_mode"] == "flat_fee"
+
+    consultant_a.set_establishment(est_id)
+    res = consultant_a.get("/api/establishment/entry-lock-status")
+    assert res.status_code == 200, res.text
+    assert res.json()["can_add_year"] is False
+    assert res.json()["blocking_year"]["amount_due"] == 3600.0
