@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel, StrictFloat, StrictInt
+from contextlib import contextmanager
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
@@ -689,6 +690,21 @@ async def _no_stale_app_shell_cache(request: Request, call_next):
 
 
 # ── Startup Data Migration & Seed ──────────────────────────────────────────
+@contextmanager
+def _safe_startup_step(db, label):
+    """Run one startup seed/migration step in isolation: any failure is rolled back and
+    logged, never raised, so one bad step can never stop the app from starting."""
+    try:
+        yield
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        print(f"  [WARN] Startup step '{label}' failed and was skipped: {type(e).__name__}: {e}")
+
+
+
 def _run_startup_migrations():
     if not SessionLocal:
         return
@@ -847,163 +863,184 @@ def _run_startup_migrations():
             print(f"  [WARN] DDL check error: {e}")
 
     with SessionLocal() as db:
+        consultant = None
         # 1. Seed Primary Superadmin (Raghunatha Maharana)
-        raghu_admin = db.query(User).filter(func.lower(User.email) == "raghunatha.maharana@gmail.com").first()
-        if not raghu_admin:
-            raghu_admin = User(
-                serial_no=None,
-                name="Raghunatha Maharana",
-                mobile="9876543210",
-                email="raghunatha.maharana@gmail.com",
-                password_hash=hash_password("Raghu@1234"),
-                role="superadmin",
-                is_active=True
-            )
-            db.add(raghu_admin)
-            db.commit()
-            print("  [OK] Seeded superadmin: raghunatha.maharana@gmail.com")
-        else:
-            raghu_admin.role = "superadmin"
-            raghu_admin.is_active = True
-            db.commit()
+        with _safe_startup_step(db, "seed primary superadmin"):
+            raghu_admin = db.query(User).filter(func.lower(User.email) == "raghunatha.maharana@gmail.com").first()
+            if not raghu_admin:
+                raghu_admin = User(
+                    serial_no=None,
+                    name="Raghunatha Maharana",
+                    mobile="9876543210",
+                    email="raghunatha.maharana@gmail.com",
+                    password_hash=hash_password("Raghu@1234"),
+                    role="superadmin",
+                    is_active=True
+                )
+                db.add(raghu_admin)
+                db.commit()
+                print("  [OK] Seeded superadmin: raghunatha.maharana@gmail.com")
+            else:
+                raghu_admin.role = "superadmin"
+                raghu_admin.is_active = True
+                db.commit()
 
         # 2. Seed Generic Superadmin (admin@epfdashboard.com)
-        superadmin = db.query(User).filter(func.lower(User.email) == "admin@epfdashboard.com").first()
-        if not superadmin:
+        with _safe_startup_step(db, "seed system superadmin"):
             s_email = os.environ.get("SUPERADMIN_EMAIL", "admin@epfdashboard.com").strip().lower()
-            s_pass = os.environ.get("SUPERADMIN_PASSWORD", "Admin@12345")
-            superadmin = User(
-                serial_no=None,
-                name="System Superadmin",
-                mobile="9999999999",
-                email=s_email,
-                password_hash=hash_password(s_pass),
-                role="superadmin",
-                is_active=True
-            )
-            db.add(superadmin)
-            db.commit()
-            print(f"  [OK] Seeded superadmin: {s_email}")
+            # Look for BOTH the configured address and the default one (case-insensitive), so a
+            # SUPERADMIN_EMAIL that matches an already-seeded user (e.g. the primary superadmin
+            # above) never triggers a duplicate insert / UNIQUE violation.
+            superadmin = db.query(User).filter(
+                func.lower(User.email).in_([s_email, "admin@epfdashboard.com"])
+            ).first()
+            if not superadmin:
+                s_pass = os.environ.get("SUPERADMIN_PASSWORD", "Admin@12345")
+                superadmin = User(
+                    serial_no=None,
+                    name="System Superadmin",
+                    mobile="9999999999",
+                    email=s_email,
+                    password_hash=hash_password(s_pass),
+                    role="superadmin",
+                    is_active=True
+                )
+                db.add(superadmin)
+                db.commit()
+                print(f"  [OK] Seeded superadmin: {s_email}")
 
         # 3. Seed Default Consultant
-        consultant = db.query(User).filter(User.role == "consultant").first()
-        if not consultant:
-            consultant = User(
-                serial_no=1,
-                name="Consultant 1",
-                mobile="9876543210",
-                email="consultant@epfdashboard.com",
-                password_hash=hash_password("Consultant@123"),
-                role="consultant",
-                is_active=True
-            )
-            db.add(consultant)
-            db.commit()
-            db.refresh(consultant)
-            print(f"  [OK] Seeded default consultant: consultant@epfdashboard.com")
+        with _safe_startup_step(db, "seed default consultant"):
+            consultant = db.query(User).filter(User.role == "consultant").first()
+            if not consultant:
+                consultant = User(
+                    serial_no=1,
+                    name="Consultant 1",
+                    mobile="9876543210",
+                    email="consultant@epfdashboard.com",
+                    password_hash=hash_password("Consultant@123"),
+                    role="consultant",
+                    is_active=True
+                )
+                db.add(consultant)
+                db.commit()
+                db.refresh(consultant)
+                print(f"  [OK] Seeded default consultant: consultant@epfdashboard.com")
 
         # 3. Migrate Existing Establishment Data
-        est_count = db.query(Establishment).count()
-        if est_count == 0:
-            migrated = 0
-            # A. Check ProjectData table
-            try:
-                projects_in_db = db.query(ProjectData).all()
-                for p_row in projects_in_db:
-                    try:
-                        p_dict = json.loads(p_row.data)
-                        code = p_dict.get("code") or "ORBBS1990770000"
-                        name = p_dict.get("name") or p_row.filename.replace("_project.epfproj.json", "").replace(".json", "")
-                        addr = p_dict.get("address") or ""
-                        cov = p_dict.get("coverage_date") or ""
-                        est = Establishment(
-                            user_id=consultant.id,
-                            code=code,
-                            name=name,
-                            address=addr,
-                            coverage_date=cov,
-                            data=p_row.data
-                        )
-                        db.add(est)
-                        migrated += 1
-                    except Exception as e:
-                        print(f"  [ERR] Failed migrating project from DB ({p_row.filename}): {e}")
-                db.commit()
-            except Exception as e:
-                print(f"  [ERR] Querying ProjectData: {e}")
+        with _safe_startup_step(db, "migrate legacy establishment data"):
+            est_count = db.query(Establishment).count()
+            if est_count == 0 and consultant is not None:
+                migrated = 0
+                # A. Check ProjectData table
+                try:
+                    projects_in_db = db.query(ProjectData).all()
+                    for p_row in projects_in_db:
+                        try:
+                            p_dict = json.loads(p_row.data)
+                            code = p_dict.get("code") or "ORBBS1990770000"
+                            name = p_dict.get("name") or p_row.filename.replace("_project.epfproj.json", "").replace(".json", "")
+                            addr = p_dict.get("address") or ""
+                            cov = p_dict.get("coverage_date") or ""
+                            est = Establishment(
+                                user_id=consultant.id,
+                                code=code,
+                                name=name,
+                                address=addr,
+                                coverage_date=cov,
+                                data=p_row.data
+                            )
+                            db.add(est)
+                            migrated += 1
+                        except Exception as e:
+                            print(f"  [ERR] Failed migrating project from DB ({p_row.filename}): {e}")
+                    db.commit()
+                except Exception as e:
+                    print(f"  [ERR] Querying ProjectData: {e}")
 
-            # B. If still 0, check file system .epfproj.json files
-            if db.query(Establishment).count() == 0:
-                parent = Path(__file__).resolve().parent.parent
-                json_files = sorted([f for f in parent.iterdir() if f.name.lower().endswith(".epfproj.json")])
-                for jf in json_files:
-                    try:
-                        with open(jf, "r", encoding="utf-8") as f:
-                            p_dict = json.load(f)
-                        code = p_dict.get("code") or "ORBBS1990770000"
-                        name = p_dict.get("name") or jf.name.replace("_project.epfproj.json", "").replace(".json", "")
-                        addr = p_dict.get("address") or ""
-                        cov = p_dict.get("coverage_date") or ""
-                        est = Establishment(
-                            user_id=consultant.id,
-                            code=code,
-                            name=name,
-                            address=addr,
-                            coverage_date=cov,
-                            data=json.dumps(p_dict, ensure_ascii=False)
-                        )
-                        db.add(est)
-                        migrated += 1
-                    except Exception as e:
-                        print(f"  [ERR] Failed migrating project file ({jf.name}): {e}")
-                db.commit()
+                # B. If still 0, check file system .epfproj.json files
+                if db.query(Establishment).count() == 0:
+                    parent = Path(__file__).resolve().parent.parent
+                    json_files = sorted([f for f in parent.iterdir() if f.name.lower().endswith(".epfproj.json")])
+                    for jf in json_files:
+                        try:
+                            with open(jf, "r", encoding="utf-8") as f:
+                                p_dict = json.load(f)
+                            code = p_dict.get("code") or "ORBBS1990770000"
+                            name = p_dict.get("name") or jf.name.replace("_project.epfproj.json", "").replace(".json", "")
+                            addr = p_dict.get("address") or ""
+                            cov = p_dict.get("coverage_date") or ""
+                            est = Establishment(
+                                user_id=consultant.id,
+                                code=code,
+                                name=name,
+                                address=addr,
+                                coverage_date=cov,
+                                data=json.dumps(p_dict, ensure_ascii=False)
+                            )
+                            db.add(est)
+                            migrated += 1
+                        except Exception as e:
+                            print(f"  [ERR] Failed migrating project file ({jf.name}): {e}")
+                    db.commit()
 
-            if migrated > 0:
-                print(f"  [OK] Successfully migrated {migrated} establishment(s) to consultant {consultant.email}")
+                if migrated > 0:
+                    print(f"  [OK] Successfully migrated {migrated} establishment(s) to consultant {consultant.email}")
 
         # 4. Seed Feature Flags (all default ON -- matches current live behavior exactly;
         # nothing is disabled until a superadmin deliberately flips one off)
-        flags_added = 0
-        for flag_key, (default_value, description) in FEATURE_FLAG_DEFAULTS.items():
-            if not db.query(FeatureFlag).filter(FeatureFlag.key == flag_key).first():
-                db.add(FeatureFlag(key=flag_key, value=default_value, description=description))
-                flags_added += 1
-        if flags_added:
-            db.commit()
-            print(f"  [OK] Seeded {flags_added} feature flag(s)")
+        with _safe_startup_step(db, "seed feature flags"):
+            flags_added = 0
+            for flag_key, (default_value, description) in FEATURE_FLAG_DEFAULTS.items():
+                if not db.query(FeatureFlag).filter(FeatureFlag.key == flag_key).first():
+                    db.add(FeatureFlag(key=flag_key, value=default_value, description=description))
+                    flags_added += 1
+            if flags_added:
+                db.commit()
+                print(f"  [OK] Seeded {flags_added} feature flag(s)")
 
-        obsolete_removed = db.query(FeatureFlag).filter(FeatureFlag.key.in_(OBSOLETE_FEATURE_FLAG_KEYS)).delete(synchronize_session=False)
-        if obsolete_removed:
-            db.commit()
-            print(f"  [OK] Removed {obsolete_removed} obsolete feature flag(s)")
+            obsolete_removed = db.query(FeatureFlag).filter(FeatureFlag.key.in_(OBSOLETE_FEATURE_FLAG_KEYS)).delete(synchronize_session=False)
+            if obsolete_removed:
+                db.commit()
+                print(f"  [OK] Removed {obsolete_removed} obsolete feature flag(s)")
 
         # 5. Seed Role Permissions -- both roles allowed everything by default, so this
         # rollout is purely additive: nothing newly blocked until the superadmin changes it
-        perms_added = 0
-        for seed_role in ("consultant", "employer"):
-            for seed_action in PERMISSION_ACTIONS:
-                if not db.query(RolePermission).filter(RolePermission.role == seed_role, RolePermission.action == seed_action).first():
-                    db.add(RolePermission(role=seed_role, action=seed_action, allowed=True))
-                    perms_added += 1
-        if perms_added:
-            db.commit()
-            print(f"  [OK] Seeded {perms_added} role permission row(s)")
+        with _safe_startup_step(db, "seed role permissions"):
+            perms_added = 0
+            for seed_role in ("consultant", "employer"):
+                for seed_action in PERMISSION_ACTIONS:
+                    if not db.query(RolePermission).filter(RolePermission.role == seed_role, RolePermission.action == seed_action).first():
+                        db.add(RolePermission(role=seed_role, action=seed_action, allowed=True))
+                        perms_added += 1
+            if perms_added:
+                db.commit()
+                print(f"  [OK] Seeded {perms_added} role permission row(s)")
 
         # 6. Seed UPI Settings (idempotent)
-        upi_id_setting = db.query(Setting).filter(Setting.key == "upi_id").first()
-        if not upi_id_setting:
-            db.add(Setting(key="upi_id", value=""))
-        upi_name_setting = db.query(Setting).filter(Setting.key == "upi_name").first()
-        if not upi_name_setting:
-            db.add(Setting(key="upi_name", value=""))
-        qr_setting = db.query(Setting).filter(Setting.key == "upi_qr_code").first()
-        if not qr_setting:
-            db.add(Setting(key="upi_qr_code", value=""))
-        db.commit()
+        with _safe_startup_step(db, "seed UPI settings"):
+            upi_id_setting = db.query(Setting).filter(Setting.key == "upi_id").first()
+            if not upi_id_setting:
+                db.add(Setting(key="upi_id", value=""))
+            upi_name_setting = db.query(Setting).filter(Setting.key == "upi_name").first()
+            if not upi_name_setting:
+                db.add(Setting(key="upi_name", value=""))
+            qr_setting = db.query(Setting).filter(Setting.key == "upi_qr_code").first()
+            if not qr_setting:
+                db.add(Setting(key="upi_qr_code", value=""))
+            db.commit()
 
 @app.on_event("startup")
 def on_startup():
-    _run_startup_migrations()
+    # Defence in depth: each seed step is already isolated by _safe_startup_step and each DDL
+    # statement by _try_ddl, so this only catches something unexpected outside them. A startup
+    # migration problem is logged loudly but must never stop the app from serving.
+    try:
+        _run_startup_migrations()
+    except Exception as e:
+        import traceback
+        print(f"  [ERROR] Startup migrations failed, continuing without them: {type(e).__name__}: {e}")
+        traceback.print_exc()
 
 
 # ── Static Index Route ─────────────────────────────────────────────────────

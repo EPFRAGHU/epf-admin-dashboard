@@ -344,6 +344,11 @@ class ResellerPayoutLine(Base):
 SessionLocal = None
 engine = None
 
+# SQLite is a local-development convenience ONLY: used when DATABASE_URL is not set at all.
+# When DATABASE_URL IS set (production), a failed connection must stop the app with a clear
+# error -- silently switching to an empty local SQLite file would make the site look up while
+# serving none of the real data (and has crashed startup on a duplicate seed before).
+_DATABASE_URL_WAS_SET = bool(DATABASE_URL)
 if not DATABASE_URL:
     DATABASE_URL = "sqlite:///./epf_app.db"
 
@@ -357,9 +362,14 @@ try:
     Base.metadata.create_all(bind=engine)
 except Exception as e:
     print(f"Could not connect to database: {e}")
-    if os.environ.get("RENDER"):
-        raise RuntimeError("Running on Render but DB connection failed.") from e
-    # Fallback to local SQLite
+    if _DATABASE_URL_WAS_SET:
+        raise RuntimeError(
+            "DATABASE_URL is set but the database connection failed "
+            f"({type(e).__name__}: {e}). Refusing to fall back to a local SQLite database. "
+            "Check that the database is reachable and that the driver for the URL is installed "
+            "(postgresql:// needs psycopg2-binary or psycopg[binary])."
+        ) from e
+    # No DATABASE_URL at all: local development only -- fall back to local SQLite
     DATABASE_URL = "sqlite:///./epf_app.db"
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
