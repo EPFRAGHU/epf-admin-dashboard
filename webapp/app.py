@@ -1895,6 +1895,8 @@ async def admin_list_users(
             "role": u.role,
             "custom_rate_per_employee": u.custom_rate_per_employee,
             "consultant_plan_amount": u.consultant_plan_amount,
+            "default_billing_mode": u.default_billing_mode,
+            "default_flat_fee_per_establishment": u.default_flat_fee_per_establishment,
             "establishment_count": est_count,
             "max_establishments": u.max_establishments,
             "is_active": u.is_active,

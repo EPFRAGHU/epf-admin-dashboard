@@ -404,3 +404,22 @@ def test_waived_row_billing_display_in_consultant_endpoints(superadmin_session, 
     waived = [p for p in admin_tab.json()["payments"] if p["month"] == "Mar"]
     assert len(waived) == 1
     assert waived[0]["billing_display"] == "Consultant plan"
+
+
+def test_admin_users_list_includes_default_billing_fields(superadmin_session, consultant_a, consultant_b):
+    # The admin UI loads its consultants array from this list and the Edit modal reads the
+    # default billing fields from it; omitting them made Save silently clear the default.
+    url = f"/api/admin/users/{consultant_a.user_id}/default-billing"
+    try:
+        res = superadmin_session.put(
+            url, json={"default_billing_mode": "flat_fee", "default_flat_fee_per_establishment": 300})
+        assert res.status_code == 200, res.text
+        listed = {u["id"]: u for u in superadmin_session.get("/api/admin/users").json()["users"]}
+        assert listed[consultant_a.user_id]["default_billing_mode"] == "flat_fee"
+        assert listed[consultant_a.user_id]["default_flat_fee_per_establishment"] == 300
+        # A consultant with no default shows both as None (keys present).
+        assert "default_billing_mode" in listed[consultant_b.user_id]
+        assert listed[consultant_b.user_id]["default_billing_mode"] is None
+        assert listed[consultant_b.user_id]["default_flat_fee_per_establishment"] is None
+    finally:
+        superadmin_session.put(url, json={"default_billing_mode": None})
