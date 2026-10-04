@@ -423,3 +423,34 @@ def test_admin_users_list_includes_default_billing_fields(superadmin_session, co
         assert listed[consultant_b.user_id]["default_flat_fee_per_establishment"] is None
     finally:
         superadmin_session.put(url, json={"default_billing_mode": None})
+
+
+# ── input limits (final review) ────────────────────────────────────────────
+
+def test_set_plan_amount_edge_cases(superadmin_session, consultant_a, test_db):
+    url = f"/api/admin/users/{consultant_a.user_id}/consultant-plan"
+    # Rounds to 0.00 -> rejected; absurdly large -> rejected (24-month price would overflow to inf).
+    assert superadmin_session.put(url, json={"amount": 0.004}).status_code == 400
+    assert superadmin_session.put(url, json={"amount": 1e308}).status_code == 400
+    assert superadmin_session.put(url, json={"amount": 1000000.01}).status_code == 400
+    test_db.expire_all()
+    assert test_db.query(User).filter(User.id == consultant_a.user_id).first().consultant_plan_amount is None
+
+    res = superadmin_session.put(url, json={"amount": 1000000})
+    assert res.status_code == 200 and res.json()["consultant_plan_amount"] == 1000000.0
+    res = superadmin_session.put(url, json={"amount": 2000})
+    assert res.status_code == 200 and res.json()["consultant_plan_amount"] == 2000.0
+    res = superadmin_session.put(url, json={"amount": 0.01})
+    assert res.status_code == 200 and res.json()["consultant_plan_amount"] == 0.01
+
+
+def test_manual_payment_reference_length_cap(superadmin_session, consultant_a, test_db):
+    _set_plan(test_db, consultant_a.user_id, 1000.0)
+    url = f"/api/admin/users/{consultant_a.user_id}/plan-payment"
+    res = superadmin_session.post(url, json={"months": 1, "reference": "R" * 101})
+    assert res.status_code == 400 and "100" in res.json()["detail"]
+    assert _plan_rows(test_db, consultant_a.user_id) == []
+    # Whitespace is stripped before the cap is applied.
+    res = superadmin_session.post(url, json={"months": 1, "reference": "  " + "R" * 100 + "  "})
+    assert res.status_code == 200, res.text
+    assert _plan_rows(test_db, consultant_a.user_id)[0].payment_reference == "R" * 100

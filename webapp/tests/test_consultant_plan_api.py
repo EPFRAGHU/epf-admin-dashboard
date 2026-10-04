@@ -315,3 +315,17 @@ def test_webhook_for_unknown_plan_order_is_a_noop(client, consultant_a, test_db,
     assert rows[0].cashfree_order_id == order_id
     assert rows[0].status == "pending" and rows[0].covered_from is None
     assert consultant_a.get("/api/my-plan").json()["active"] is False
+
+
+def test_submit_utr_length_cap(consultant_a, test_db):
+    _set_plan(test_db, consultant_a.user_id, 500.0)
+    too_long = "PLANAPI" + "U" * 94  # 101 chars
+    assert len(too_long) == 101
+    res = consultant_a.post("/api/my-plan/submit-utr", json={"months": 1, "utr": too_long})
+    assert res.status_code == 400 and "100" in res.json()["detail"]
+    assert test_db.query(ConsultantPlanPayment).filter(ConsultantPlanPayment.submitted_utr.like("PLANAPI%")).count() == 0
+
+    ok = "PLANAPI" + "U" * 93  # exactly 100
+    assert len(ok) == 100
+    res = consultant_a.post("/api/my-plan/submit-utr", json={"months": 1, "utr": ok})
+    assert res.status_code == 200, res.text

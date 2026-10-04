@@ -2080,6 +2080,10 @@ async def admin_set_consultant_default_billing(
 
 
 # ── Consultant Monthly Plan (superadmin controls) ─────────────────────────
+PLAN_MAX_MONTHLY_AMOUNT = 1_000_000.0
+PLAN_MAX_TEXT_LEN = 100  # payment reference / UTR cap (well within the DB column)
+
+
 class PlanAmountIn(BaseModel):
     # Strict numeric union: rejects strings and booleans (422) while still accepting ints.
     amount: Optional[Union[StrictInt, StrictFloat]] = None  # null clears the plan
@@ -2112,9 +2116,13 @@ async def admin_set_consultant_plan(
 
     new_amount: Optional[float] = None
     if d.amount is not None:
-        if not math.isfinite(d.amount) or d.amount <= 0:
-            raise HTTPException(400, "amount must be a positive number, or null to remove the plan")
+        if not math.isfinite(d.amount) or d.amount <= 0 or d.amount > PLAN_MAX_MONTHLY_AMOUNT:
+            raise HTTPException(
+                400, f"amount must be a positive number up to {PLAN_MAX_MONTHLY_AMOUNT:,.0f}, or null to remove the plan"
+            )
         new_amount = round(float(d.amount), 2)
+        if new_amount <= 0:  # e.g. 0.004 rounds to 0.00
+            raise HTTPException(400, "amount must be at least 0.01, or null to remove the plan")
 
     old_amount = user.consultant_plan_amount
     user.consultant_plan_amount = new_amount
@@ -2148,6 +2156,8 @@ async def admin_record_plan_payment(
     reference = d.reference.strip()
     if not reference:
         raise HTTPException(400, "A payment reference is required")
+    if len(reference) > PLAN_MAX_TEXT_LEN:
+        raise HTTPException(400, f"reference must be at most {PLAN_MAX_TEXT_LEN} characters")
 
     row = ConsultantPlanPayment(
         user_id=user.id, months=months, amount=_plan_payment_amount(user, months), status="pending",
@@ -5375,6 +5385,8 @@ async def submit_my_plan_utr(
     utr = d.utr.strip()
     if not utr:
         raise HTTPException(400, "UTR cannot be empty")
+    if len(utr) > PLAN_MAX_TEXT_LEN:
+        raise HTTPException(400, f"UTR must be at most {PLAN_MAX_TEXT_LEN} characters")
     if _utr_already_submitted(db, utr):
         raise HTTPException(400, "This UTR has already been submitted for verification.")
 
