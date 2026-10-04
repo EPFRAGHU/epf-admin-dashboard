@@ -7,12 +7,20 @@ lives here.
 """
 from datetime import datetime
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from webapp.database import (
     ResellerProfile, ResellerPayout, ResellerPayoutLine,
     Establishment, SubscriptionFee,
 )
+
+
+def fee_not_plan_waived():
+    """SQL filter: exclude fee rows waived by a consultant monthly plan (paid, Rs 0). A plan
+    consultant earns the referring reseller no commission, and a waived row is not a payment.
+    NULL billing_mode (legacy rows) counts as not waived."""
+    return or_(SubscriptionFee.billing_mode.is_(None), SubscriptionFee.billing_mode != "consultant_plan")
 
 
 def _round2(x: float) -> float:
@@ -40,6 +48,7 @@ def compute_payouts_for_period(db: Session, period_label: str) -> list:
         fees = db.query(SubscriptionFee).filter(
             SubscriptionFee.establishment_id.in_(list(est_by_id.keys())),
             SubscriptionFee.is_paid == True,  # noqa: E712
+            fee_not_plan_waived(),
         ).all()
         new_fees = [f for f in fees if f.id not in already_lined]
         if not new_fees:

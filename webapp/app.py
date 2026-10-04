@@ -48,6 +48,7 @@ from . import cashfree_client
 from . import google_oauth
 from . import version_info
 from .consultant_plan import current_month_ist, compute_coverage, covers, validate_months
+from .reseller_payout import fee_not_plan_waived
 
 from epf_engine import Project, safe_filename_part
 
@@ -439,6 +440,7 @@ def _confirm_plan_payment(
 
     # Serialize concurrent confirmations for the same consultant (Postgres row lock; SQLite
     # ignores FOR UPDATE) so two payments confirmed at once cannot be allocated the same window.
+    db.flush()  # keep the caller's pending edits (e.g. verified_by) across the refresh below
     db.query(User).filter(User.id == row.user_id).with_for_update().first()
     db.refresh(row)
     if row.covered_from is not None:
@@ -7664,7 +7666,8 @@ def _reseller_paid_fees(db: Session, reseller_id: int):
     if not ref_ids:
         return []
     return db.query(SubscriptionFee).filter(
-        SubscriptionFee.establishment_id.in_(ref_ids), SubscriptionFee.is_paid == True).all()  # noqa: E712
+        SubscriptionFee.establishment_id.in_(ref_ids), SubscriptionFee.is_paid == True,  # noqa: E712
+        fee_not_plan_waived()).all()
 
 
 def _next_payout_date_iso() -> str:
@@ -7840,7 +7843,8 @@ async def admin_referral_overview(admin: User = Depends(get_superadmin), db: Ses
         if est_ids:
             pending_fees = [f for f in db.query(SubscriptionFee).filter(
                 SubscriptionFee.establishment_id.in_(est_ids),
-                SubscriptionFee.is_paid == True).all() if f.id not in on_lines]  # noqa: E712
+                SubscriptionFee.is_paid == True,  # noqa: E712
+                fee_not_plan_waived()).all() if f.id not in on_lines]
         g = round(sum(f.amount_due for f in pending_fees), 2)
         collected += g
         owner_share += round(g / 2, 2)
@@ -7876,7 +7880,8 @@ async def admin_referral_establishments(admin: User = Depends(get_superadmin), d
     if ests:
         paid_ids = {f.establishment_id for f in db.query(SubscriptionFee.establishment_id).filter(
             SubscriptionFee.establishment_id.in_([e.id for e in ests]),
-            SubscriptionFee.is_paid == True).all()}  # noqa: E712
+            SubscriptionFee.is_paid == True,  # noqa: E712
+            fee_not_plan_waived()).all()}
 
     out, per_emp = [], []
     for e in ests:

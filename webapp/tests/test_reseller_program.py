@@ -449,3 +449,54 @@ def test_mark_failed_blocked_after_paid(superadmin_session, test_db):
                                    json={"upi_reference": "Y"}).status_code == 200
     assert superadmin_session.post(f"/api/admin/payouts/{pid}/mark-failed",
                                    json={}).status_code == 400
+
+
+# ── consultant-plan waived rows must not earn reseller commission ───────────
+
+def _seed_referred_est_with_fee(test_db, reseller_id, code, billing_mode, amount_due):
+    owner = User(name="O", email=f"{code.lower()}@x.com", role="employer", is_active=True)
+    test_db.add(owner); test_db.commit(); test_db.refresh(owner)
+    est = Establishment(user_id=owner.id, code=code, name=f"EST {code}", data="{}",
+                        referred_by_reseller_id=reseller_id)
+    test_db.add(est); test_db.commit(); test_db.refresh(est)
+    fee = SubscriptionFee(establishment_id=est.id, financial_year="2026-27", month="Apr",
+                          employee_count=3, amount_due=amount_due, billing_mode=billing_mode,
+                          is_paid=True, paid_date="15-05-2026")
+    test_db.add(fee); test_db.commit(); test_db.refresh(fee)
+    return est, fee
+
+
+def test_plan_waived_rows_produce_no_payout_line(test_db):
+    u = _make_reseller(test_db, "pw1")
+    est, _ = _seed_referred_est_with_fee(test_db, u.id, "ORPLW0000000001", "consultant_plan", 0)
+    summary = compute_payouts_for_period(test_db, "2026-08")
+    assert not any(s["reseller_id"] == u.id for s in summary)
+    assert test_db.query(ResellerPayout).filter(ResellerPayout.reseller_id == u.id).first() is None
+    assert test_db.query(ResellerPayoutLine).filter(ResellerPayoutLine.establishment_id == est.id).count() == 0
+
+
+def test_payout_ignores_waived_rows_but_keeps_real_and_null_mode_rows(test_db):
+    u = _make_reseller(test_db, "pw2")
+    _seed_referred_est_with_fee(test_db, u.id, "ORPLW0000000002", "consultant_plan", 0)
+    _seed_referred_est_with_fee(test_db, u.id, "ORPLW0000000003", "per_employee", 400)
+    _seed_referred_est_with_fee(test_db, u.id, "ORPLW0000000004", None, 200)  # legacy NULL billing_mode
+    compute_payouts_for_period(test_db, "2026-09")
+    po = test_db.query(ResellerPayout).filter(ResellerPayout.reseller_id == u.id).first()
+    assert po is not None and po.gross_collected == 600.0
+    lines = test_db.query(ResellerPayoutLine).filter(ResellerPayoutLine.payout_id == po.id).all()
+    assert len(lines) == 2 and all(l.fee_amount > 0 for l in lines)
+
+
+def test_admin_referral_views_ignore_plan_waived_rows(superadmin_session, test_db):
+    u = _make_reseller(test_db, "pw3")
+    waived, _ = _seed_referred_est_with_fee(test_db, u.id, "ORPLW0000000005", "consultant_plan", 0)
+    real, _ = _seed_referred_est_with_fee(test_db, u.id, "ORPLW0000000006", "per_employee", 400)
+
+    ests = {e["id"]: e for e in superadmin_session.get(
+        "/api/admin/referral-program/establishments").json()["establishments"]}
+    assert ests[waived.id]["status"] == "pending"   # only plan-waived rows -> not "active"
+    assert ests[real.id]["status"] == "active"
+
+    ov = superadmin_session.get("/api/admin/referral-program/overview").json()
+    mine = [r for r in ov["resellers"] if r["id"] == u.id][0]
+    assert mine["collected_this_period"] == 400.0
