@@ -31,7 +31,7 @@ from sqlalchemy.sql import func
 # Database and models
 from .database import (
     SessionLocal, engine, get_db, Base,
-    User, Establishment, Payment, SubscriptionFee, AdvanceCreditLedger, ActivityLog, ProjectData, Setting, DATABASE_URL,
+    User, Establishment, Payment, SubscriptionFee, AdvanceCreditLedger, ConsultantPlanPayment, ActivityLog, ProjectData, Setting, DATABASE_URL,
     FeatureFlag, RolePermission, UserPermissionOverride, SignupRequest, Enrollment,
     ResellerProfile, ResellerPayout, ResellerPayoutLine
 )
@@ -46,6 +46,7 @@ from .auth import (
 from . import cashfree_client
 from . import google_oauth
 from . import version_info
+from .consultant_plan import current_month_ist, compute_coverage, covers
 
 from epf_engine import Project, safe_filename_part
 
@@ -385,6 +386,79 @@ def apply_advance_credit_if_available(db: Session, est_obj: Establishment, fee_r
     )
 
 
+PLAN_COVERED_REFERENCE = "Covered by consultant plan"
+_PLAN_GRANTING_STATUSES = ("confirmed", "manual")
+
+
+def _plan_payment_amount(user: User, months: int) -> float:
+    """Server-side price of a plan purchase; the client never supplies an amount."""
+    return round(months * user.consultant_plan_amount, 2)
+
+
+def _plan_coverage_windows(db: Session, user_id: int, exclude_row_id: Optional[int] = None):
+    """(covered_from, covered_to) of this user's rows that actually grant coverage."""
+    q = db.query(ConsultantPlanPayment).filter(
+        ConsultantPlanPayment.user_id == user_id,
+        ConsultantPlanPayment.status.in_(_PLAN_GRANTING_STATUSES),
+        ConsultantPlanPayment.covered_from.isnot(None),
+        ConsultantPlanPayment.covered_to.isnot(None),
+    )
+    if exclude_row_id is not None:
+        q = q.filter(ConsultantPlanPayment.id != exclude_row_id)
+    return [(r.covered_from, r.covered_to) for r in q.all()]
+
+
+def is_consultant_plan_active(db: Session, user_id: Optional[int], now: Optional[datetime] = None) -> bool:
+    """True when the user has a plan amount set and a confirmed/manual payment window
+    covers the current IST calendar month. No plan amount means no plan, whatever the
+    payment history says."""
+    if user_id is None:
+        return False
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or user.consultant_plan_amount is None:
+        return False
+    return covers(current_month_ist(now), _plan_coverage_windows(db, user_id))
+
+
+def _confirm_plan_payment(
+    db: Session,
+    row: ConsultantPlanPayment,
+    payment_ref: str,
+    source: str = "cashfree",
+    verified_by: Optional[int] = None,
+    now: Optional[datetime] = None,
+) -> None:
+    """Shared confirmation for the Cashfree webhook/refresh, UTR approval and admin manual
+    payments. Idempotent: a no-op once coverage has been allocated (covered_from set).
+    Coverage is allocated here, not at purchase, so simultaneous pending purchases can
+    never overlap: it starts at the current IST month or the month after the latest
+    covered_to among this user's other granting rows, whichever is later."""
+    if row.covered_from is not None:
+        return
+
+    windows = _plan_coverage_windows(db, row.user_id, exclude_row_id=row.id)
+    latest = max((to for _, to in windows), default=None)
+    start, end = compute_coverage(current_month_ist(now), latest, row.months)
+
+    row.covered_from = start
+    row.covered_to = end
+    row.status = "manual" if source == "manual" else "confirmed"
+    row.payment_reference = payment_ref
+    db.commit()
+
+    log_activity(
+        db, verified_by, None, "plan_payment_confirmed",
+        f"Consultant plan payment of ₹{row.amount} confirmed for user #{row.user_id}: "
+        f"{row.months} month(s), covering {start} to {end} — Ref: {payment_ref}",
+        {
+            "plan_payment_id": row.id, "user_id": row.user_id, "months": row.months,
+            "amount": row.amount, "covered_from": start, "covered_to": end,
+            "payment_reference": payment_ref, "source": source,
+            "cashfree_order_id": row.cashfree_order_id,
+        }
+    )
+
+
 def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project: Project, year_key: str):
     """Sync or auto-generate 12-month subscription fee records for an establishment and financial year.
 
@@ -680,6 +754,55 @@ def _run_startup_migrations():
                 _try_ddl(conn, "ALTER TABLE subscription_fees ADD COLUMN cashfree_payment_session_id TEXT;")
                 _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN IF NOT EXISTS cashfree_payment_session_id TEXT;")
                 _try_ddl(conn, "ALTER TABLE advance_credit_ledger ADD COLUMN cashfree_payment_session_id TEXT;")
+
+                # ── Consultant monthly plan ─────────────────────────────────
+                _try_ddl(conn, "ALTER TABLE users ADD COLUMN IF NOT EXISTS consultant_plan_amount FLOAT;")
+                # SQLite fallback (no IF NOT EXISTS; _try_ddl tolerates duplicate-column errors)
+                _try_ddl(conn, "ALTER TABLE users ADD COLUMN consultant_plan_amount FLOAT;")
+                # create_all() above already builds this table on a fresh DB; these explicit
+                # statements are the belt-and-suspenders no-ops that match the file's pattern.
+                _try_ddl(conn, """CREATE TABLE IF NOT EXISTS consultant_plan_payments (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    months INTEGER NOT NULL,
+                    amount FLOAT NOT NULL,
+                    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                    covered_from VARCHAR(7),
+                    covered_to VARCHAR(7),
+                    cashfree_order_id VARCHAR(120),
+                    cashfree_payment_link_url TEXT,
+                    cashfree_payment_session_id TEXT,
+                    payment_reference VARCHAR(255),
+                    notes TEXT,
+                    submitted_utr VARCHAR(255),
+                    submitted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    submitted_at TIMESTAMPTZ,
+                    verified_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    verified_at TIMESTAMPTZ,
+                    rejection_reason TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );""")
+                _try_ddl(conn, """CREATE TABLE IF NOT EXISTS consultant_plan_payments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    months INTEGER NOT NULL,
+                    amount FLOAT NOT NULL,
+                    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                    covered_from VARCHAR(7),
+                    covered_to VARCHAR(7),
+                    cashfree_order_id VARCHAR(120),
+                    cashfree_payment_link_url TEXT,
+                    cashfree_payment_session_id TEXT,
+                    payment_reference VARCHAR(255),
+                    notes TEXT,
+                    submitted_utr VARCHAR(255),
+                    submitted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    submitted_at TIMESTAMP,
+                    verified_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    verified_at TIMESTAMP,
+                    rejection_reason TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );""")
 
                 # ── Partner / Reseller Program ──────────────────────────────
                 _try_ddl(conn, "ALTER TABLE establishments ADD COLUMN IF NOT EXISTS referred_by_reseller_id INTEGER REFERENCES users(id) ON DELETE SET NULL;")

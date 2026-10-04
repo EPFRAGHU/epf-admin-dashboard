@@ -29,6 +29,7 @@ class User(Base):
     custom_rate_per_employee = Column(Float, nullable=True)  # Nullable rate override (₹/emp)
     default_billing_mode = Column(String(20), nullable=True)  # 'per_employee' | 'flat_fee' | null (no consultant-level default). Consultant role only; superadmin-set only.
     default_flat_fee_per_establishment = Column(Float, nullable=True)  # ₹/month, only meaningful when default_billing_mode='flat_fee'
+    consultant_plan_amount = Column(Float, nullable=True)  # ₹ per calendar month for the consultant monthly plan; null = no plan (default). Superadmin-set only.
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     # Server-side logout/session-revocation cutoff. JWTs are otherwise fully stateless (no
@@ -147,6 +148,32 @@ class AdvanceCreditLedger(Base):
 
     establishment = relationship("Establishment")
     applied_to_fee = relationship("SubscriptionFee")
+
+
+class ConsultantPlanPayment(Base):
+    """One purchase of N calendar months of the consultant monthly plan.
+    Only 'confirmed' and 'manual' rows with covered_from/covered_to set grant coverage."""
+    __tablename__ = "consultant_plan_payments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    months = Column(Integer, nullable=False)
+    amount = Column(Float, nullable=False)  # months x consultant_plan_amount, computed server-side at creation
+    status = Column(String(20), nullable=False, default="pending")  # 'pending' | 'confirmed' | 'manual' | 'pending_verification' | 'rejected'
+    covered_from = Column(String(7), nullable=True)  # 'YYYY-MM' (IST), allocated on confirmation
+    covered_to = Column(String(7), nullable=True)
+    cashfree_order_id = Column(String(120), nullable=True, index=True)  # "plan_<user>_<ts>"
+    cashfree_payment_link_url = Column(Text, nullable=True)
+    cashfree_payment_session_id = Column(Text, nullable=True)
+    payment_reference = Column(String(255), nullable=True)
+    notes = Column(Text, nullable=True)
+    submitted_utr = Column(String(255), nullable=True)
+    submitted_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    submitted_at = Column(DateTime(timezone=True), nullable=True)
+    verified_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    rejection_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class ActivityLog(Base):
