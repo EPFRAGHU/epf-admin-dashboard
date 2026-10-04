@@ -2,6 +2,8 @@
 import uuid
 from datetime import datetime, timezone
 
+import pytest
+
 from webapp.database import User, ConsultantPlanPayment, ActivityLog
 from webapp.app import (
     is_consultant_plan_active, _confirm_plan_payment, _plan_payment_amount,
@@ -10,6 +12,25 @@ from webapp.app import (
 
 OCT_2026 = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)
 NOV_2026 = datetime(2026, 11, 15, 12, 0, tzinfo=timezone.utc)
+
+
+_CREATED_USER_IDS = []
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_created_users(test_db):
+    """The test DB is shared across the whole session: remove every plan_*@testepf.com user
+    this module creates (and their plan payments / activity logs) so none leak into other modules."""
+    yield
+    test_db.rollback()
+    ids = list(_CREATED_USER_IDS)
+    _CREATED_USER_IDS.clear()
+    if ids:
+        test_db.query(ConsultantPlanPayment).filter(ConsultantPlanPayment.user_id.in_(ids)).delete(
+            synchronize_session=False)
+        test_db.query(ActivityLog).filter(ActivityLog.user_id.in_(ids)).delete(synchronize_session=False)
+        test_db.query(User).filter(User.id.in_(ids)).delete(synchronize_session=False)
+        test_db.commit()
 
 
 def _make_user(db, plan_amount=2000.0):
@@ -24,6 +45,7 @@ def _make_user(db, plan_amount=2000.0):
     db.add(user)
     db.commit()
     db.refresh(user)
+    _CREATED_USER_IDS.append(user.id)
     return user
 
 

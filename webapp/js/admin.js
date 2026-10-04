@@ -814,6 +814,7 @@ const Admin = (() => {
   function sourceTagHtml(source) {
     if (source === 'cashfree') return '<span class="badge low" style="font-size:10px; font-weight:600;">💳 Cashfree</span>';
     if (source === 'advance_credit') return '<span class="badge mid" style="font-size:10px; font-weight:600;">↳ Advance Credit</span>';
+    if (source === 'consultant_plan') return '<span class="badge mid" style="font-size:10px; font-weight:600;">Consultant plan</span>';
     return '<span class="badge" style="font-size:10px; color:var(--text3); font-weight:600;">✍️ Manual</span>';
   }
 
@@ -1812,18 +1813,23 @@ const Admin = (() => {
     }
   }
 
-  async function clearConsultantPlan(id) {
-    try {
-      await App.put(`/api/admin/users/${id}/consultant-plan`, { amount: null });
-      const c = consultants.find(item => item.id === id);
-      if (c) c.consultant_plan_amount = null;
-      const input = document.getElementById('ec-plan-amount');
-      if (input) input.value = '';
-      App.toast('Monthly plan cleared');
-      loadConsultantPlanDetails(id);
-    } catch (e) {
-      // Error toast already handled by App.api
-    }
+  function clearConsultantPlan(id) {
+    const c = consultants.find(item => item.id === id);
+    // App.confirm closes the whole edit modal once the user answers (Yes or Cancel), so the
+    // edit modal is reopened afterwards with fresh plan status, as recordConsultantPlanPayment does.
+    App.confirm(
+      `Clear the monthly plan for <strong>${App.esc(c ? c.name : 'this consultant')}</strong>?<br><br><span style="color:var(--text2); font-size:12px;">This returns the consultant to normal per-establishment billing immediately, even if months are already prepaid. Months already waived stay paid, but no further months will be covered by the plan.</span>`,
+      async () => {
+        try {
+          await App.put(`/api/admin/users/${id}/consultant-plan`, { amount: null });
+          App.toast('Monthly plan cleared');
+        } catch (e) {
+          // Error toast already handled by App.api
+        }
+        await loadConsultants();
+        showEditConsultantModal(id);
+      }
+    );
   }
 
   function recordConsultantPlanPayment(id) {

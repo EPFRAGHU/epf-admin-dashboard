@@ -151,6 +151,7 @@ const SubscriptionHistory = {
   sourceTag(source) {
     if (source === 'cashfree') return '<span class="badge low" style="font-size:10px; font-weight:600;">💳 Cashfree</span>';
     if (source === 'advance_credit') return '<span class="badge mid" style="font-size:10px; font-weight:600;">↳ Advance Credit</span>';
+    if (source === 'consultant_plan') return '<span class="badge mid" style="font-size:10px; font-weight:600;">Consultant plan</span>';
     return '<span class="badge" style="font-size:10px; color:var(--text3); font-weight:600;">✍️ Manual</span>';
   },
 

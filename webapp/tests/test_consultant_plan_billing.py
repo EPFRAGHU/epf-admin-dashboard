@@ -338,3 +338,54 @@ def test_flat_fee_without_plan_zero_employee_months_keep_flat_amount(superadmin_
     assert res.status_code == 200, res.text
     assert res.json()["can_add_year"] is False
     assert res.json()["blocking_year"]["amount_due"] == 3600.0
+
+
+def test_waived_row_is_labelled_consultant_plan_in_history(superadmin_session, consultant_a, test_db):
+    _activate_plan(test_db, consultant_a.user_id)
+    est_id = _make_est(consultant_a, "CPB017")
+    _fees(superadmin_session, est_id)  # sync -> waive Mar
+    consultant_a.set_establishment(est_id)
+    res = consultant_a.get("/api/establishment/subscription-payments")
+    assert res.status_code == 200, res.text
+    mar = [p for p in res.json()["payments"] if p["month"] == "Mar"][0]
+    assert mar["source"] == "consultant_plan"
+    assert mar["billing_display"] == "Consultant plan"
+    admin = superadmin_session.get("/api/admin/subscription-payments?limit=200")
+    assert admin.status_code == 200, admin.text
+    rows = [p for p in admin.json()["payments"] if p["establishment_id"] == est_id and p["month"] == "Mar"]
+    assert rows and rows[0]["source"] == "consultant_plan"
+
+
+def test_payment_on_plan_waived_row_is_logged_without_changing_row(superadmin_session, consultant_a, test_db):
+    import json
+    from webapp.app import _confirm_subscription_fee_paid
+    from webapp.database import ActivityLog
+
+    _activate_plan(test_db, consultant_a.user_id)
+    est_id = _make_est(consultant_a, "CPB018")
+    _fees(superadmin_session, est_id)
+    row = _mar_fee_row(test_db, est_id)
+    assert row.payment_reference == PLAN_COVERED_REFERENCE and row.is_paid is True
+    row.cashfree_order_id = "CPB018-ORDER-1"
+    test_db.commit()
+
+    _confirm_subscription_fee_paid(test_db, row, "CF-PAY-REAL-1")
+
+    after = _mar_fee_row(test_db, est_id)
+    assert after.payment_reference == PLAN_COVERED_REFERENCE  # untouched
+    assert after.amount_due == 0 and after.billing_mode == "consultant_plan"
+    logs = test_db.query(ActivityLog).filter(
+        ActivityLog.establishment_id == est_id, ActivityLog.action_type == "fee_payment_on_plan_waived_row"
+    ).all()
+    assert len(logs) == 1
+    assert "CF-PAY-REAL-1" in logs[0].description and "CPB018-ORDER-1" in logs[0].description
+    meta = json.loads(logs[0].extra_data)
+    assert meta["month"] == "Mar" and meta["payment_reference"] == "CF-PAY-REAL-1"
+
+    # An ordinary already-paid row (not plan-waived) stays a silent no-op.
+    after.payment_reference = "UPI/REAL"
+    test_db.commit()
+    _confirm_subscription_fee_paid(test_db, after, "CF-PAY-REAL-2")
+    assert test_db.query(ActivityLog).filter(
+        ActivityLog.establishment_id == est_id, ActivityLog.action_type == "fee_payment_on_plan_waived_row"
+    ).count() == 1

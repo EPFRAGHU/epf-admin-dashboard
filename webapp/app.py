@@ -437,6 +437,13 @@ def _confirm_plan_payment(
     if row.covered_from is not None:
         return
 
+    # Serialize concurrent confirmations for the same consultant (Postgres row lock; SQLite
+    # ignores FOR UPDATE) so two payments confirmed at once cannot be allocated the same window.
+    db.query(User).filter(User.id == row.user_id).with_for_update().first()
+    db.refresh(row)
+    if row.covered_from is not None:
+        return
+
     windows = _plan_coverage_windows(db, row.user_id, exclude_row_id=row.id)
     latest = max((to for _, to in windows), default=None)
     start, end = compute_coverage(current_month_ist(now), latest, row.months)
@@ -2982,6 +2989,20 @@ def _confirm_subscription_fee_paid(db: Session, fee_row: SubscriptionFee, paymen
     """Shared confirmation logic used by both the webhook and the manual refresh button.
     Idempotent -- a no-op if the row is already paid."""
     if fee_row.is_paid:
+        if fee_row.payment_reference == PLAN_COVERED_REFERENCE:
+            # Real money arrived for a month the consultant plan already waived: nothing is
+            # changed, but leave an audit trail so it can be refunded or credited.
+            log_activity(
+                db, None, fee_row.establishment_id, "fee_payment_on_plan_waived_row",
+                f"Payment received for {fee_row.month} (FY {fee_row.financial_year}), which is already "
+                f"covered by the consultant plan — Ref: {payment_ref}, Order: {fee_row.cashfree_order_id}",
+                {
+                    "financial_year": fee_row.financial_year, "month": fee_row.month,
+                    "amount": fee_row.amount_due, "payment_reference": payment_ref,
+                    "cashfree_order_id": fee_row.cashfree_order_id, "source": source,
+                    "establishment_id": fee_row.establishment_id,
+                }
+            )
         return
     fee_row.is_paid = True
     fee_row.payment_status = "paid"
@@ -4766,6 +4787,8 @@ def _subscription_payment_dict(f: SubscriptionFee, est: Establishment, consultan
     superadmin's cross-establishment Subscription Payments tab."""
     if f.payment_reference == "Applied from advance credit":
         source = "advance_credit"
+    elif f.billing_mode == "consultant_plan":
+        source = "consultant_plan"
     elif f.cashfree_order_id:
         source = "cashfree"
     else:
