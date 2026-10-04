@@ -270,6 +270,17 @@ def reported_epf_wage(emp, month_idx: int, entered_wage, ceiling):
     return entered_wage
 
 
+def reported_edli_wage(emp, month_idx: int, entered_wage, ceiling):
+    """The wage the A/c 21 (EDLI) charge is computed on -- the same ceiling-capped,
+    prorated EDLI wage the ECR's EDLI-wages field reports. Applied only from the first
+    dated ceiling change onward; every earlier month keeps the legacy basis (the wage as
+    entered) so historical A/c 21 figures stay byte-identical."""
+    if not entered_wage or not getattr(ceiling, "dated", False):
+        return entered_wage
+    w = int(round(float(entered_wage)))
+    return round_contribution(emp.wage_bases(month_idx, w, ceiling).edli, True)
+
+
 def _parse_coverage_date(text: str):
     try:
         return datetime.strptime((text or "").strip(), "%d-%m-%Y").date()
@@ -2598,10 +2609,12 @@ class ExcelGenerator:
                 a2_floor = account2_min_floor(cal_year, get_month_num(month_label))
                 a22_floor = account22_min_floor(cal_year, get_month_num(month_label))
                 a2_amt = max(round(wages_total * a2_rate / 100), a2_floor) if wages_total > 0 else 0
-                a21_amt = round(wages_total * ACCOUNT_21_RATE / 100)
+                edli_total = sum(reported_edli_wage(emp, i, rows[i][0], year_ceilings[i])
+                                 for emp, rows in zip(self.employees, all_month_rows))
+                a21_amt = round(edli_total * ACCOUNT_21_RATE / 100)
                 a22_amt = (max(round(wages_total * a22_rate / 100), a22_floor)
                           if (a22_rate > 0 and wages_total > 0) else 0)
-                
+
                 members = sum(1 for rows in all_month_rows if rows[i][0] > 0)
                 acc_01 = ee_total + er_total
                 

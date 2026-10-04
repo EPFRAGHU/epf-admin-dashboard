@@ -196,6 +196,7 @@ from epf_engine import (
     normalize_date_string,
     import_wages_from_excel, generate_form9, import_master_from_excel, parse_ecr_text_file,
     natural_sort_key, get_wage_ceilings_for_year, round_contribution, reported_epf_wage,
+    reported_edli_wage,
     account2_rate_percent, account22_rate_percent, account2_min_floor, account22_min_floor,
     ACCOUNT_21_RATE, ACCOUNT_22_MIN, ACCOUNT_2_MIN,
     generate_ecr_month, calendar_year_for_month, Employee,
@@ -4048,7 +4049,8 @@ def _is_valid_uan(uan) -> bool:
     uan_str = str(uan).strip()
     return len(uan_str) == 12 and uan_str.isdigit()
 
-def compute_remittance_row(yr, est, month_idx, wages_total, ee_total, er_total, a10_total, members):
+def compute_remittance_row(yr, est, month_idx, wages_total, ee_total, er_total, a10_total, members,
+                           edli_total=None):
     remit_list = getattr(yr, 'remittances', [])
     saved_remit = None
     for r in remit_list:
@@ -4070,7 +4072,8 @@ def compute_remittance_row(yr, est, month_idx, wages_total, ee_total, er_total, 
     a22_floor = account22_min_floor(cal_year, m_num)
     acc_01 = ee_total + (er_total - a10_total)
     a2_amt = max(round(wages_total * a2_rate / 100), a2_floor) if wages_total > 0 else 0
-    a21_amt = round(wages_total * ACCOUNT_21_RATE / 100) if wages_total > 0 else 0
+    a21_base = wages_total if edli_total is None else edli_total
+    a21_amt = round(a21_base * ACCOUNT_21_RATE / 100) if wages_total > 0 else 0
     a22_amt = (max(round(wages_total * a22_rate / 100), a22_floor)
                if (a22_rate > 0 and wages_total > 0) else 0)
     
@@ -4115,6 +4118,7 @@ async def dashboard(
             m_emp_count = 0
             m_gross = 0
             m_epf_wage = 0
+            m_edli_base = 0
             m_eps_wage = 0
             m_worker = 0
             m_employer = 0
@@ -4142,6 +4146,7 @@ async def dashboard(
                     m_emp_count += 1
                     m_gross += gross
                     m_epf_wage += reported_epf_wage(emp, i, wages, ceiling)
+                    m_edli_base += reported_edli_wage(emp, i, wages, ceiling)
                     m_eps_wage += eps_wage
                     m_worker += w_tot
                     m_employer += e_tot
@@ -4159,7 +4164,8 @@ async def dashboard(
                 ee_total=m_ee_epf,
                 er_total=(m_er_epf + m_er_eps),
                 a10_total=m_er_eps,
-                members=m_emp_count
+                members=m_emp_count,
+                edli_total=m_edli_base
             )
             
             cal_yr = year_from_int if i < 10 else year_from_int + 1
@@ -5407,8 +5413,10 @@ async def get_remittances(
         gross_wages_total = 0
         eps_wages_total = 0
         edli_wages_total = 0
+        a21_base_total = 0   # legacy as-entered basis before the dated ceiling change, EDLI wage from it
         for emp in employees:
             wages = emp.wages[i] if emp.wages and len(emp.wages) > i else 0
+            a21_base_total += reported_edli_wage(emp, i, wages, ceiling)
             gross = emp.gross_wages[i] if emp.gross_wages and len(emp.gross_wages) > i else 0
             gross_wages_total += gross
             bases = emp.wage_bases(i, wages, ceiling, honor_pohw=False)
@@ -5421,7 +5429,8 @@ async def get_remittances(
             # and (unlike EPS) not zeroed out past age 58.
             edli_wages_total += round_contribution(bases.edli, True)
 
-        row_data = compute_remittance_row(yr, est, i, wages_total, ee_total, er_total, a10_total, members)
+        row_data = compute_remittance_row(yr, est, i, wages_total, ee_total, er_total, a10_total, members,
+                                          edli_total=a21_base_total)
         row_data["gross_wages"] = gross_wages_total
         row_data["epf_wages"] = wages_total
         row_data["eps_wages"] = eps_wages_total

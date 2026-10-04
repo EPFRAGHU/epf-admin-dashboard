@@ -873,7 +873,7 @@ def generate_form_12a_pdf(project, year_key: str, filepath: str, member_ids: Opt
     from epf_engine import calendar_year_for_month, get_month_num, account2_rate_percent, account22_rate_percent, account2_min_floor, account22_min_floor, ACCOUNT_21_RATE, ACCOUNT_22_MIN, ACCOUNT_2_MIN, MONTHS
     
     all_month_rows = [emp.month_rows(est.worker_epf_rate, est.worker_eps_rate, est.employer_epf_rate, est.employer_eps_rate) for emp in employees]
-    from epf_engine import default_wage_ceilings, reported_epf_wage
+    from epf_engine import default_wage_ceilings, reported_epf_wage, reported_edli_wage
     year_ceilings = default_wage_ceilings(est.year_from)   # same ceilings month_rows() just used
 
     grand = [0] * 7 # members (summed? no), a1, a2, a10, a21, a22, total
@@ -895,7 +895,9 @@ def generate_form_12a_pdf(project, year_key: str, filepath: str, member_ids: Opt
             a2_floor = account2_min_floor(cal_year, get_month_num(month_label))
             a22_floor = account22_min_floor(cal_year, get_month_num(month_label))
             a2_amt = max(round(wages_total * a2_rate / 100), a2_floor) if wages_total > 0 else 0
-            a21_amt = round(wages_total * ACCOUNT_21_RATE / 100)
+            edli_total = sum(reported_edli_wage(emp, i, rows[i][0], year_ceilings[i])
+                             for emp, rows in zip(employees, all_month_rows))
+            a21_amt = round(edli_total * ACCOUNT_21_RATE / 100)
             a22_amt = (max(round(wages_total * a22_rate / 100), a22_floor) if (a22_rate > 0 and wages_total > 0) else 0)
             
             members = sum(1 for rows in all_month_rows if rows[i][0] > 0)

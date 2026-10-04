@@ -390,3 +390,28 @@ def test_remittance_admin_base_uses_prorated_epf_wage_in_september(consultant_a,
     # three employees each: Sep A=9333 B=20000 C=17333 (higher EPF B reports full)
     assert sep["epf_wages"] == 9333 + 20000 + 17333
     assert aug["epf_wages"] == 3 * 20000 and octo["epf_wages"] == 3 * 30000
+
+
+# ------------------------------------------------ A/c 21 follows the ECR EDLI wage
+
+def test_reported_edli_wage_capped_only_from_the_dated_change():
+    from epf_engine import reported_edli_wage
+    c = _ceil()
+    higher = _emp(higher_epf_ee=True, higher_epf_er=True)
+    assert reported_edli_wage(higher, SEP, 20000, c[SEP]) == 17333        # straddle: capped + prorated
+    h_oct = _emp(month=SEP + 1, wage=40000, higher_epf_ee=True, higher_epf_er=True)
+    assert reported_edli_wage(h_oct, SEP + 1, 40000, c[SEP + 1]) == 25000  # new ceiling cap
+    h_aug = _emp(month=SEP - 1, wage=40000, higher_epf_ee=True, higher_epf_er=True)
+    assert reported_edli_wage(h_aug, SEP - 1, 40000, c[SEP - 1]) == 40000  # history: unchanged legacy basis
+    assert reported_edli_wage(higher, SEP, 0, c[SEP]) == 0
+
+
+def test_a21_for_scenario_b_uses_edli_wage_not_the_uncapped_epf_wage(consultant_a, test_db):
+    est_id = _seed_transition_establishment(consultant_a, test_db, "TRANS007")
+    rem = consultant_a.get("/api/years/2026-27/remittances").json()["remittances"]
+    sep, aug = rem[6], rem[5]
+    # Sep: A 9333 + B 17333 (capped, not 20000) + C 17333 = 44000 * 0.5% = 220
+    assert sep["edli_wages"] == 9333 + 17333 + 17333
+    assert sep["acc_21"] == round(sep["edli_wages"] * 0.5 / 100) == 220
+    # Aug (before the change): A/c 21 stays on the as-entered legacy basis, 3 x 20000 * 0.5% = 300
+    assert aug["acc_21"] == 300
