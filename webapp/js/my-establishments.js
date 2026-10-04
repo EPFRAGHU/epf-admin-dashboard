@@ -39,6 +39,11 @@ const MyEstablishments = (() => {
     return Number.isInteger(v) ? App.fmt(v) : App.fmtD(v);
   }
 
+  // Only http(s) URLs may become a clickable href (blocks javascript:/data: schemes).
+  function isHttpUrl(u) {
+    return typeof u === 'string' && /^https?:\/\//i.test(u);
+  }
+
   function planStatusBadge(status) {
     if (status === 'confirmed' || status === 'manual') return '<span class="badge badge-green">Paid</span>';
     if (status === 'pending_verification') return '<span class="badge badge-amber">Awaiting verification</span>';
@@ -139,9 +144,17 @@ const MyEstablishments = (() => {
     if (btn) { btn.disabled = true; btn.textContent = 'Generating payment link…'; }
     try {
       const res = await App.post('/api/my-plan/create-link', { months });
-      window.open(res.link_url, '_blank');
-      if (statusEl) statusEl.textContent = 'Opening the Cashfree payment page in a new tab. Your plan activates once the payment is confirmed.';
-      App.toast('Redirecting to Cashfree…');
+      const win = window.open(res.link_url, '_blank');
+      if (win) {
+        if (statusEl) statusEl.textContent = 'Opening the Cashfree payment page in a new tab. Your plan activates once the payment is confirmed.';
+        App.toast('Redirecting to Cashfree…');
+      } else if (statusEl) {
+        // Popup blocked: don't leave the user with a pending row and no way to pay.
+        const url = isHttpUrl(res.link_url) ? res.link_url : '';
+        statusEl.innerHTML = url
+          ? `Your browser blocked the payment page. <a href="${App.esc(url)}" target="_blank" rel="noopener" style="color:var(--primary); font-weight:600;">Open the Cashfree payment page</a>`
+          : 'Your browser blocked the payment page. Please allow pop-ups and try again.';
+      }
     } catch (e) {
       // App.post already surfaced the server's message
     } finally {

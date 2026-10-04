@@ -433,7 +433,7 @@ const App = (() => {
       return;
     }
 
-    const upiLink = `upi://pay?pa=${encodeURIComponent(upi.upi_id)}&pn=${encodeURIComponent(upi.upi_name || '')}&am=${encodeURIComponent(amount)}&cu=INR&tn=${encodeURIComponent('Monthly Plan ' + months + ' month(s)')}`;
+    const upiLink = `upi://pay?pa=${encodeURIComponent(upi.upi_id)}&pn=${encodeURIComponent(upi.upi_name || '')}&am=${encodeURIComponent(amount.toFixed(2))}&cu=INR&tn=${encodeURIComponent('Monthly Plan ' + months + ' month(s)')}`;
 
     panel.innerHTML = `
       <div style="background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; font-size:13px; max-width:420px;">
@@ -449,7 +449,7 @@ const App = (() => {
           <label class="form-label" style="font-weight:600; font-size:12px;">UTR / Transaction Reference No.</label>
           <input type="text" id="plan-utr-input" class="form-input" placeholder="e.g. 123456789012">
         </div>
-        <button class="btn btn-primary" style="width:100%;" onclick="App.submitPlanUTR(${Number(months)})">✅ Submit UTR</button>
+        <button class="btn btn-primary" id="plan-utr-submit-btn" style="width:100%;" onclick="App.submitPlanUTR(${Number(months)})">✅ Submit UTR</button>
       </div>
     `;
 
@@ -471,6 +471,10 @@ const App = (() => {
     const utr = input ? input.value.trim() : '';
     if (!utr) { toast('Enter the UTR / transaction reference number', 'error'); return; }
 
+    // Disable the button for the whole round trip so a double-click can't post twice.
+    const btn = document.getElementById('plan-utr-submit-btn');
+    if (btn) { if (btn.disabled) return; btn.disabled = true; }
+
     try {
       await post('/api/my-plan/submit-utr', { months: Number(months), utr });
       toast('UTR submitted — awaiting verification');
@@ -479,7 +483,8 @@ const App = (() => {
       // Re-render so the new pending_verification payment shows in the card's history.
       if (currentPage === 'my-establishments') navigate('my-establishments');
     } catch (e) {
-      // Handled
+      // Handled (App.post already toasted); let the user correct the UTR and retry.
+      if (btn) btn.disabled = false;
     }
   }
 
@@ -793,6 +798,17 @@ const App = (() => {
       }
       return true;
     }
+    if (type === 'plan') {
+      navigate('my-establishments');
+      // orderId comes from the URL: only ever use it (and later put it in an onclick)
+      // once it is known to be a plain token.
+      if (orderId && /^[A-Za-z0-9_-]+$/.test(orderId)) {
+        setTimeout(() => checkPlanReturnStatus(orderId), 350);
+      } else {
+        toast('Returned from Cashfree — your plan will activate once the payment is confirmed.', 'info');
+      }
+      return true;
+    }
     return false;
   }
 
@@ -882,6 +898,52 @@ const App = (() => {
         `,
         `<button class="btn btn-ghost" onclick="App.closeModal()">Close</button>
          <button class="btn btn-primary" onclick="App.checkAdvanceCreditReturnStatus('${orderId}')">🔄 Check Again</button>`
+      );
+    }
+  }
+
+  /* Consultant Monthly Plan: the Cashfree return lands here (type=plan). Looks the order up
+     via refresh-status (scoped to the caller server-side) so the plan activates even where
+     the webhook can't reach (e.g. localhost). */
+  async function checkPlanReturnStatus(orderId) {
+    if (!/^[A-Za-z0-9_-]+$/.test(String(orderId || ''))) return;
+    let confirmed = false;
+    let amount = null;
+    try {
+      const res = await post('/api/my-plan/refresh-status', { order_id: orderId });
+      confirmed = res.status === 'confirmed';
+      amount = res.amount;
+    } catch (e) { /* fall through to the "still processing" view */ }
+
+    if (confirmed) {
+      openModal(
+        '✅ Plan Payment Received',
+        `
+          <div style="text-align:center; padding:16px 8px;">
+            <span style="font-size:48px; display:block; margin-bottom:10px;">🎉</span>
+            <h4 style="margin:0 0 8px 0; font-size:17px; font-weight:700; color:var(--primary);">Payment Successful!</h4>
+            <p style="font-size:13px; color:var(--text2); line-height:1.5;">
+              Your monthly plan payment of ₹${fmt(amount)} is confirmed. All your establishments are covered for the paid months.
+            </p>
+          </div>
+        `,
+        `<button class="btn btn-primary" onclick="App.closeModal()">Got it</button>`
+      );
+      toast('Monthly plan payment confirmed!');
+      // Re-render so the My Plan card shows the new "paid through" month.
+      if (currentPage === 'my-establishments') navigate('my-establishments');
+    } else {
+      openModal(
+        '⏳ Payment Processing',
+        `
+          <div style="text-align:center; padding:16px 8px;">
+            <span style="font-size:48px; display:block; margin-bottom:10px;">⏳</span>
+            <h4 style="margin:0 0 8px 0; font-size:16px; font-weight:700; color:var(--text1);">Almost there…</h4>
+            <p style="font-size:13px; color:var(--text2); line-height:1.5;">Still waiting for Cashfree to confirm this payment — that's usually instant. Try checking again in a moment.</p>
+          </div>
+        `,
+        `<button class="btn btn-ghost" onclick="App.closeModal()">Close</button>
+         <button class="btn btn-primary" onclick="App.checkPlanReturnStatus('${orderId}')">🔄 Check Again</button>`
       );
     }
   }
@@ -1563,7 +1625,7 @@ const App = (() => {
     showYearUPIPanel, submitYearUTR,
     showAdvanceUPIPanel, submitAdvanceUTR,
     showPlanUPIPanel, submitPlanUTR,
-    checkCashfreeReturnStatus, checkAdvanceCreditReturnStatus,
+    checkCashfreeReturnStatus, checkAdvanceCreditReturnStatus, checkPlanReturnStatus,
     getToken, getCurrentUser, isSuperadmin, getCurrentEstablishmentId, setActiveEstablishment,
     get currentPage() { return currentPage; },
   };
