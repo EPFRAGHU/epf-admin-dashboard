@@ -3771,7 +3771,10 @@ async def cashfree_webhook(request: Request, db: Session = Depends(get_db)):
 async def cashfree_pay_redirect(order_id: str, db: Session = Depends(get_db)):
     fee_row = db.query(SubscriptionFee).filter(SubscriptionFee.cashfree_order_id == order_id).first()
     ledger_row = None if fee_row else db.query(AdvanceCreditLedger).filter(AdvanceCreditLedger.cashfree_order_id == order_id).first()
-    row = fee_row or ledger_row
+    plan_row = None
+    if not (fee_row or ledger_row):
+        plan_row = db.query(ConsultantPlanPayment).filter(ConsultantPlanPayment.cashfree_order_id == order_id).first()
+    row = fee_row or ledger_row or plan_row
     if not row:
         return HTMLResponse("<h2>Payment link not found</h2><p>This link may have expired or is invalid.</p>", status_code=404)
 
@@ -5090,7 +5093,9 @@ async def create_my_plan_payment_link(
     order_id = cashfree_client.new_order_id("plan", current_user.id)
     if db.query(ConsultantPlanPayment).filter(ConsultantPlanPayment.cashfree_order_id == order_id).first():
         # Order ids are second-granular; a double-click must not create two rows that one
-        # webhook would then confirm together.
+        # webhook would then confirm together. Best-effort only: this check-then-insert is
+        # not atomic, so two truly simultaneous requests could still both pass it (the
+        # cashfree_order_id column is indexed but not unique).
         raise HTTPException(409, "A payment link was just created. Please wait a moment and try again.")
     app_base_url = _app_base_url(request)
     return_url = f"{app_base_url}/?cf_payment_return=1&type=plan&order_id={order_id}"

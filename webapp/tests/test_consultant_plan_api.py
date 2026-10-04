@@ -263,3 +263,55 @@ def test_other_user_cannot_see_my_plan_rows(consultant_a, consultant_b, test_db,
     test_db.expire_all()
     row = test_db.query(ConsultantPlanPayment).filter(ConsultantPlanPayment.cashfree_order_id == order_id).one()
     assert row.status == "pending"
+
+
+def _fake_order_fallback(link_id, amount, purpose, customer_phone, customer_name="", customer_email="", notify_url=None, return_url=None):
+    """Orders-API fallback shape (production's Cashfree account always takes this path)."""
+    return {"method": "order", "order_id": link_id, "link_url": None, "payment_session_id": f"session_fake_{link_id}"}
+
+
+def test_orders_fallback_plan_order_is_served_by_pay_route(client, consultant_a, test_db, monkeypatch):
+    _set_plan(test_db, consultant_a.user_id, 2000.0)
+    monkeypatch.setattr(app_module.cashfree_client, "create_payment_link_or_order", _fake_order_fallback)
+    res = consultant_a.post("/api/my-plan/create-link", json={"months": 2})
+    assert res.status_code == 200, res.text
+    order_id = res.json()["order_id"]
+    assert res.json()["link_url"].endswith(f"/pay/{order_id}")
+
+    # /pay/{order_id} is the link itself: reachable with no auth, serves the SDK checkout page.
+    pay = client.get(f"/pay/{order_id}", follow_redirects=False)
+    assert pay.status_code == 200, pay.text
+    assert "sdk.cashfree.com/js/v3/cashfree.js" in pay.text
+    assert f"session_fake_{order_id}" in pay.text
+
+
+def test_pay_route_redirects_plan_order_with_payment_link_url(client, consultant_a, test_db, mock_cashfree):
+    _set_plan(test_db, consultant_a.user_id, 2000.0)
+    order_id = consultant_a.post("/api/my-plan/create-link", json={"months": 1}).json()["order_id"]
+    pay = client.get(f"/pay/{order_id}", follow_redirects=False)
+    assert pay.status_code in (302, 307)
+    assert pay.headers["location"] == "https://x/pay"
+
+
+def test_create_link_same_second_collision_returns_409(consultant_a, test_db, mock_cashfree, monkeypatch):
+    _set_plan(test_db, consultant_a.user_id, 2000.0)
+    monkeypatch.setattr(app_module.cashfree_client, "new_order_id", lambda prefix, eid: f"{prefix}_{eid}_1700000000")
+    assert consultant_a.post("/api/my-plan/create-link", json={"months": 1}).status_code == 200
+    res = consultant_a.post("/api/my-plan/create-link", json={"months": 1})
+    assert res.status_code == 409
+    assert len(mock_cashfree) == 1  # Cashfree was not called a second time
+    assert test_db.query(ConsultantPlanPayment).filter(ConsultantPlanPayment.user_id == consultant_a.user_id).count() == 1
+
+
+def test_webhook_for_unknown_plan_order_is_a_noop(client, consultant_a, test_db, mock_cashfree):
+    _set_plan(test_db, consultant_a.user_id, 2000.0)
+    order_id = consultant_a.post("/api/my-plan/create-link", json={"months": 3}).json()["order_id"]
+
+    assert _fire_webhook(client, "plan_999999_1700000000").status_code == 200
+
+    test_db.expire_all()
+    rows = test_db.query(ConsultantPlanPayment).filter(ConsultantPlanPayment.user_id == consultant_a.user_id).all()
+    assert len(rows) == 1
+    assert rows[0].cashfree_order_id == order_id
+    assert rows[0].status == "pending" and rows[0].covered_from is None
+    assert consultant_a.get("/api/my-plan").json()["active"] is False
