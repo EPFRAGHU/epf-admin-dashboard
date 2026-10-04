@@ -484,7 +484,10 @@ const Admin = (() => {
         <td>${c.mobile ? App.esc(c.mobile) : '<span style="color:var(--text3);">—</span>'}</td>
         <td style="text-align:center;">${roleBadgeHtml(c.role)}</td>
         <td style="text-align:center;">
-          ${c.custom_rate_per_employee ? `
+          ${c.consultant_plan_amount != null ? `
+            ${planRateBadgeHtml(c.consultant_plan_amount, c.consultant_plan_active, c.consultant_plan_covered_through)}
+            ${c.custom_rate_per_employee ? `<div style="font-size:10px; color:var(--text3); margin-top:3px;">₹${App.esc(String(c.custom_rate_per_employee))}/emp ${c.consultant_plan_active ? 'if plan not paid' : 'applies now'}</div>` : ''}
+          ` : c.custom_rate_per_employee ? `
             <span class="badge" style="background:rgba(99,102,241,0.1); color:var(--primary); font-weight:700; font-size:11px;">₹${c.custom_rate_per_employee}/emp</span>
           ` : `
             <span style="color:var(--text3); font-size:11px;">Default</span>
@@ -1707,6 +1710,19 @@ const Admin = (() => {
     return Number.isInteger(v) ? App.fmt(v) : App.fmtD(v);
   }
 
+  // Badge for the Fee Rate displays: the monthly plan, and whether a paid month covers today.
+  // `active` comes from the server (display only); billing is decided server-side.
+  function planRateBadgeHtml(amount, active, coveredThrough) {
+    if (amount == null) return '';
+    const amt = `₹${formatPlanMoney(amount)}/mo`;
+    if (active) {
+      const thru = formatPlanMonth(coveredThrough);
+      const tip = `Monthly plan active${thru ? ' through ' + thru : ''}: fees are waived for all of this consultant's establishments while a paid month is active`;
+      return `<span class="badge low" style="font-weight:700; font-size:11px;" title="${App.esc(tip)}">Plan ${App.esc(amt)} ✓${thru ? ' · ' + App.esc(thru) : ''}</span>`;
+    }
+    return `<span class="badge mid" style="font-weight:700; font-size:11px;" title="A monthly plan is set but no paid month covers today, so normal billing applies until a month is paid">Plan ${App.esc(amt)} · not paid</span>`;
+  }
+
   function planStatusBadgeHtml(status) {
     if (status === 'confirmed' || status === 'manual') return '<span class="badge badge-green">Paid</span>';
     if (status === 'pending_verification') return '<span class="badge badge-amber">Awaiting verification</span>';
@@ -2025,6 +2041,18 @@ const Admin = (() => {
               ? `<span class="badge" style="font-size:10px; font-weight:700; background:rgba(245,158,11,0.15); color:#b45309;" title="${isExplicit ? 'Explicitly set for this establishment' : 'Inherited from consultant default'}">Flat ₹${e.flat_fee_amount != null ? e.flat_fee_amount : '—'}${inheritTag}</span>`
               : (e.custom_rate_per_employee ? `<span class="badge" style="font-size:10px; font-weight:700; background:rgba(99,102,241,0.1); color:var(--primary);">Custom ₹${e.custom_rate_per_employee}/emp</span>` : `<span class="badge" style="font-size:10px; font-weight:600; color:var(--text3);">Tiered${!isExplicit && res.user.default_billing_mode === 'per_employee' ? inheritTag : ''}</span>`);
 
+            // A monthly plan on the consultant: show it (active or not) next to the per-establishment
+            // rate. While a paid month is active it replaces the rate display; the rate stays visible
+            // as what applies when no month is paid.
+            const planOn = res.user.consultant_plan_amount != null;
+            const planActive = planOn && !!res.user.consultant_plan_active;
+            const planBadge = planRateBadgeHtml(res.user.consultant_plan_amount, res.user.consultant_plan_active, res.user.consultant_plan_covered_through);
+            const billingBadgeFinal = planActive ? planBadge : (planOn ? `${planBadge} ${billingBadge}` : billingBadge);
+            const baseBillingHtml = isFlat ? `Flat ₹${e.flat_fee_amount != null ? e.flat_fee_amount : '—'}/month${!isExplicit ? ` <span style="color:var(--text3); font-weight:400;">(inherited from ${App.esc(res.user.name)}'s default)</span>` : ` <span style="color:var(--text3); font-weight:400;">(explicitly set)</span>`}` : effectiveRateDisplay;
+            const billingLineHtml = planActive
+              ? `Consultant plan ₹${formatPlanMoney(res.user.consultant_plan_amount)}/month <span style="color:var(--text3); font-weight:400;">(covers all establishments · ${baseBillingHtml} applies if not paid)</span>`
+              : baseBillingHtml;
+
             return `
               <div class="card" style="display:flex; flex-direction:column; justify-content:space-between; padding:18px; border:1px solid var(--card-border); border-radius:var(--radius); background:var(--card); box-shadow:var(--shadow);">
                 <div>
@@ -2032,7 +2060,7 @@ const Admin = (() => {
                     <span class="badge low" style="font-weight:700; font-family:monospace; font-size:13px; align-self:flex-start;">${App.esc(e.code)}</span>
                     <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
                       ${subBadge}
-                      ${billingBadge}
+                      ${billingBadgeFinal}
                       <span class="badge" style="font-size:11px; background:var(--bg2); border:1px solid var(--border); color:var(--primary); font-weight:600;">👥 ${e.employee_count}</span>
                     </div>
                   </div>
@@ -2041,7 +2069,7 @@ const Admin = (() => {
 
                   <div style="font-size:11px; color:var(--text3); margin-bottom:4px;">Coverage Date: <strong>${App.esc(e.coverage_date || '—')}</strong></div>
                   <div style="font-size:11px; color:var(--text2); margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
-                    <span>Billing: <strong>${isFlat ? `Flat ₹${e.flat_fee_amount != null ? e.flat_fee_amount : '—'}/month${!isExplicit ? ` <span style="color:var(--text3); font-weight:400;">(inherited from ${App.esc(res.user.name)}'s default)</span>` : ` <span style="color:var(--text3); font-weight:400;">(explicitly set)</span>`}` : effectiveRateDisplay}</strong></span>
+                    <span>Billing: <strong>${billingLineHtml}</strong></span>
                     <div style="display:flex; gap:4px;">
                       ${!isFlat ? `<button class="btn btn-ghost btn-sm" style="padding:2px 6px; font-size:11px;" onclick="Admin.showEditEstablishmentModal(${e.id}, '${App.esc(e.name)}', '${App.esc(e.code)}', ${e.custom_rate_per_employee != null ? e.custom_rate_per_employee : 'null'})" title="Override Rate for this Establishment">✏️ Edit Rate</button>` : ''}
                       <button class="btn btn-ghost btn-sm" style="padding:2px 6px; font-size:11px;" onclick="Admin.showManageBillingModal(${e.id}, '${App.esc(e.name)}', '${App.esc(e.code)}', '${e.billing_mode_own || ''}', ${e.flat_fee_amount_own != null ? e.flat_fee_amount_own : 'null'}, ${e.billing_mode_explicit}, '${App.esc(res.user.name)}', '${res.user.default_billing_mode || ''}', ${res.user.default_flat_fee_per_establishment != null ? res.user.default_flat_fee_per_establishment : 'null'})" title="Switch between Per Employee and Flat Fee billing">⚙️ Manage Billing</button>
@@ -2223,6 +2251,14 @@ const Admin = (() => {
           </div>
         </div>
 
+        ${con && con.consultant_plan_amount != null ? `
+        <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:12px; padding-top:10px; border-top:1px dashed var(--border); font-size:12px;">
+          <span style="color:var(--text3); font-weight:600; text-transform:uppercase; font-size:10px;">Consultant Plan:</span>
+          ${planRateBadgeHtml(con.consultant_plan_amount, con.consultant_plan_active, con.consultant_plan_covered_through)}
+          <span style="color:var(--text3); font-size:11px;">${con.consultant_plan_active
+            ? 'wage-month fees for this consultant are waived while a paid month is active; the rate below applies when no month is paid'
+            : 'no paid month covers today, so the rate below applies'}</span>
+        </div>` : ''}
         <!-- Rate Resolution / Billing Mode Banner -->
         <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-top:12px; padding-top:10px; border-top:1px dashed var(--border); font-size:12px;">
           ${est.billing_mode === 'flat_fee' ? `

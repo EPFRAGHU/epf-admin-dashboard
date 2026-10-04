@@ -454,3 +454,55 @@ def test_manual_payment_reference_length_cap(superadmin_session, consultant_a, t
     res = superadmin_session.post(url, json={"months": 1, "reference": "  " + "R" * 100 + "  "})
     assert res.status_code == 200, res.text
     assert _plan_rows(test_db, consultant_a.user_id)[0].payment_reference == "R" * 100
+
+
+# ------------------------------------- plan shown next to the per-employee rate (admin display)
+
+def test_admin_payloads_carry_plan_active_flags(superadmin_session, consultant_a, test_db):
+    """Users list, the consultant's establishments view and the establishment fee view must say
+    whether a paid plan month is active, so the UI can show the plan next to the old rate instead
+    of only 'Rs N/emp' (display only)."""
+    from webapp.tests.test_consultant_plan_billing import _make_est
+    est_id = _make_est(consultant_a, "CPA090")
+    uid = consultant_a.user_id
+
+    def _row():
+        users = superadmin_session.get("/api/admin/users").json()["users"]
+        return next(u for u in users if u["id"] == uid)
+
+    # no plan at all
+    r = _row()
+    assert (r["consultant_plan_amount"], r["consultant_plan_active"], r["consultant_plan_covered_through"]) == (None, False, None)
+
+    # plan amount set, nothing paid: shown, but NOT active
+    _set_plan(test_db, uid, 2000.0)
+    r = _row()
+    assert r["consultant_plan_amount"] == 2000.0 and r["consultant_plan_active"] is False
+    assert r["consultant_plan_covered_through"] is None
+
+    # one paid month: active through the current IST month, in all three payloads
+    res = superadmin_session.post(f"/api/admin/users/{uid}/plan-payment", json={"months": 1, "reference": "OCT-CASH"})
+    assert res.status_code == 200, res.text
+    now = current_month_ist()
+    r = _row()
+    assert r["consultant_plan_active"] is True and r["consultant_plan_covered_through"] == now
+
+    ests = superadmin_session.get(f"/api/admin/users/{uid}/establishments").json()
+    assert ests["user"]["consultant_plan_amount"] == 2000.0
+    assert ests["user"]["consultant_plan_active"] is True
+    assert ests["user"]["consultant_plan_covered_through"] == now
+
+    fees = superadmin_session.get(f"/api/admin/establishments/{est_id}/subscription-fees?year={YEAR}").json()
+    assert fees["consultant"]["consultant_plan_amount"] == 2000.0
+    assert fees["consultant"]["consultant_plan_active"] is True
+    assert fees["consultant"]["consultant_plan_covered_through"] == now
+    # the per-employee rate fields are untouched (the rate is still what applies when the plan is not paid)
+    assert "effective_rate" in fees["rates"]
+
+
+def test_plan_status_fields_for_a_consultant_without_a_plan_stay_inactive(superadmin_session, consultant_b, test_db):
+    from webapp.tests.test_consultant_plan_billing import _make_est
+    est_id = _make_est(consultant_b, "CPA091")
+    fees = superadmin_session.get(f"/api/admin/establishments/{est_id}/subscription-fees?year={YEAR}").json()
+    assert fees["consultant"]["consultant_plan_amount"] is None
+    assert fees["consultant"]["consultant_plan_active"] is False

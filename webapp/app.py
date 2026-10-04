@@ -1946,7 +1946,7 @@ async def admin_list_users(
             "email": u.email,
             "role": u.role,
             "custom_rate_per_employee": u.custom_rate_per_employee,
-            "consultant_plan_amount": u.consultant_plan_amount,
+            **_plan_status_fields(db, u),
             "default_billing_mode": u.default_billing_mode,
             "default_flat_fee_per_establishment": u.default_flat_fee_per_establishment,
             "establishment_count": est_count,
@@ -2474,7 +2474,7 @@ async def admin_user_establishments(
             "custom_rate_per_employee": user.custom_rate_per_employee,
             "default_billing_mode": user.default_billing_mode,
             "default_flat_fee_per_establishment": user.default_flat_fee_per_establishment,
-            "consultant_plan_amount": user.consultant_plan_amount
+            **_plan_status_fields(db, user)
         }
     }
 
@@ -2837,7 +2837,10 @@ async def admin_get_establishment_subscription_fees(
             "role": consultant.role if consultant else None,
             "custom_rate": consultant.custom_rate_per_employee if consultant else None,
             "default_billing_mode": consultant.default_billing_mode if consultant else None,
-            "default_flat_fee_per_establishment": consultant.default_flat_fee_per_establishment if consultant else None
+            "default_flat_fee_per_establishment": consultant.default_flat_fee_per_establishment if consultant else None,
+            **(_plan_status_fields(db, consultant) if consultant else {
+                "consultant_plan_amount": None, "consultant_plan_active": False,
+                "consultant_plan_covered_through": None})
         },
         "rates": {
             "global_default": default_rate,
@@ -5342,6 +5345,21 @@ def _plan_summary(db: Session, user: User) -> dict:
         "active": is_consultant_plan_active(db, user.id),
         "covered_through": covered_through,
         "payments": [_plan_payment_to_dict(p) for p in rows],
+    }
+
+
+def _plan_status_fields(db: Session, user: User) -> dict:
+    """Plan display fields for the superadmin user list / consultant detail / fee views, so the
+    UI can show the plan (and whether a paid month is currently active) next to the per-employee
+    rate instead of only the old rate. Display only -- never used to compute billing."""
+    amount = user.consultant_plan_amount
+    covered_through = None
+    if amount is not None:
+        covered_through = max((to for _, to in _plan_coverage_windows(db, user.id)), default=None)
+    return {
+        "consultant_plan_amount": amount,
+        "consultant_plan_active": is_consultant_plan_active(db, user.id),
+        "consultant_plan_covered_through": covered_through,
     }
 
 
