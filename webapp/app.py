@@ -483,6 +483,17 @@ def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project
     mode, resolved_flat_amount = resolve_billing_mode(db, est_obj)
     flat_amount = round(float(resolved_flat_amount), 2) if (mode == "flat_fee" and resolved_flat_amount) else 0.0
     rate = resolve_rate(db, est_obj) if mode == "per_employee" else None
+    # Consultant monthly plan: resolved ONCE per call. While active, rows with wage data are
+    # waived (paid, 0 due) instead of billed; consultants without a plan are untouched.
+    plan_active = is_consultant_plan_active(db, est_obj.user_id)
+
+    def _waive_for_plan(fee_row):
+        fee_row.is_paid = True
+        fee_row.payment_status = "paid"
+        fee_row.amount_due = 0
+        fee_row.billing_mode = "consultant_plan"
+        fee_row.payment_reference = PLAN_COVERED_REFERENCE
+        fee_row.paid_date = date.today().strftime("%d-%m-%Y")
 
     year_record = project.years.get(year_key)
     if not year_record:
@@ -513,8 +524,11 @@ def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project
                 is_paid=False
             )
             db.add(fee_row)
-            # Newly-billed row -- give prepaid advance credit a chance to cover it.
-            apply_advance_credit_if_available(db, est_obj, fee_row)
+            if plan_active and emp_count > 0:
+                _waive_for_plan(fee_row)
+            else:
+                # Newly-billed row -- give prepaid advance credit a chance to cover it.
+                apply_advance_credit_if_available(db, est_obj, fee_row)
         else:
             if not fee_row.is_paid:
                 was_unbilled = fee_row.amount_due <= 0
@@ -522,7 +536,9 @@ def sync_subscription_fees_for_year(db: Session, est_obj: Establishment, project
                 fee_row.billing_mode = mode
                 fee_row.rate_applied = rate
                 fee_row.amount_due = flat_amount if mode == "flat_fee" else round(emp_count * rate, 2)
-                if was_unbilled and fee_row.amount_due > 0:
+                if plan_active and emp_count > 0:
+                    _waive_for_plan(fee_row)
+                elif was_unbilled and fee_row.amount_due > 0:
                     # This row existed as a 0-due placeholder (no wage data yet) and has
                     # just been billed for the first time -- same as a fresh row.
                     apply_advance_credit_if_available(db, est_obj, fee_row)

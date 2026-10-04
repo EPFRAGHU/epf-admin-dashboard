@@ -1,0 +1,218 @@
+"""
+Consultant Monthly Plan -- fee waiver in billing sync
+=====================================================
+While a consultant's paid plan window covers the current IST month, every
+establishment fee row with wage data (new, previously unpaid, or a former 0-due
+placeholder) is waived: paid, amount 0, billing_mode 'consultant_plan'. Paid rows are never
+rewritten, a lapsed plan claws nothing back, and consultants without an active plan are
+billed exactly as before.
+"""
+
+import pytest
+
+from webapp.app import PLAN_COVERED_REFERENCE, _confirm_plan_payment
+from webapp.consultant_plan import current_month_ist
+from webapp.database import ConsultantPlanPayment, User
+
+YEAR = "2026-27"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_plan_state(test_db):
+    """The test DB is shared across the whole session and consultant_a/b are reused by other
+    modules, so plan state must never leak in or out of these tests."""
+    def wipe():
+        test_db.rollback()
+        for email in ("consultant_a@testepf.com", "consultant_b@testepf.com"):
+            u = test_db.query(User).filter(User.email == email).first()
+            if u:
+                u.consultant_plan_amount = None
+                test_db.query(ConsultantPlanPayment).filter(ConsultantPlanPayment.user_id == u.id).delete()
+        test_db.commit()
+    wipe()
+    yield
+    wipe()
+
+
+def _activate_plan(test_db, user_id, amount=500.0, months=1):
+    """Give the user a plan amount and a manual-confirmed window starting this IST month."""
+    user = test_db.query(User).filter(User.id == user_id).first()
+    user.consultant_plan_amount = amount
+    row = ConsultantPlanPayment(user_id=user_id, months=months, amount=amount * months, status="pending")
+    test_db.add(row)
+    test_db.commit()
+    _confirm_plan_payment(test_db, row, "TEST/PLAN", source="manual")
+    test_db.refresh(row)
+    assert row.status == "manual" and row.covered_from == current_month_ist()
+    return row
+
+
+def _make_est(consultant, code, rate=10.0, wage_months=1, employees=1, seed_wages=True):
+    """Create an establishment with one financial year; wage data for the first
+    `wage_months` months (Mar, Apr, ...) for each employee."""
+    res = consultant.post("/api/establishments", json={
+        "coverage_date": "01-04-2026", "code": code, "name": f"{code} Ltd", "custom_rate_per_employee": rate
+    })
+    assert res.status_code == 200, res.text
+    est_id = res.json()["establishment"]["id"]
+    consultant.set_establishment(est_id)
+    assert consultant.post("/api/years", json={"year_from": "2026", "year_to": "2027"}).status_code == 200
+    for i in range(1, employees + 1):
+        res = consultant.post("/api/employees", json={
+            "member_id": f"{code}{i:03d}", "name": f"Employee {i}", "uan": f"81{abs(hash(code)) % 10**6:06d}{i:04d}"
+        })
+        assert res.status_code == 200, res.text
+    if seed_wages:
+        _enter_wages(consultant, code, employees, wage_months)
+    return est_id
+
+
+def _enter_wages(consultant, code, employees, wage_months):
+    for i in range(1, employees + 1):
+        res = consultant.post(f"/api/years/{YEAR}/wages", json={
+            "member_id": f"{code}{i:03d}", "wages": [15000.0] * wage_months + [0.0] * (12 - wage_months)
+        })
+        assert res.status_code == 200, res.text
+
+
+def _fees(superadmin_session, est_id):
+    res = superadmin_session.get(f"/api/admin/establishments/{est_id}/subscription-fees?year={YEAR}")
+    assert res.status_code == 200, res.text
+    return {m["month"]: m for m in res.json()["months"]}
+
+
+def test_no_plan_billing_unchanged(superadmin_session, consultant_a):
+    est_id = _make_est(consultant_a, "CPB001")
+    mar = _fees(superadmin_session, est_id)["Mar"]
+    assert mar["is_paid"] is False
+    assert mar["amount_due"] == 10.0
+    assert mar["billing_mode"] == "per_employee"
+    assert mar["payment_reference"] == ""
+
+
+def test_active_plan_waives_wage_rows_across_two_establishments(superadmin_session, consultant_a, test_db):
+    _activate_plan(test_db, consultant_a.user_id)
+    est1 = _make_est(consultant_a, "CPB002")
+    est2 = _make_est(consultant_a, "CPB003", rate=20.0, employees=2)
+
+    for est_id, count in ((est1, 1), (est2, 2)):
+        mar = _fees(superadmin_session, est_id)["Mar"]
+        assert mar["employee_count"] == count
+        assert mar["is_paid"] is True
+        assert mar["amount_due"] == 0
+        assert mar["billing_mode"] == "consultant_plan"
+        assert mar["payment_reference"] == PLAN_COVERED_REFERENCE
+        assert mar["paid_date"]
+
+    # Consultant downloads are unlocked for both establishments (would be 402 if unpaid).
+    for est_id in (est1, est2):
+        consultant_a.set_establishment(est_id)
+        assert consultant_a.get(f"/api/reports/{YEAR}/ecr/0").status_code == 200
+        assert consultant_a.get(f"/api/reports/{YEAR}").status_code == 200
+
+
+def test_rows_without_wages_not_waived(superadmin_session, consultant_a, test_db):
+    _activate_plan(test_db, consultant_a.user_id)
+    est_id = _make_est(consultant_a, "CPB004")
+    months = _fees(superadmin_session, est_id)
+    assert months["Mar"]["billing_mode"] == "consultant_plan"
+    may = months["May"]
+    assert may["employee_count"] == 0
+    assert may["is_paid"] is False
+    assert may["amount_due"] == 0
+    assert may["billing_mode"] != "consultant_plan"
+    assert may["payment_reference"] == ""
+
+
+def test_previously_unpaid_rows_waived_on_next_sync(superadmin_session, consultant_a, test_db):
+    est_id = _make_est(consultant_a, "CPB005")
+    before = _fees(superadmin_session, est_id)["Mar"]
+    assert before["is_paid"] is False and before["amount_due"] == 10.0
+
+    _activate_plan(test_db, consultant_a.user_id)
+    after = _fees(superadmin_session, est_id)["Mar"]
+    assert after["is_paid"] is True
+    assert after["amount_due"] == 0
+    assert after["billing_mode"] == "consultant_plan"
+    assert after["payment_reference"] == PLAN_COVERED_REFERENCE
+
+
+def test_zero_due_placeholder_waived_once_wages_arrive(superadmin_session, consultant_a, test_db):
+    est_id = _make_est(consultant_a, "CPB006", seed_wages=False)
+    placeholder = _fees(superadmin_session, est_id)["Mar"]  # creates the 0-due placeholder row
+    assert placeholder["amount_due"] == 0 and placeholder["is_paid"] is False
+
+    _activate_plan(test_db, consultant_a.user_id)
+    _enter_wages(consultant_a, "CPB006", 1, 1)
+    mar = _fees(superadmin_session, est_id)["Mar"]
+    assert mar["employee_count"] == 1
+    assert mar["is_paid"] is True
+    assert mar["billing_mode"] == "consultant_plan"
+    assert mar["amount_due"] == 0
+
+
+def test_lapse_keeps_waived_rows_paid_and_bills_new_rows(superadmin_session, consultant_a, test_db):
+    row = _activate_plan(test_db, consultant_a.user_id)
+    est_id = _make_est(consultant_a, "CPB007")
+    assert _fees(superadmin_session, est_id)["Mar"]["is_paid"] is True
+
+    # The plan window slides into the past: nothing is clawed back, new months bill normally.
+    row.covered_from, row.covered_to = "2020-01", "2020-02"
+    test_db.commit()
+    superadmin_session.set_establishment(est_id)
+    res = superadmin_session.post(f"/api/years/{YEAR}/wages", json={
+        "member_id": "CPB007001", "wages": [15000.0, 15000.0] + [0.0] * 10
+    })
+    assert res.status_code == 200, res.text
+
+    months = _fees(superadmin_session, est_id)
+    assert months["Mar"]["is_paid"] is True
+    assert months["Mar"]["amount_due"] == 0
+    assert months["Mar"]["billing_mode"] == "consultant_plan"
+    assert months["Apr"]["is_paid"] is False
+    assert months["Apr"]["amount_due"] == 10.0
+    assert months["Apr"]["billing_mode"] == "per_employee"
+
+
+def test_other_consultant_unaffected(superadmin_session, consultant_a, consultant_b, test_db):
+    _activate_plan(test_db, consultant_a.user_id)
+    est_a = _make_est(consultant_a, "CPB008")
+    est_b = _make_est(consultant_b, "CPB009")
+
+    assert _fees(superadmin_session, est_a)["Mar"]["is_paid"] is True
+    mar_b = _fees(superadmin_session, est_b)["Mar"]
+    assert mar_b["is_paid"] is False
+    assert mar_b["amount_due"] == 10.0
+    assert mar_b["billing_mode"] == "per_employee"
+    consultant_b.set_establishment(est_b)
+    assert consultant_b.get(f"/api/reports/{YEAR}/ecr/0").status_code == 402
+
+
+def test_advance_credit_not_consumed_when_waived(superadmin_session, consultant_a, test_db):
+    _activate_plan(test_db, consultant_a.user_id)
+    est_id = _make_est(consultant_a, "CPB010", rate=20.0)
+    res = superadmin_session.post(f"/api/admin/establishments/{est_id}/advance-payment", json={
+        "amount": 2000.0, "payment_reference": "UPI/ADV/PLAN", "notes": "prepay"
+    })
+    assert res.status_code == 200, res.text
+
+    mar = _fees(superadmin_session, est_id)["Mar"]
+    assert mar["is_paid"] is True
+    assert mar["payment_reference"] == PLAN_COVERED_REFERENCE
+    assert mar["billing_mode"] == "consultant_plan"
+    credit = superadmin_session.get(f"/api/admin/establishments/{est_id}/advance-credit").json()
+    assert credit["advance_credit_balance"] == 2000.0
+
+
+def test_plan_amount_null_with_old_payment_bills_normally(superadmin_session, consultant_a, test_db):
+    row = _activate_plan(test_db, consultant_a.user_id)
+    user = test_db.query(User).filter(User.id == consultant_a.user_id).first()
+    user.consultant_plan_amount = None  # plan removed; the old paid window must not waive anything
+    test_db.commit()
+    assert row.status == "manual"
+
+    est_id = _make_est(consultant_a, "CPB011")
+    mar = _fees(superadmin_session, est_id)["Mar"]
+    assert mar["is_paid"] is False
+    assert mar["amount_due"] == 10.0
+    assert mar["billing_mode"] == "per_employee"
