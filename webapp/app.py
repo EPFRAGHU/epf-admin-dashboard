@@ -11,11 +11,12 @@ import tempfile
 import json
 import uuid
 import calendar
+import math
 import secrets as _secrets
 import requests
 import sentry_sdk
 from pathlib import Path
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Union
 from datetime import datetime, date, timedelta, timezone
 from urllib.parse import quote
 
@@ -23,7 +24,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Que
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
-from pydantic import BaseModel, StrictInt
+from pydantic import BaseModel, StrictFloat, StrictInt
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
@@ -1893,6 +1894,7 @@ async def admin_list_users(
             "email": u.email,
             "role": u.role,
             "custom_rate_per_employee": u.custom_rate_per_employee,
+            "consultant_plan_amount": u.consultant_plan_amount,
             "establishment_count": est_count,
             "max_establishments": u.max_establishments,
             "is_active": u.is_active,
@@ -2067,6 +2069,98 @@ async def admin_set_consultant_default_billing(
         "default_billing_mode": user.default_billing_mode,
         "default_flat_fee_per_establishment": user.default_flat_fee_per_establishment
     }
+
+
+# ── Consultant Monthly Plan (superadmin controls) ─────────────────────────
+class PlanAmountIn(BaseModel):
+    # Strict numeric union: rejects strings and booleans (422) while still accepting ints.
+    amount: Optional[Union[StrictInt, StrictFloat]] = None  # null clears the plan
+
+
+class PlanManualPaymentIn(BaseModel):
+    months: StrictInt
+    reference: str
+
+
+def _plan_target_consultant_or_error(db: Session, user_id: int) -> User:
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(404, "User not found")
+    if user.role != "consultant":
+        raise HTTPException(400, "A monthly plan can only be used on Consultant accounts")
+    return user
+
+
+@app.put("/api/admin/users/{user_id}/consultant-plan")
+async def admin_set_consultant_plan(
+    user_id: int,
+    d: PlanAmountIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Set (or clear, with null) a Consultant's flat monthly plan price. Superadmin-only;
+    the amount never appears in any consultant-writable model."""
+    user = _plan_target_consultant_or_error(db, user_id)
+
+    new_amount: Optional[float] = None
+    if d.amount is not None:
+        if not math.isfinite(d.amount) or d.amount <= 0:
+            raise HTTPException(400, "amount must be a positive number, or null to remove the plan")
+        new_amount = round(float(d.amount), 2)
+
+    old_amount = user.consultant_plan_amount
+    user.consultant_plan_amount = new_amount
+    db.commit()
+
+    def _fmt(a):
+        return f"₹{a}/month" if a is not None else "None (no plan)"
+
+    log_activity(
+        db, admin.id, None, "consultant_plan_changed",
+        f"Updated {user.name}'s monthly plan: {_fmt(old_amount)} → {_fmt(new_amount)}",
+        {"user_id": user.id, "old_amount": old_amount, "new_amount": new_amount}
+    )
+
+    return {"ok": True, "consultant_plan_amount": user.consultant_plan_amount}
+
+
+@app.post("/api/admin/users/{user_id}/plan-payment")
+async def admin_record_plan_payment(
+    user_id: int,
+    d: PlanManualPaymentIn,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    """Record a plan payment received outside the app (cash / bank / direct UPI). The amount
+    is months x the stored plan price, computed here; the payment is confirmed immediately."""
+    user = _plan_target_consultant_or_error(db, user_id)
+    months = _plan_months_or_400(d.months)
+    if user.consultant_plan_amount is None or user.consultant_plan_amount <= 0:
+        raise HTTPException(400, "Set a monthly plan amount for this consultant before recording a payment")
+    reference = d.reference.strip()
+    if not reference:
+        raise HTTPException(400, "A payment reference is required")
+
+    row = ConsultantPlanPayment(
+        user_id=user.id, months=months, amount=_plan_payment_amount(user, months), status="pending",
+        notes=f"Recorded manually by {admin.name}",
+    )
+    db.add(row)
+    db.flush()  # the confirm helper commits, so the row and its coverage land together
+    _confirm_plan_payment(db, row, payment_ref=reference, source="manual", verified_by=admin.id)
+    db.refresh(row)
+
+    return {"ok": True, "payment": _plan_payment_to_dict(row)}
+
+
+@app.get("/api/admin/users/{user_id}/plan")
+async def admin_get_consultant_plan(
+    user_id: int,
+    admin: User = Depends(get_superadmin),
+    db: Session = Depends(get_db)
+):
+    user = _plan_target_consultant_or_error(db, user_id)
+    return _plan_summary(db, user)
 
 
 @app.delete("/api/admin/users/{user_id}")
@@ -2315,7 +2409,8 @@ async def admin_user_establishments(
             "role": user.role,
             "custom_rate_per_employee": user.custom_rate_per_employee,
             "default_billing_mode": user.default_billing_mode,
-            "default_flat_fee_per_establishment": user.default_flat_fee_per_establishment
+            "default_flat_fee_per_establishment": user.default_flat_fee_per_establishment,
+            "consultant_plan_amount": user.consultant_plan_amount
         }
     }
 
@@ -2631,7 +2726,12 @@ async def admin_get_establishment_subscription_fees(
 
         row_mode = (f_obj.billing_mode if f_obj else billing_mode) or "per_employee"
         amount_due = f_obj.amount_due if f_obj else (resolved_flat_amount if billing_mode == "flat_fee" else round(emp_count * (effective_rate or 0), 2))
-        billing_display = f"₹{amount_due}/month flat rate" if row_mode == "flat_fee" else f"₹{f_obj.rate_applied if f_obj else effective_rate}/employee"
+        if row_mode == "consultant_plan":
+            billing_display = "Consultant plan"
+        elif row_mode == "flat_fee":
+            billing_display = f"₹{amount_due}/month flat rate"
+        else:
+            billing_display = f"₹{f_obj.rate_applied if f_obj else effective_rate}/employee"
 
         months_data.append({
             "month_idx": i,
@@ -3074,15 +3174,17 @@ _LEDGER_STATUS_DISPLAY = {
 
 
 def _split_verification_id(item_id: str) -> Tuple[str, int]:
-    """Payment-verification queue items are composite ids ('fee-5' / 'adv-12') so the
+    """Payment-verification queue items are composite ids ('fee-5' / 'adv-12' / 'plan-3') so the
     approve/reject endpoints can tell which table a row came from. A bare integer is
     still accepted for backward compatibility with any old bookmarked links -- it's
     always treated as a subscription-fee id, matching this endpoint's original (and only
     prior) behavior."""
-    if item_id.startswith("fee-"):
-        return "fee", int(item_id[4:])
-    if item_id.startswith("adv-"):
-        return "adv", int(item_id[4:])
+    for prefix, kind in (("fee-", "fee"), ("adv-", "adv"), ("plan-", "plan")):
+        if item_id.startswith(prefix):
+            suffix = item_id[len(prefix):]
+            if not suffix.isdigit():
+                raise HTTPException(400, "Invalid verification id")
+            return kind, int(suffix)
     if item_id.isdigit():
         return "fee", int(item_id)
     raise HTTPException(400, "Invalid verification id")
@@ -3096,30 +3198,37 @@ async def payment_verifications(
     admin: User = Depends(get_superadmin),
     db: Session = Depends(get_db)
 ):
-    """Superadmin lists subscription fees AND advance-credit top-ups awaiting UTR
-    verification via the manual UPI/QR path, merged into a single queue."""
+    """Superadmin lists subscription fees, advance-credit top-ups AND consultant monthly-plan
+    payments awaiting UTR verification via the manual UPI/QR path, merged into a single queue."""
     fee_q = db.query(SubscriptionFee)
     ledger_q = db.query(AdvanceCreditLedger).filter(AdvanceCreditLedger.entry_type == "topup")
+    plan_q = db.query(ConsultantPlanPayment)
 
     if status == "pending_verification":
         fee_q = fee_q.filter(SubscriptionFee.payment_status == "pending_verification")
         ledger_q = ledger_q.filter(AdvanceCreditLedger.status == "pending_verification")
+        plan_q = plan_q.filter(ConsultantPlanPayment.status == "pending_verification")
     elif status == "paid":
         fee_q = fee_q.filter(SubscriptionFee.payment_status == "paid")
         ledger_q = ledger_q.filter(AdvanceCreditLedger.status == "confirmed")
+        plan_q = plan_q.filter(ConsultantPlanPayment.status.in_(_PLAN_GRANTING_STATUSES))
     elif status == "unpaid":
         fee_q = fee_q.filter(SubscriptionFee.payment_status == "unpaid")
         ledger_q = ledger_q.filter(AdvanceCreditLedger.status == "rejected")
+        plan_q = plan_q.filter(ConsultantPlanPayment.status == "rejected")
 
     fee_rows = fee_q.all()
     ledger_rows = ledger_q.all()
+    plan_rows = plan_q.all()
 
     est_ids = {r.establishment_id for r in fee_rows} | {r.establishment_id for r in ledger_rows}
     ests_map = {e.id: e for e in db.query(Establishment).filter(Establishment.id.in_(est_ids)).all()} if est_ids else {}
 
     user_ids = (
         {r.submitted_by for r in fee_rows if r.submitted_by} | {r.verified_by for r in fee_rows if r.verified_by} |
-        {r.submitted_by for r in ledger_rows if r.submitted_by} | {r.verified_by for r in ledger_rows if r.verified_by}
+        {r.submitted_by for r in ledger_rows if r.submitted_by} | {r.verified_by for r in ledger_rows if r.verified_by} |
+        {r.user_id for r in plan_rows} |
+        {r.submitted_by for r in plan_rows if r.submitted_by} | {r.verified_by for r in plan_rows if r.verified_by}
     )
     users_map = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()} if user_ids else {}
 
@@ -3172,6 +3281,35 @@ async def payment_verifications(
             "financial_year": None,
             "month": None,
             "display_name": "Advance Credit Top-up",
+            "amount_due": r.amount,
+            "payment_status": _LEDGER_STATUS_DISPLAY.get(r.status, r.status),
+            "submitted_utr": r.submitted_utr or "",
+            "submitted_by": r.submitted_by,
+            "submitted_by_name": submitted_by_user.name if submitted_by_user else "",
+            "submitted_by_email": submitted_by_user.email if submitted_by_user else "",
+            "submitted_at": r.submitted_at.isoformat() if r.submitted_at else "",
+            "verified_by": r.verified_by,
+            "verified_by_name": verified_by_user.name if verified_by_user else "",
+            "verified_at": r.verified_at.isoformat() if r.verified_at else "",
+            "rejection_reason": r.rejection_reason or "",
+            "_sort_dt": sort_dt.isoformat() if sort_dt else "",
+        })
+
+    for r in plan_rows:
+        consultant = users_map.get(r.user_id)
+        submitted_by_user = users_map.get(r.submitted_by) if r.submitted_by else None
+        verified_by_user = users_map.get(r.verified_by) if r.verified_by else None
+        sort_dt = r.submitted_at or r.created_at
+
+        items.append({
+            "id": f"plan-{r.id}",
+            "source": "consultant_plan",
+            "establishment_id": None,
+            "establishment_code": "CONSULTANT PLAN",
+            "establishment_name": consultant.name if consultant else "",
+            "financial_year": None,
+            "month": None,
+            "display_name": f"Monthly Plan - {r.months} month(s)",
             "amount_due": r.amount,
             "payment_status": _LEDGER_STATUS_DISPLAY.get(r.status, r.status),
             "submitted_utr": r.submitted_utr or "",
@@ -3251,6 +3389,31 @@ async def approve_payment(
 
         return {"ok": True, "payment_status": "paid", "months_approved": approved_months}
 
+    if kind == "plan":
+        plan_row = db.query(ConsultantPlanPayment).filter(ConsultantPlanPayment.id == real_id).first()
+        if not plan_row:
+            raise HTTPException(404, "Plan payment not found")
+        if plan_row.status != "pending_verification":
+            raise HTTPException(400, "Only pending_verification plan payments can be approved")
+
+        plan_row.verified_by = admin.id
+        plan_row.verified_at = datetime.now(timezone.utc)
+        _confirm_plan_payment(
+            db, plan_row, payment_ref=plan_row.submitted_utr, source="manual_utr", verified_by=admin.id
+        )
+        log_activity(
+            db, admin.id, None, "utr_approved",
+            f"Approved UTR for monthly plan of ₹{plan_row.amount} ({plan_row.months} month(s)) — "
+            f"user #{plan_row.user_id}: {plan_row.submitted_utr}",
+            {"plan_payment_id": plan_row.id, "user_id": plan_row.user_id, "months": plan_row.months,
+             "amount": plan_row.amount, "utr": plan_row.submitted_utr,
+             "covered_from": plan_row.covered_from, "covered_to": plan_row.covered_to}
+        )
+        return {
+            "ok": True, "payment_status": "paid",
+            "covered_from": plan_row.covered_from, "covered_to": plan_row.covered_to,
+        }
+
     ledger_row = db.query(AdvanceCreditLedger).filter(AdvanceCreditLedger.id == real_id).first()
     if not ledger_row:
         raise HTTPException(404, "Advance credit entry not found")
@@ -3303,6 +3466,33 @@ async def reject_payment(
             {"financial_year": fee.financial_year, "month": fee.month, "utr": fee.submitted_utr, "reason": reason}
         )
 
+        return {"ok": True, "payment_status": "unpaid", "rejection_reason": reason}
+
+    if kind == "plan":
+        plan_row = db.query(ConsultantPlanPayment).filter(ConsultantPlanPayment.id == real_id).first()
+        if not plan_row:
+            raise HTTPException(404, "Plan payment not found")
+        if plan_row.status != "pending_verification":
+            raise HTTPException(400, "Only pending_verification plan payments can be rejected")
+
+        reason = d.rejection_reason.strip()
+        if not reason:
+            raise HTTPException(400, "Rejection reason is required")
+
+        # Rejection never allocates coverage (covered_from/covered_to stay NULL).
+        plan_row.status = "rejected"
+        plan_row.rejection_reason = reason
+        plan_row.verified_by = admin.id
+        plan_row.verified_at = datetime.now(timezone.utc)
+        db.commit()
+
+        log_activity(
+            db, admin.id, None, "utr_rejected",
+            f"Rejected UTR for monthly plan of ₹{plan_row.amount} ({plan_row.months} month(s)) — "
+            f"user #{plan_row.user_id}: {reason}",
+            {"plan_payment_id": plan_row.id, "user_id": plan_row.user_id, "months": plan_row.months,
+             "amount": plan_row.amount, "utr": plan_row.submitted_utr, "reason": reason}
+        )
         return {"ok": True, "payment_status": "unpaid", "rejection_reason": reason}
 
     ledger_row = db.query(AdvanceCreditLedger).filter(AdvanceCreditLedger.id == real_id).first()
@@ -4546,6 +4736,8 @@ async def get_entry_lock_status_endpoint(
 
 
 def _billing_display(mode: str, rate_applied: Optional[float], amount_due: float) -> str:
+    if mode == "consultant_plan":
+        return "Consultant plan"
     if mode == "flat_fee":
         return f"₹{amount_due}/month flat rate"
     return f"₹{rate_applied}/employee" if rate_applied is not None else "Default rate"
@@ -5053,23 +5245,29 @@ def _plan_payment_to_dict(p: ConsultantPlanPayment) -> dict:
     }
 
 
-@app.get("/api/my-plan")
-async def get_my_plan(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    plan_amount = current_user.consultant_plan_amount
+def _plan_summary(db: Session, user: User) -> dict:
+    """Plan state for one account: shared by the consultant's own GET /api/my-plan and the
+    superadmin's GET /api/admin/users/{id}/plan so the two can never drift apart."""
+    plan_amount = user.consultant_plan_amount
     rows = db.query(ConsultantPlanPayment).filter(
-        ConsultantPlanPayment.user_id == current_user.id
+        ConsultantPlanPayment.user_id == user.id
     ).order_by(ConsultantPlanPayment.id.desc()).all()
     covered_through = None
     if plan_amount is not None:
         covered_through = max(
-            (to for _, to in _plan_coverage_windows(db, current_user.id)), default=None
+            (to for _, to in _plan_coverage_windows(db, user.id)), default=None
         )
     return {
         "plan_amount": plan_amount,
-        "active": is_consultant_plan_active(db, current_user.id),
+        "active": is_consultant_plan_active(db, user.id),
         "covered_through": covered_through,
         "payments": [_plan_payment_to_dict(p) for p in rows],
     }
+
+
+@app.get("/api/my-plan")
+async def get_my_plan(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return _plan_summary(db, current_user)
 
 
 @app.post("/api/my-plan/create-link")
