@@ -12,7 +12,7 @@ import pytest
 
 from webapp.app import PLAN_COVERED_REFERENCE, _confirm_plan_payment
 from webapp.consultant_plan import current_month_ist
-from webapp.database import ConsultantPlanPayment, User
+from webapp.database import ConsultantPlanPayment, SubscriptionFee, User
 
 YEAR = "2026-27"
 
@@ -47,6 +47,12 @@ def _activate_plan(test_db, user_id, amount=500.0, months=1):
     return row
 
 
+def _code_digits(code):
+    """Deterministic 6-digit number derived from an establishment code (position-weighted
+    sum of ord values, so CPB001/CPB010 differ), used to build unique 12-digit UANs."""
+    return sum((i + 1) * ord(ch) for i, ch in enumerate(code)) % 10**6
+
+
 def _make_est(consultant, code, rate=10.0, wage_months=1, employees=1, seed_wages=True):
     """Create an establishment with one financial year; wage data for the first
     `wage_months` months (Mar, Apr, ...) for each employee."""
@@ -59,7 +65,7 @@ def _make_est(consultant, code, rate=10.0, wage_months=1, employees=1, seed_wage
     assert consultant.post("/api/years", json={"year_from": "2026", "year_to": "2027"}).status_code == 200
     for i in range(1, employees + 1):
         res = consultant.post("/api/employees", json={
-            "member_id": f"{code}{i:03d}", "name": f"Employee {i}", "uan": f"81{abs(hash(code)) % 10**6:06d}{i:04d}"
+            "member_id": f"{code}{i:03d}", "name": f"Employee {i}", "uan": f"81{_code_digits(code):06d}{i:04d}"
         })
         assert res.status_code == 200, res.text
     if seed_wages:
@@ -216,3 +222,75 @@ def test_plan_amount_null_with_old_payment_bills_normally(superadmin_session, co
     assert mar["is_paid"] is False
     assert mar["amount_due"] == 10.0
     assert mar["billing_mode"] == "per_employee"
+
+
+def _mar_fee_row(test_db, est_id):
+    test_db.expire_all()
+    return test_db.query(SubscriptionFee).filter(
+        SubscriptionFee.establishment_id == est_id, SubscriptionFee.financial_year == YEAR,
+        SubscriptionFee.month == "Mar"
+    ).first()
+
+
+def test_pending_verification_row_not_waived_by_plan(superadmin_session, consultant_a, test_db):
+    """A UTR awaiting admin approval may represent real money: a plan activating afterwards
+    must not silently waive the row, or the admin could no longer approve/reject it."""
+    est_id = _make_est(consultant_a, "CPB012")
+    _fees(superadmin_session, est_id)  # lazy sync creates the fee rows
+    fee_id = _mar_fee_row(test_db, est_id).id
+    res = consultant_a.post(f"/api/subscription-fees/{fee_id}/submit-utr", json={"utr": "UTR-PLAN-PENDING-001"})
+    assert res.status_code == 200, res.text
+
+    _activate_plan(test_db, consultant_a.user_id)
+    mar = _fees(superadmin_session, est_id)["Mar"]  # triggers a sync under the active plan
+
+    row = _mar_fee_row(test_db, est_id)
+    assert row.payment_status == "pending_verification"
+    assert row.is_paid is False
+    assert row.submitted_utr == "UTR-PLAN-PENDING-001"
+    assert row.billing_mode == "per_employee"
+    assert row.payment_reference in (None, "")
+    assert mar["is_paid"] is False and mar["amount_due"] == 10.0
+
+    res = superadmin_session.get("/api/admin/payment-verifications")
+    assert res.status_code == 200, res.text
+    assert f"fee-{fee_id}" in [it["id"] for it in res.json()["items"]]
+
+
+def test_already_paid_row_untouched_when_plan_activates(superadmin_session, consultant_a, test_db):
+    est_id = _make_est(consultant_a, "CPB013", rate=20.0)
+    _fees(superadmin_session, est_id)  # create the fee rows
+    res = superadmin_session.post(f"/api/admin/establishments/{est_id}/subscription-fees", json={
+        "financial_year": YEAR,
+        "fees": [{"month": "Mar", "is_paid": True, "paid_date": "15-04-2026", "payment_reference": "UPI/REAL/CPB013"}]
+    })
+    assert res.status_code == 200, res.text
+    before = _mar_fee_row(test_db, est_id)
+    assert before.is_paid is True
+    snapshot = (before.payment_reference, before.amount_due, before.billing_mode, before.paid_date)
+    assert snapshot[0] == "UPI/REAL/CPB013" and snapshot[1] == 20.0
+
+    _activate_plan(test_db, consultant_a.user_id)
+    mar = _fees(superadmin_session, est_id)["Mar"]  # sync under the active plan
+
+    after = _mar_fee_row(test_db, est_id)
+    assert (after.payment_reference, after.amount_due, after.billing_mode, after.paid_date) == snapshot
+    assert mar["is_paid"] is True and mar["payment_reference"] == "UPI/REAL/CPB013"
+    assert mar["billing_mode"] == "per_employee"
+
+
+def test_waiver_works_for_flat_fee_establishment(superadmin_session, consultant_a, test_db):
+    _activate_plan(test_db, consultant_a.user_id)
+    est_id = _make_est(consultant_a, "CPB014", seed_wages=False)
+    res = superadmin_session.put(f"/api/admin/establishments/{est_id}/billing-mode", json={
+        "billing_mode": "flat_fee", "flat_fee_amount": 5000.0
+    })
+    assert res.status_code == 200, res.text
+    _enter_wages(consultant_a, "CPB014", 1, 1)
+
+    mar = _fees(superadmin_session, est_id)["Mar"]
+    assert mar["employee_count"] == 1
+    assert mar["is_paid"] is True
+    assert mar["amount_due"] == 0
+    assert mar["billing_mode"] == "consultant_plan"
+    assert mar["payment_reference"] == PLAN_COVERED_REFERENCE
