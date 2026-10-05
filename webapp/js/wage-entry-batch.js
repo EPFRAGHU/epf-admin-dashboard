@@ -111,6 +111,7 @@ function webPageHtml(years) {
         <div id="web-table-search-results" style="display:none; position:absolute; top:calc(100% + 6px); left:0; right:0; z-index:30; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.14); max-height:260px; overflow-y:auto;"></div>
       </div>
       <span style="font-size:12px; color:var(--text3);" id="web-search-count"></span>
+      <span id="web-coverage" style="margin-left:auto;"></span>
     </div>
 
     <div id="web-save-toast"></div>
@@ -364,6 +365,7 @@ function webRenderTable() {
   const sections = webBuildSections();
   const totalShown = sections.reduce((sum, sec) => sum + sec.ids.length, 0);
   document.getElementById('web-search-count').textContent = `${totalShown} of ${webMaster.length} employees shown`;
+  webRenderCoverage();
 
   if (totalShown === 0) {
     body.innerHTML = `<tr><td colspan="15"><div style="padding:40px 20px; text-align:center; color:var(--text3); font-size:13px;">
@@ -449,6 +451,24 @@ function webRenderSearchResults(q, boxId, onPick) {
     : `<div style="padding:14px; text-align:center; color:var(--text3); font-size:12.5px;">No employee matches "${App.esc(q)}"</div>`;
   box.style.display = 'block';
 }
+// Saved-data "Entered N of M · Not entered K" chip for the selected month (helpers live in wages.js,
+// which loads first). Draft/unsaved rows are not counted until saved.
+function webRenderCoverage() {
+  const el = document.getElementById('web-coverage');
+  if (!el || !webWagesData) return;
+  const cov = window.computeWageEntryCoverage(webMaster, webWagesData.employees, webYearKey, webMonthIdx);
+  const { year } = getWageMonthYearMonth(webMonthIdx, webYearKey);
+  el.innerHTML = window.coverageChipHtml('batch', cov, `${WEB_MONTH_ABBR[webMonthIdx]} ${year}`);
+}
+// "Add to draft" from the not-entered list: same as picking the employee from the search box.
+function webAddNotEnteredToDraft(i) {
+  const st = (window._notEnteredState || {}).batch;
+  const m = st && st.list[i];
+  if (!m) return;
+  App.closeModal();
+  webPickFromTableSearch(m.member_id);
+}
+
 function webOnTableSearch(q) {
   webRenderSearchResults(q, 'web-table-search-results', webPickFromTableSearch);
 }

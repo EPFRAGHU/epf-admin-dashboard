@@ -1053,6 +1053,7 @@ App.registerPage('wage-entry', async (container) => {
     <div style="display:flex; gap:16px; align-items:center; margin-bottom:8px; font-size:12px; color:var(--text2);">
       <span style="display:inline-flex; align-items:center; gap:6px;"><span style="width:12px; height:12px; border-radius:3px; background:rgba(31,170,89,.25); display:inline-block;"></span> Joining this month</span>
       <span style="display:inline-flex; align-items:center; gap:6px;"><span style="width:12px; height:12px; border-radius:3px; background:rgba(229,72,77,.25); display:inline-block;"></span> Exiting this month</span>
+      <span id="wage-entry-coverage" style="margin-left:auto;"></span>
     </div>
 
     <div class="card">
@@ -1295,8 +1296,8 @@ window.openExitModalForWageRow = (memberId) => {
 };
 
 // Wage-month index -> {year, month} using the same Mar..Feb layout as the ECR "Paid in" labels.
-function getWageMonthYearMonth(monthIdx) {
-  const startYear = parseInt(currentYearKey.split('-')[0], 10);
+function getWageMonthYearMonth(monthIdx, yearKey = currentYearKey) {
+  const startYear = parseInt(yearKey.split('-')[0], 10);
   const targetYear = monthIdx < 10 ? startYear : startYear + 1;
   let monthNumber;
   if (monthIdx === 0) monthNumber = 3;
@@ -1308,8 +1309,8 @@ function getWageMonthYearMonth(monthIdx) {
 
 // Returns null if the employee was employed during the given wage month, otherwise a
 // human-readable reason (including the actual DOJ/DOE and reason of leaving) for why not.
-function getEmploymentWindowViolation(master, monthIdx) {
-  const { year, month } = getWageMonthYearMonth(monthIdx);
+function getEmploymentWindowViolation(master, monthIdx, yearKey = currentYearKey) {
+  const { year, month } = getWageMonthYearMonth(monthIdx, yearKey);
   const wageYM = year * 12 + month;
 
   const dojTime = master.doj ? parseDMY(master.doj) : null;
@@ -1330,6 +1331,81 @@ function getEmploymentWindowViolation(master, monthIdx) {
 
   return null;
 }
+
+/* ── Entered vs not-entered coverage for one wage month (Monthly Wage Entry + Batch) ──
+   Saved data only -- what is already stored for that month, never unsaved typing. "On roll" uses
+   the same DOJ/DOE rule as getEmploymentWindowViolation(), so someone who joins after the month or
+   left before it is NOT counted as missing; someone with no joining date is treated as on roll.
+   An employee counts as entered when gross or EPF wages for that month is above 0 (the same test the
+   Dashboard / ECR headcount uses). Display only. */
+window.computeWageEntryCoverage = (masterList, wageEmployees, yearKey, monthIdx) => {
+  const enteredIds = new Set();
+  (wageEmployees || []).forEach(e => {
+    const g = e.gross_wages ? e.gross_wages[monthIdx] : 0;
+    const w = e.wages ? e.wages[monthIdx] : 0;
+    if (g > 0 || w > 0) enteredIds.add(e.member_id);
+  });
+  let entered = 0;
+  const notEntered = [];
+  (masterList || []).forEach(m => {
+    if (enteredIds.has(m.member_id)) { entered++; return; }
+    if (getEmploymentWindowViolation(m, monthIdx, yearKey) === null) notEntered.push(m);
+  });
+  return { entered, notEntered };
+};
+
+// ctx ('wage' | 'batch') -> { label, list } for the click-through list; set when a chip is rendered.
+window._notEnteredState = {};
+
+window.coverageChipHtml = (ctx, cov, label) => {
+  window._notEnteredState[ctx] = { label, list: cov.notEntered };
+  const miss = cov.notEntered.length;
+  const total = cov.entered + miss;
+  const missHtml = miss > 0
+    ? `<a href="#" onclick="event.preventDefault(); window.showNotEnteredEmployees('${ctx}')" style="color:var(--amber, #b45309); font-weight:700; text-decoration:none;" title="Click to list the ${miss} on-roll employee(s) with no saved wages for ${App.esc(label)}">⚠️ Not entered ${miss}</a>`
+    : `<span style="color:var(--green); font-weight:700;">✓ Everyone on roll is entered</span>`;
+  return `<span style="display:inline-flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:12px;" title="Saved data only. Employees who joined after ${App.esc(label)} or left before it are not counted.">
+    <span style="font-weight:700; color:var(--text1);">✅ Entered ${cov.entered} of ${total}</span>
+    <span style="color:var(--text3);">·</span>${missHtml}
+  </span>`;
+};
+
+window.showNotEnteredEmployees = (ctx) => {
+  const st = window._notEnteredState[ctx];
+  if (!st) return;
+  const isBatch = ctx === 'batch';
+  const rows = st.list.map((m, i) => `
+    <tr>
+      <td style="text-align:center;">${i + 1}</td>
+      <td style="font-family:monospace;">${App.esc(m.uan || '—')}</td>
+      <td>${App.esc(m.name)}</td>
+      <td>${App.esc(m.doj || '—')}</td>
+      ${isBatch ? `<td style="text-align:center;"><button class="btn btn-glass btn-sm" onclick="webAddNotEnteredToDraft(${i})">Add to draft</button></td>` : ''}
+    </tr>`).join('');
+  const body = `
+    <div style="font-size:12px; color:var(--text2); margin-bottom:10px;">
+      ${st.list.length} employee(s) on roll for <strong>${App.esc(st.label)}</strong> with no saved wages. Saved data only; employees who joined after this month or left before it are not listed.
+    </div>
+    <div class="table-wrap" style="max-height:55vh; overflow:auto;">
+      <table>
+        <thead><tr>
+          <th style="width:44px; text-align:center;">Sl</th><th>UAN</th><th>Name</th><th>Date of Joining</th>${isBatch ? '<th style="text-align:center;">Action</th>' : ''}
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  App.openModal(`Not entered — ${st.label}`, body, `<button class="btn btn-ghost" onclick="App.closeModal()">Close</button>`, true);
+};
+
+// Monthly Wage Entry page: refresh the chip beside the legend for the selected month.
+window.updateWageEntryCoverage = (monthIdx) => {
+  const el = document.getElementById('wage-entry-coverage');
+  if (!el || !currentWagesData) return;
+  const cov = window.computeWageEntryCoverage(window._masterEmployees, currentWagesData.employees, currentYearKey, monthIdx);
+  const { year } = getWageMonthYearMonth(monthIdx, currentYearKey);
+  const label = `${constantsCache.month_short_names[monthIdx]} ${year}`;
+  el.innerHTML = window.coverageChipHtml('wage', cov, label);
+};
 
 // True if the given wage month falls within [DOJ, DOE] (either bound optional).
 function isEmployedInWageMonth(master, monthIdx) {
@@ -1720,6 +1796,7 @@ window.renderMonthlyTable = () => {
   });
 
   tbody.innerHTML = html;
+  window.updateWageEntryCoverage(monthIdx);
 
   const pgContainer = document.getElementById('bulk-pagination-container');
   if (pgContainer) {
