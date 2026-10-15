@@ -415,3 +415,131 @@ def test_a21_for_scenario_b_uses_edli_wage_not_the_uncapped_epf_wage(consultant_
     assert sep["acc_21"] == round(sep["edli_wages"] * 0.5 / 100) == 220
     # Aug (before the change): A/c 21 stays on the as-entered legacy basis, 3 x 20000 * 0.5% = 300
     assert aug["acc_21"] == 300
+
+
+# ------------------- contributions follow the WHOLE-RUPEE wages the ECR reports (EPFO RFE-211/212)
+
+def test_straddle_month_pension_is_computed_on_the_reported_whole_rupee_eps_wage():
+    """Sep 2026, wage 20,196: the prorated EPS base is 17,424.8 (reported in the ECR as 17,425).
+    EPFO checks pension == 8.33% of the REPORTED 17,425 = 1451.50 -> 1452. Computing it from the
+    unrounded 17,424.8 (1451.49) gave 1451 and the portal rejected lines with RFE-211/212."""
+    e = _emp(wage=20196)
+    row = e.month_rows(*RATES, wage_ceilings=_ceil())[SEP]
+    _, w_epf, _, _, e_epf, e_eps, _ = row
+    assert (w_epf, e_eps, e_epf) == (2091, 1452, 639)      # 12% of 17,425; 8.33% of 17,425 half-up; remainder
+    assert w_epf == e_eps + e_epf
+
+
+def test_ecr_line_matches_the_figures_epfo_validates_for_the_straddle_month():
+    from epf_engine import generate_ecr_month, Establishment, YearRecord, SCHEME_POST_1997
+    e = _emp(wage=20196)
+    e.uan = "102303627200"
+    est = Establishment(code="X", name="X", address="", year_from="2026", year_to="2027", scheme=SCHEME_POST_1997)
+    f = generate_ecr_month(est, [e], YearRecord(year_from="2026", year_to="2027"), SEP).split("#~#")
+    # UAN#~#Name#~#Gross#~#EPF#~#EPS#~#EDLI#~#EE#~#EPS_share#~#ER_EPF
+    assert (f[3], f[4], f[5]) == ("17425", "17425", "17425")
+    assert (f[6], f[7], f[8]) == ("2091", "1452", "639")
+    assert int(f[7]) == round_half_up(int(f[4]) * 8.33 / 100)
+
+
+def test_every_straddle_wage_contribution_equals_rate_times_reported_wage():
+    """For EVERY gross wage, EE and pension must equal 12% / 8.33% (half-up) of the whole-rupee
+    wages the ECR reports -- the exact invariant EPFO validates -- and EE == pension + ER EPF."""
+    from epf_engine import round_contribution
+    c = _ceil()
+    for wage in range(8000, 30001, 7):
+        e = _emp(wage=wage)
+        _, w_epf, _, _, e_epf, e_eps, _ = e.month_rows(*RATES, wage_ceilings=c)[SEP]
+        b = e.wage_bases(SEP, wage, c[SEP])
+        epf_rep, eps_rep = round_contribution(b.epf, True), round_contribution(b.eps, True)
+        assert w_epf == round_contribution(epf_rep * 12 / 100, True), wage
+        assert e_eps == round_contribution(eps_rep * 8.33 / 100, True), wage
+        assert w_epf == e_eps + e_epf, wage
+
+
+def test_non_straddle_months_unchanged_by_wage_rounding():
+    """Bases are already whole rupees outside the transition month -- results must not move."""
+    for month, wage, want in ((SEP - 1, 20000, (1800, 1250, 550)), (SEP + 1, 30000, (3000, 2083, 917))):
+        r = _emp(wage=wage, month=month).month_rows(*RATES)[month]
+        assert (r[1], r[5], r[4]) == want
+
+
+def round_half_up(x):
+    from epf_engine import round_contribution
+    return round_contribution(x, True)
+
+
+# --------------------------- NCP days in the ECR must fit the employed window (EPFO RFE-41)
+
+def _ncp_line(**emp_kw):
+    from epf_engine import generate_ecr_month, Establishment, YearRecord, SCHEME_POST_1997
+    ncp = emp_kw.pop("ncp")
+    e = _emp(wage=5004, **emp_kw)
+    e.uan = "100963947449"
+    e.ncp_days = [0] * 12
+    e.ncp_days[SEP] = ncp
+    est = Establishment(code="X", name="X", address="", year_from="2026", year_to="2027", scheme=SCHEME_POST_1997)
+    return generate_ecr_month(est, [e], YearRecord(year_from="2026", year_to="2027"), SEP).split("#~#")[9]
+
+
+def test_ncp_joiner_counts_only_days_from_doj():
+    """DOJ 21-09-2026: employed window = 30-21+1 = 10 days. NCP 20 (the 20 days before joining) is
+    outside the window -> EPFO RFE-41; the ECR must report 0 for someone who worked all 10 days."""
+    assert _ncp_line(doj="21-09-2026", ncp=20) == "0"
+    assert _ncp_line(doj="21-09-2026", ncp=22) == "2"    # 2 absent days inside the window on top
+    assert _ncp_line(doj="22-09-2026", ncp=21) == "0"    # the real file's case: 9-day window, NCP 21
+
+
+def test_ncp_within_window_is_reported_exactly_as_entered():
+    assert _ncp_line(doj="21-09-2026", ncp=10) == "10"   # equals the window: valid for EPFO, untouched
+    assert _ncp_line(doj="21-09-2026", ncp=3) == "3"
+    assert _ncp_line(doj="01-04-2020", ncp=4) == "4"     # ordinary employee
+    assert _ncp_line(doj="", ncp=29) == "29"             # no joining date: never changed
+    assert _ncp_line(doj="not-a-date", doe="garbage", ncp=25) == "25"
+
+
+def test_ncp_leaver_ignores_days_after_doe():
+    """DOE 10-09-2026: window = 10 days; the 20 days after leaving are not NCP for EPFO."""
+    assert _ncp_line(doj="01-04-2020", doe="10-09-2026", ncp=20) == "0"
+    assert _ncp_line(doj="01-04-2020", doe="10-09-2026", ncp=23) == "3"
+
+
+def test_ncp_joiner_and_leaver_in_the_same_month():
+    # on roll 11..20 Sep = 10 days; 10 days before + 10 days after = 20 non-roll days
+    assert _ncp_line(doj="11-09-2026", doe="20-09-2026", ncp=20) == "0"
+    assert _ncp_line(doj="11-09-2026", doe="20-09-2026", ncp=22) == "2"
+
+
+def test_ncp_never_negative_or_above_the_window_and_zero_stays_zero():
+    from epf_engine import ecr_ncp_days
+    e = _emp(doj="21-09-2026")
+    assert ecr_ncp_days(e, SEP, "2026", 0) == 0
+    assert ecr_ncp_days(e, SEP, "2026", 5) == 5
+    assert ecr_ncp_days(e, SEP, "2026", 30) == 10      # 30 - 20 before joining
+    assert ecr_ncp_days(e, SEP, "2026", None) == 0
+    off_roll = _emp(doj="15-10-2026")                   # joins after Sep: leave as entered
+    assert ecr_ncp_days(off_roll, SEP, "2026", 25) == 25
+
+
+def test_ecr_endpoints_carry_doj_doe_into_the_ncp_rule(consultant_a, superadmin_session, test_db):
+    """The two ECR builders in webapp/app.py never copied doj/doe onto the Employee, so the rule
+    above would silently do nothing in the real download."""
+    import json
+    from epf_engine import Project
+    from webapp.database import Establishment
+    from webapp.auth import save_establishment_project
+    res = consultant_a.post("/api/establishments", json={"coverage_date": "01-04-2020", "code": "TRANS008", "name": "NCP Co"})
+    est_id = res.json()["establishment"]["id"]
+    consultant_a.set_establishment(est_id)
+    consultant_a.post("/api/years", json={"year_from": "2026", "year_to": "2027"})
+    r = consultant_a.post("/api/employees", json={"member_id": "NCP0001", "name": "Late Joiner", "uan": "100900000041",
+                                                   "doj": "22-09-2026"})
+    assert r.status_code == 200, r.text
+    est_obj = test_db.query(Establishment).filter(Establishment.id == est_id).first()
+    project = Project(); project.load_from_dict(json.loads(est_obj.data))
+    project.upsert_entry("2026-27", "NCP0001", _wages_for({SEP: 5004}), ncp_days=[0] * SEP + [21] + [0] * (11 - SEP))
+    save_establishment_project(test_db, est_obj, project)
+    superadmin_session.set_establishment(est_id)
+    res = superadmin_session.get("/api/reports/2026-27/ecr/6")
+    assert res.status_code == 200, res.text
+    assert res.text.strip().split("#~#")[9] == "0"     # NCP 21 days before joining -> 0 for EPFO

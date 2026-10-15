@@ -938,6 +938,16 @@ class Employee:
                 eps_wage = bases.eps
 
                 rnd = lambda x, hu=getattr(ceiling, "dated", False): round_contribution(x, hu)
+                if getattr(ceiling, "dated", False):
+                    # The ECR reports WHOLE-RUPEE wages and EPFO validates each contribution against
+                    # the reported wage (RFE-211/212: pension must equal 8.33% of the reported EPS
+                    # wage). A prorated transition month has fractional bases (e.g. 17,424.8 ->
+                    # reported 17,425), so contributions are computed from the same rounded wages the
+                    # ECR reports; computing from 17,424.8 gave 1451 where 17,425 needs 1452.
+                    # Outside a transition month the bases are already whole rupees: a no-op there.
+                    worker_wage_base = round_contribution(worker_wage_base, True)
+                    er_total_wage_base = round_contribution(er_total_wage_base, True)
+                    eps_wage = round_contribution(eps_wage, True)
                 w_epf = rnd(worker_wage_base * worker_epf_rate / 100)
                 w_eps = round(w * worker_eps_rate / 100)  # Will be 0 anyway
 
@@ -3297,6 +3307,35 @@ ExcelGenerator._build_form5_form10_sheets = _build_form5_form10_sheets
 
 # Removed legacy convert_excel_to_pdf as direct generation is now used.
 
+def ecr_ncp_days(emp, month_idx: int, year_from: str, ncp) -> int:
+    """NCP days as the ECR must report them (EPFO RFE-41: NCP must not exceed the days the employee
+    was on roll in the wage month, from DOJ/DOE). The wage-entry grid counts every day the employee
+    did not work, including days before joining / after leaving, so for a mid-month joiner or leaver
+    the entered NCP can exceed the employed window. Only in that invalid case is it converted
+    (entered NCP minus days before DOJ and after DOE, never below 0); any NCP already within the
+    window is reported exactly as entered. Missing/unparseable dates never change anything."""
+    try:
+        ncp = int(ncp or 0)
+    except (TypeError, ValueError):
+        return 0
+    start = wage_month_start_date(month_idx, year_from)
+    if start is None or ncp <= 0:
+        return ncp
+    nxt = date(start.year + 1, 1, 1) if start.month == 12 else date(start.year, start.month + 1, 1)
+    end = nxt - timedelta(days=1)
+    doj, doe = _parse_coverage_date(getattr(emp, "doj", "")), _parse_coverage_date(getattr(emp, "doe", ""))
+    if (doj is not None and doj > end) or (doe is not None and doe < start):
+        return ncp   # not on roll this month at all: leave as entered, never invent a figure
+    win_start = max(start, doj) if doj else start
+    win_end = min(end, doe) if doe else end
+    window = (win_end - win_start).days + 1
+    if ncp <= window:
+        return ncp
+    before = (win_start - start).days
+    after = (end - win_end).days
+    return max(0, min(window, ncp - before - after))
+
+
 def generate_ecr_month(est, employees: List[Employee], year_record: YearRecord, month_idx: int) -> str:
     """
     Generates ECR text format for a given month index (0-11 for Mar-Feb).
@@ -3342,6 +3381,7 @@ def generate_ecr_month(est, employees: List[Employee], year_record: YearRecord, 
         
         # UAN#~#Member Name#~#Gross Wages#~#EPF Wages#~#EPS Wages#~#EDLI Wages#~#EE Share Remitted#~#EPS Contribution Remitted#~#ER EPF Contribution Remitted#~#NCP Days#~#Refund of Advances
         ncp = emp.ncp_days[month_idx] if hasattr(emp, 'ncp_days') and emp.ncp_days and len(emp.ncp_days) > month_idx else 0
+        ncp = ecr_ncp_days(emp, month_idx, year_record.year_from, ncp)
         line = f"{emp.uan or ''}#~#{emp.name}#~#{gross}#~#{epf_w}#~#{eps_w}#~#{edli_w}#~#{w_epf}#~#{e_eps}#~#{e_epf}#~#{ncp}#~#0"
         lines.append(line)
     
